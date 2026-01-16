@@ -9,7 +9,7 @@ import {
   CommandList,
 } from '@/components/ui/command';
 import { Badge } from '@/components/ui/badge';
-import { FolderKanban, CheckSquare } from 'lucide-react';
+import { FolderKanban, CheckSquare, FileIcon } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 
 interface SearchResult {
@@ -86,6 +86,8 @@ export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
       navigate(`/projects/${result.result_id}`);
     } else if (result.result_type === 'task') {
       navigate(`/projects/${result.project_id}?task=${result.result_id}`);
+    } else if (result.result_type === 'file') {
+      navigate(`/projects/${result.project_id}?tab=files&file=${result.result_id}`);
     }
   };
 
@@ -95,6 +97,8 @@ export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
         return <FolderKanban className="mr-2 h-4 w-4" />;
       case 'task':
         return <CheckSquare className="mr-2 h-4 w-4" />;
+      case 'file':
+        return <FileIcon className="mr-2 h-4 w-4" />;
       default:
         return null;
     }
@@ -106,6 +110,8 @@ export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
         return 'Projeto';
       case 'task':
         return 'Tarefa';
+      case 'file':
+        return 'Arquivo';
       default:
         return type;
     }
@@ -113,11 +119,12 @@ export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
 
   const projectResults = results.filter((r) => r.result_type === 'project');
   const taskResults = results.filter((r) => r.result_type === 'task');
+  const fileResults = results.filter((r) => r.result_type === 'file');
 
   return (
     <CommandDialog open={open} onOpenChange={onOpenChange}>
       <CommandInput
-        placeholder="Buscar projetos, tarefas..."
+        placeholder="Buscar projetos, tarefas, arquivos..."
         value={query}
         onValueChange={setQuery}
       />
@@ -158,6 +165,31 @@ export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
             {taskResults.map((result) => (
               <CommandItem
                 key={`task-${result.result_id}`}
+                onSelect={() => handleSelect(result)}
+                className="flex items-center justify-between"
+              >
+                <div className="flex items-center">
+                  {getIcon(result.result_type)}
+                  <div className="flex flex-col">
+                    <span>{result.title}</span>
+                    <span className="text-xs text-muted-foreground">
+                      {result.project_name}
+                    </span>
+                  </div>
+                </div>
+                <Badge variant="secondary" className="text-xs">
+                  {getTypeLabel(result.result_type)}
+                </Badge>
+              </CommandItem>
+            ))}
+          </CommandGroup>
+        )}
+
+        {fileResults.length > 0 && (
+          <CommandGroup heading="Arquivos">
+            {fileResults.map((result) => (
+              <CommandItem
+                key={`file-${result.result_id}`}
                 onSelect={() => handleSelect(result)}
                 className="flex items-center justify-between"
               >

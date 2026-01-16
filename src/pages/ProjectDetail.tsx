@@ -21,6 +21,7 @@ import { Tables } from '@/integrations/supabase/types';
 import { TaskFormModal } from '@/components/tasks/TaskFormModal';
 import { TaskDetailModal } from '@/components/tasks/TaskDetailModal';
 import { InviteMemberModal } from '@/components/projects/InviteMemberModal';
+import { ProjectFilesList } from '@/components/files/ProjectFilesList';
 
 type Project = Tables<'projects'>;
 type Task = Tables<'tasks'>;
@@ -414,23 +415,7 @@ export default function ProjectDetail() {
         </TabsContent>
 
         <TabsContent value="files">
-          <Card className="border-dashed">
-            <CardHeader className="text-center">
-              <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-muted">
-                <FolderOpen className="h-6 w-6 text-muted-foreground" />
-              </div>
-              <CardTitle className="text-base">Nenhum arquivo</CardTitle>
-              <CardDescription>
-                Faça upload de arquivos relacionados ao projeto
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="text-center">
-              <Button>
-                <Plus className="mr-2 h-4 w-4" />
-                Upload de Arquivo
-              </Button>
-            </CardContent>
-          </Card>
+          <ProjectFilesList projectId={id!} />
         </TabsContent>
 
         <TabsContent value="reports">

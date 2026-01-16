@@ -86,6 +86,103 @@ export type Database = {
         }
         Relationships: []
       }
+      project_file_versions: {
+        Row: {
+          created_at: string
+          file_id: string
+          id: string
+          size_bytes: number | null
+          storage_path: string
+          upload_comment: string | null
+          uploaded_by: string
+          version_number: number
+        }
+        Insert: {
+          created_at?: string
+          file_id: string
+          id?: string
+          size_bytes?: number | null
+          storage_path: string
+          upload_comment?: string | null
+          uploaded_by: string
+          version_number: number
+        }
+        Update: {
+          created_at?: string
+          file_id?: string
+          id?: string
+          size_bytes?: number | null
+          storage_path?: string
+          upload_comment?: string | null
+          uploaded_by?: string
+          version_number?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "project_file_versions_file_id_fkey"
+            columns: ["file_id"]
+            isOneToOne: false
+            referencedRelation: "project_files"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      project_files: {
+        Row: {
+          created_at: string
+          current_version: number
+          deleted_at: string | null
+          deleted_by: string | null
+          description: string | null
+          id: string
+          mime_type: string | null
+          name: string
+          project_id: string
+          size_bytes: number | null
+          storage_path: string
+          updated_at: string
+          uploaded_by: string
+        }
+        Insert: {
+          created_at?: string
+          current_version?: number
+          deleted_at?: string | null
+          deleted_by?: string | null
+          description?: string | null
+          id?: string
+          mime_type?: string | null
+          name: string
+          project_id: string
+          size_bytes?: number | null
+          storage_path: string
+          updated_at?: string
+          uploaded_by: string
+        }
+        Update: {
+          created_at?: string
+          current_version?: number
+          deleted_at?: string | null
+          deleted_by?: string | null
+          description?: string | null
+          id?: string
+          mime_type?: string | null
+          name?: string
+          project_id?: string
+          size_bytes?: number | null
+          storage_path?: string
+          updated_at?: string
+          uploaded_by?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "project_files_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       project_invites: {
         Row: {
           created_at: string
