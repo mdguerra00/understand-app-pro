@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Input } from '@/components/ui/input';
@@ -16,11 +15,11 @@ import {
   Search,
   CheckSquare,
   Calendar,
-  User,
 } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { Tables } from '@/integrations/supabase/types';
 import { useAuth } from '@/hooks/useAuth';
+import { TaskDetailModal } from '@/components/tasks/TaskDetailModal';
 
 type Task = Tables<'tasks'> & {
   projects: { name: string } | null;
@@ -54,27 +53,38 @@ export default function Tasks() {
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [showOnlyMine, setShowOnlyMine] = useState(false);
+  const [selectedTask, setSelectedTask] = useState<Task | null>(null);
+  const [detailOpen, setDetailOpen] = useState(false);
+
+  const fetchTasks = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('tasks')
+        .select('*, projects(name)')
+        .is('deleted_at', null)
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+      setTasks(data || []);
+    } catch (error) {
+      console.error('Error fetching tasks:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    async function fetchTasks() {
-      try {
-        const { data, error } = await supabase
-          .from('tasks')
-          .select('*, projects(name)')
-          .is('deleted_at', null)
-          .order('created_at', { ascending: false });
-
-        if (error) throw error;
-        setTasks(data || []);
-      } catch (error) {
-        console.error('Error fetching tasks:', error);
-      } finally {
-        setLoading(false);
-      }
-    }
-
     fetchTasks();
   }, []);
+
+  const handleTaskClick = (task: Task) => {
+    setSelectedTask(task);
+    setDetailOpen(true);
+  };
+
+  const handleTaskUpdate = () => {
+    fetchTasks();
+  };
 
   const filteredTasks = tasks.filter((task) => {
     const matchesSearch = task.title.toLowerCase().includes(search.toLowerCase()) ||
@@ -161,7 +171,11 @@ export default function Tasks() {
       ) : (
         <div className="space-y-3">
           {filteredTasks.map((task) => (
-            <Card key={task.id} className="hover:border-primary/50 transition-colors cursor-pointer">
+            <Card 
+              key={task.id} 
+              className="hover:border-primary/50 transition-colors cursor-pointer"
+              onClick={() => handleTaskClick(task)}
+            >
               <CardContent className="flex items-center justify-between py-4">
                 <div className="flex items-center gap-4">
                   <div className={`w-1 h-10 rounded-full ${priorityColors[task.priority]}`} 
@@ -188,6 +202,17 @@ export default function Tasks() {
             </Card>
           ))}
         </div>
+      )}
+
+      {/* Task Detail Modal */}
+      {selectedTask && (
+        <TaskDetailModal
+          task={selectedTask}
+          projectId={selectedTask.project_id}
+          open={detailOpen}
+          onOpenChange={setDetailOpen}
+          onUpdate={handleTaskUpdate}
+        />
       )}
     </div>
   );

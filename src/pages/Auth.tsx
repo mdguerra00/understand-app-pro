@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { z } from 'zod';
 import { useAuth } from '@/hooks/useAuth';
 import { Button } from '@/components/ui/button';
@@ -28,7 +28,11 @@ export default function Auth() {
   const [tab, setTab] = useState<'login' | 'signup'>('login');
   const { signIn, signUp, user } = useAuth();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { toast } = useToast();
+
+  // Get redirect URL from query params
+  const redirectUrl = searchParams.get('redirect') || '/';
 
   // Form states
   const [email, setEmail] = useState('');
@@ -39,9 +43,9 @@ export default function Auth() {
 
   useEffect(() => {
     if (user) {
-      navigate('/');
+      navigate(redirectUrl);
     }
-  }, [user, navigate]);
+  }, [user, navigate, redirectUrl]);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
