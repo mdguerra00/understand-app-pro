@@ -17,6 +17,7 @@ import Reports from "./pages/Reports";
 import Files from "./pages/Files";
 import Knowledge from "./pages/Knowledge";
 import Settings from "./pages/Settings";
+import AcceptInvite from "./pages/AcceptInvite";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -31,7 +32,7 @@ const App = () => (
           <Routes>
             {/* Public routes */}
             <Route path="/auth" element={<Auth />} />
-
+            <Route path="/invites/:token" element={<AcceptInvite />} />
             {/* Protected routes */}
             <Route
               path="/"
