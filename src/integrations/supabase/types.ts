@@ -334,6 +334,18 @@ export type Database = {
         Args: { _project_id: string; _user_id: string }
         Returns: Database["public"]["Enums"]["project_role"]
       }
+      global_search: {
+        Args: { search_query: string }
+        Returns: {
+          project_id: string
+          project_name: string
+          relevance: number
+          result_id: string
+          result_type: string
+          subtitle: string
+          title: string
+        }[]
+      }
       has_project_role: {
         Args: {
           _min_role: Database["public"]["Enums"]["project_role"]
