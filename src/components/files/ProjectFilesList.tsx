@@ -55,9 +55,11 @@ interface ProjectFile {
 
 interface ProjectFilesListProps {
   projectId: string;
+  initialFileId?: string | null;
+  onFileOpened?: () => void;
 }
 
-export function ProjectFilesList({ projectId }: ProjectFilesListProps) {
+export function ProjectFilesList({ projectId, initialFileId, onFileOpened }: ProjectFilesListProps) {
   const { toast } = useToast();
   const { user } = useAuth();
   const [files, setFiles] = useState<ProjectFile[]>([]);
@@ -90,6 +92,18 @@ export function ProjectFilesList({ projectId }: ProjectFilesListProps) {
   useEffect(() => {
     fetchFiles();
   }, [projectId]);
+
+  // Handle opening file from URL param (global search navigation)
+  useEffect(() => {
+    if (initialFileId && files.length > 0) {
+      const file = files.find(f => f.id === initialFileId);
+      if (file) {
+        setSelectedFile(file);
+        setIsDetailModalOpen(true);
+        onFileOpened?.();
+      }
+    }
+  }, [initialFileId, files, onFileOpened]);
 
   const handleDelete = async () => {
     if (!deleteFile || !user) return;

@@ -78,18 +78,35 @@ export default function ProjectDetail() {
   const [isInviteModalOpen, setIsInviteModalOpen] = useState(false);
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [isTaskDetailOpen, setIsTaskDetailOpen] = useState(false);
+  
+  // Tab control for URL navigation
+  const [activeTab, setActiveTab] = useState('tasks');
+  const [initialFileId, setInitialFileId] = useState<string | null>(null);
 
-  // Handle task param from URL (for global search navigation)
+  // Handle URL params for task and file navigation (from global search)
   useEffect(() => {
+    const tab = searchParams.get('tab');
     const taskId = searchParams.get('task');
+    const fileId = searchParams.get('file');
+
+    if (tab === 'files') {
+      setActiveTab('files');
+      if (fileId) {
+        setInitialFileId(fileId);
+      }
+    }
+
     if (taskId && tasks.length > 0) {
       const task = tasks.find(t => t.id === taskId);
       if (task) {
         setSelectedTask(task);
         setIsTaskDetailOpen(true);
-        // Clear the param after opening
-        setSearchParams({}, { replace: true });
       }
+    }
+
+    // Clear params after processing
+    if (taskId || fileId || tab) {
+      setSearchParams({}, { replace: true });
     }
   }, [searchParams, tasks, setSearchParams]);
 
@@ -347,7 +364,7 @@ export default function ProjectDetail() {
       </div>
 
       {/* Tabs */}
-      <Tabs defaultValue="tasks" className="space-y-4">
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
         <TabsList>
           <TabsTrigger value="tasks" className="gap-2">
             <CheckSquare className="h-4 w-4" />
@@ -415,7 +432,11 @@ export default function ProjectDetail() {
         </TabsContent>
 
         <TabsContent value="files">
-          <ProjectFilesList projectId={id!} />
+          <ProjectFilesList 
+            projectId={id!} 
+            initialFileId={initialFileId}
+            onFileOpened={() => setInitialFileId(null)}
+          />
         </TabsContent>
 
         <TabsContent value="reports">
