@@ -18,10 +18,20 @@ import {
 } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { Tables } from '@/integrations/supabase/types';
+import { TaskFormModal } from '@/components/tasks/TaskFormModal';
+import { InviteMemberModal } from '@/components/projects/InviteMemberModal';
 
 type Project = Tables<'projects'>;
-type ProjectMember = Tables<'project_members'>;
 type Task = Tables<'tasks'>;
+
+interface MemberWithProfile {
+  id: string;
+  user_id: string;
+  role_in_project: string;
+  full_name: string | null;
+  email: string;
+  avatar_url: string | null;
+}
 
 const statusColors: Record<string, string> = {
   planning: 'bg-muted text-muted-foreground',
@@ -39,6 +49,13 @@ const statusLabels: Record<string, string> = {
   archived: 'Arquivado',
 };
 
+const roleLabels: Record<string, string> = {
+  owner: 'Proprietário',
+  manager: 'Gerente',
+  researcher: 'Pesquisador',
+  viewer: 'Visualizador',
+};
+
 const taskStatusLabels: Record<string, string> = {
   todo: 'A Fazer',
   in_progress: 'Em Andamento',
@@ -50,52 +67,118 @@ export default function ProjectDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const [project, setProject] = useState<Project | null>(null);
-  const [members, setMembers] = useState<ProjectMember[]>([]);
+  const [members, setMembers] = useState<MemberWithProfile[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
+  
+  const [isTaskModalOpen, setIsTaskModalOpen] = useState(false);
+  const [isInviteModalOpen, setIsInviteModalOpen] = useState(false);
+
+  const fetchProject = async () => {
+    if (!id) return;
+
+    try {
+      // Fetch project
+      const { data: projectData, error: projectError } = await supabase
+        .from('projects')
+        .select('*')
+        .eq('id', id)
+        .single();
+
+      if (projectError) throw projectError;
+      setProject(projectData);
+
+      // Fetch members with their profiles
+      const { data: membersData } = await supabase
+        .from('project_members')
+        .select('id, user_id, role_in_project')
+        .eq('project_id', id);
+
+      if (membersData && membersData.length > 0) {
+        const userIds = membersData.map((m) => m.user_id);
+        const { data: profiles } = await supabase
+          .from('profiles')
+          .select('id, full_name, email, avatar_url')
+          .in('id', userIds);
+
+        const membersWithProfiles: MemberWithProfile[] = membersData.map((member) => {
+          const profile = profiles?.find((p) => p.id === member.user_id);
+          return {
+            id: member.id,
+            user_id: member.user_id,
+            role_in_project: member.role_in_project,
+            full_name: profile?.full_name || null,
+            email: profile?.email || '',
+            avatar_url: profile?.avatar_url || null,
+          };
+        });
+
+        setMembers(membersWithProfiles);
+      } else {
+        setMembers([]);
+      }
+
+      // Fetch tasks
+      const { data: tasksData } = await supabase
+        .from('tasks')
+        .select('*')
+        .eq('project_id', id)
+        .is('deleted_at', null)
+        .order('created_at', { ascending: false });
+
+      setTasks(tasksData || []);
+    } catch (error) {
+      console.error('Error fetching project:', error);
+      navigate('/projects');
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    async function fetchProject() {
-      if (!id) return;
-
-      try {
-        // Fetch project
-        const { data: projectData, error: projectError } = await supabase
-          .from('projects')
-          .select('*')
-          .eq('id', id)
-          .single();
-
-        if (projectError) throw projectError;
-        setProject(projectData);
-
-        // Fetch members
-        const { data: membersData } = await supabase
-          .from('project_members')
-          .select('*')
-          .eq('project_id', id);
-
-        setMembers(membersData || []);
-
-        // Fetch tasks
-        const { data: tasksData } = await supabase
-          .from('tasks')
-          .select('*')
-          .eq('project_id', id)
-          .is('deleted_at', null)
-          .order('created_at', { ascending: false });
-
-        setTasks(tasksData || []);
-      } catch (error) {
-        console.error('Error fetching project:', error);
-        navigate('/projects');
-      } finally {
-        setLoading(false);
-      }
-    }
-
     fetchProject();
   }, [id, navigate]);
+
+  const refreshTasks = async () => {
+    if (!id) return;
+    const { data: tasksData } = await supabase
+      .from('tasks')
+      .select('*')
+      .eq('project_id', id)
+      .is('deleted_at', null)
+      .order('created_at', { ascending: false });
+    setTasks(tasksData || []);
+  };
+
+  const refreshMembers = async () => {
+    if (!id) return;
+    const { data: membersData } = await supabase
+      .from('project_members')
+      .select('id, user_id, role_in_project')
+      .eq('project_id', id);
+
+    if (membersData && membersData.length > 0) {
+      const userIds = membersData.map((m) => m.user_id);
+      const { data: profiles } = await supabase
+        .from('profiles')
+        .select('id, full_name, email, avatar_url')
+        .in('id', userIds);
+
+      const membersWithProfiles: MemberWithProfile[] = membersData.map((member) => {
+        const profile = profiles?.find((p) => p.id === member.user_id);
+        return {
+          id: member.id,
+          user_id: member.user_id,
+          role_in_project: member.role_in_project,
+          full_name: profile?.full_name || null,
+          email: profile?.email || '',
+          avatar_url: profile?.avatar_url || null,
+        };
+      });
+
+      setMembers(membersWithProfiles);
+    }
+  };
 
   if (loading) {
     return (
@@ -123,8 +206,16 @@ export default function ProjectDetail() {
     );
   }
 
-  const getInitials = (userId: string) => {
-    return userId.slice(0, 2).toUpperCase();
+  const getInitials = (name?: string | null, email?: string) => {
+    if (name) {
+      return name
+        .split(' ')
+        .map((n) => n[0])
+        .join('')
+        .toUpperCase()
+        .slice(0, 2);
+    }
+    return email?.charAt(0).toUpperCase() ?? '?';
   };
 
   return (
@@ -200,27 +291,37 @@ export default function ProjectDetail() {
                 <Users className="h-4 w-4" />
                 Equipe
               </span>
-              <Button variant="ghost" size="sm">
+              <Button variant="ghost" size="sm" onClick={() => setIsInviteModalOpen(true)}>
                 <Plus className="h-4 w-4" />
               </Button>
             </CardTitle>
           </CardHeader>
           <CardContent>
             <div className="space-y-3">
-              {members.map((member) => (
-                <div key={member.id} className="flex items-center gap-3">
-                  <Avatar className="h-8 w-8">
-                    <AvatarFallback className="text-xs">
-                      {getInitials(member.user_id)}
-                    </AvatarFallback>
-                  </Avatar>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium truncate capitalize">
-                      {member.role_in_project}
-                    </p>
+              {members.length === 0 ? (
+                <p className="text-sm text-muted-foreground text-center py-2">
+                  Nenhum membro ainda
+                </p>
+              ) : (
+                members.map((member) => (
+                  <div key={member.id} className="flex items-center gap-3">
+                    <Avatar className="h-8 w-8">
+                      <AvatarImage src={member.avatar_url || undefined} />
+                      <AvatarFallback className="text-xs">
+                        {getInitials(member.full_name, member.email)}
+                      </AvatarFallback>
+                    </Avatar>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium truncate">
+                        {member.full_name || member.email}
+                      </p>
+                      <p className="text-xs text-muted-foreground capitalize">
+                        {roleLabels[member.role_in_project] || member.role_in_project}
+                      </p>
+                    </div>
                   </div>
-                </div>
-              ))}
+                ))
+              )}
             </div>
           </CardContent>
         </Card>
@@ -248,7 +349,7 @@ export default function ProjectDetail() {
             <p className="text-sm text-muted-foreground">
               {tasks.length} tarefa{tasks.length !== 1 ? 's' : ''}
             </p>
-            <Button size="sm">
+            <Button size="sm" onClick={() => setIsTaskModalOpen(true)}>
               <Plus className="mr-2 h-4 w-4" />
               Nova Tarefa
             </Button>
@@ -327,6 +428,20 @@ export default function ProjectDetail() {
           </Card>
         </TabsContent>
       </Tabs>
+
+      {/* Modals */}
+      <TaskFormModal
+        projectId={id!}
+        open={isTaskModalOpen}
+        onOpenChange={setIsTaskModalOpen}
+        onSuccess={refreshTasks}
+      />
+      <InviteMemberModal
+        projectId={id!}
+        open={isInviteModalOpen}
+        onOpenChange={setIsInviteModalOpen}
+        onSuccess={refreshMembers}
+      />
     </div>
   );
 }

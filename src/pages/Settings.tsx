@@ -1,10 +1,11 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Separator } from '@/components/ui/separator';
+import { Skeleton } from '@/components/ui/skeleton';
 import { useAuth } from '@/hooks/useAuth';
 import { useToast } from '@/hooks/use-toast';
 import { supabase } from '@/integrations/supabase/client';
@@ -14,13 +15,53 @@ export default function Settings() {
   const { user } = useAuth();
   const { toast } = useToast();
   const [isLoading, setIsLoading] = useState(false);
+  const [isFetching, setIsFetching] = useState(true);
 
   const [formData, setFormData] = useState({
-    full_name: user?.user_metadata?.full_name || '',
+    full_name: '',
     job_title: '',
     department: '',
     phone: '',
+    avatar_url: '',
   });
+
+  // Fetch profile data from database
+  useEffect(() => {
+    async function fetchProfile() {
+      if (!user) return;
+
+      try {
+        const { data, error } = await supabase
+          .from('profiles')
+          .select('full_name, job_title, department, phone, avatar_url')
+          .eq('id', user.id)
+          .single();
+
+        if (error) throw error;
+
+        if (data) {
+          setFormData({
+            full_name: data.full_name || '',
+            job_title: data.job_title || '',
+            department: data.department || '',
+            phone: data.phone || '',
+            avatar_url: data.avatar_url || '',
+          });
+        }
+      } catch (error) {
+        console.error('Error fetching profile:', error);
+        // Fallback to user metadata if profile fetch fails
+        setFormData((prev) => ({
+          ...prev,
+          full_name: user?.user_metadata?.full_name || '',
+        }));
+      } finally {
+        setIsFetching(false);
+      }
+    }
+
+    fetchProfile();
+  }, [user]);
 
   const handleChange = (field: string, value: string) => {
     setFormData((prev) => ({ ...prev, [field]: value }));
@@ -70,6 +111,42 @@ export default function Settings() {
     return email?.charAt(0).toUpperCase() ?? 'U';
   };
 
+  if (isFetching) {
+    return (
+      <div className="max-w-2xl mx-auto space-y-6">
+        <div>
+          <Skeleton className="h-8 w-48" />
+          <Skeleton className="h-4 w-64 mt-2" />
+        </div>
+        <Card>
+          <CardHeader>
+            <Skeleton className="h-6 w-24" />
+            <Skeleton className="h-4 w-48" />
+          </CardHeader>
+          <CardContent className="space-y-6">
+            <div className="flex items-center gap-4">
+              <Skeleton className="h-20 w-20 rounded-full" />
+              <div>
+                <Skeleton className="h-5 w-32" />
+                <Skeleton className="h-4 w-48 mt-1" />
+              </div>
+            </div>
+            <Separator />
+            <div className="space-y-4">
+              <Skeleton className="h-10 w-full" />
+              <Skeleton className="h-10 w-full" />
+              <div className="grid gap-4 md:grid-cols-2">
+                <Skeleton className="h-10" />
+                <Skeleton className="h-10" />
+              </div>
+              <Skeleton className="h-10 w-full" />
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
   return (
     <div className="max-w-2xl mx-auto space-y-6">
       <div>
@@ -90,7 +167,7 @@ export default function Settings() {
           {/* Avatar */}
           <div className="flex items-center gap-4">
             <Avatar className="h-20 w-20">
-              <AvatarImage src={user?.user_metadata?.avatar_url} />
+              <AvatarImage src={formData.avatar_url || user?.user_metadata?.avatar_url} />
               <AvatarFallback className="text-lg">
                 {getInitials(formData.full_name, user?.email)}
               </AvatarFallback>
