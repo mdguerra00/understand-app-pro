@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useParams, Link, useNavigate } from 'react-router-dom';
+import { useParams, Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -19,6 +19,7 @@ import {
 import { supabase } from '@/integrations/supabase/client';
 import { Tables } from '@/integrations/supabase/types';
 import { TaskFormModal } from '@/components/tasks/TaskFormModal';
+import { TaskDetailModal } from '@/components/tasks/TaskDetailModal';
 import { InviteMemberModal } from '@/components/projects/InviteMemberModal';
 
 type Project = Tables<'projects'>;
@@ -65,6 +66,7 @@ const taskStatusLabels: Record<string, string> = {
 
 export default function ProjectDetail() {
   const { id } = useParams<{ id: string }>();
+  const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
   const [project, setProject] = useState<Project | null>(null);
   const [members, setMembers] = useState<MemberWithProfile[]>([]);
@@ -73,6 +75,22 @@ export default function ProjectDetail() {
   
   const [isTaskModalOpen, setIsTaskModalOpen] = useState(false);
   const [isInviteModalOpen, setIsInviteModalOpen] = useState(false);
+  const [selectedTask, setSelectedTask] = useState<Task | null>(null);
+  const [isTaskDetailOpen, setIsTaskDetailOpen] = useState(false);
+
+  // Handle task param from URL (for global search navigation)
+  useEffect(() => {
+    const taskId = searchParams.get('task');
+    if (taskId && tasks.length > 0) {
+      const task = tasks.find(t => t.id === taskId);
+      if (task) {
+        setSelectedTask(task);
+        setIsTaskDetailOpen(true);
+        // Clear the param after opening
+        setSearchParams({}, { replace: true });
+      }
+    }
+  }, [searchParams, tasks, setSearchParams]);
 
   const fetchProject = async () => {
     if (!id) return;
@@ -137,7 +155,7 @@ export default function ProjectDetail() {
 
   useEffect(() => {
     fetchProject();
-  }, [id, navigate]);
+  }, [id]);
 
   const refreshTasks = async () => {
     if (!id) return;
@@ -367,7 +385,14 @@ export default function ProjectDetail() {
           ) : (
             <div className="space-y-2">
               {tasks.map((task) => (
-                <Card key={task.id} className="hover:border-primary/50 transition-colors cursor-pointer">
+                <Card 
+                  key={task.id} 
+                  className="hover:border-primary/50 transition-colors cursor-pointer"
+                  onClick={() => {
+                    setSelectedTask(task);
+                    setIsTaskDetailOpen(true);
+                  }}
+                >
                   <CardContent className="flex items-center justify-between py-4">
                     <div className="flex items-center gap-3">
                       <CheckSquare className="h-4 w-4 text-muted-foreground" />
@@ -435,6 +460,13 @@ export default function ProjectDetail() {
         open={isTaskModalOpen}
         onOpenChange={setIsTaskModalOpen}
         onSuccess={refreshTasks}
+      />
+      <TaskDetailModal
+        task={selectedTask}
+        projectId={id!}
+        open={isTaskDetailOpen}
+        onOpenChange={setIsTaskDetailOpen}
+        onUpdate={refreshTasks}
       />
       <InviteMemberModal
         projectId={id!}

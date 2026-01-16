@@ -1,9 +1,11 @@
-import { ReactNode } from 'react';
+import { ReactNode, useState } from 'react';
 import { Navigate } from 'react-router-dom';
 import { SidebarProvider, SidebarInset, SidebarTrigger } from '@/components/ui/sidebar';
 import { Separator } from '@/components/ui/separator';
 import { AppSidebar } from './AppSidebar';
 import { Breadcrumbs } from './Breadcrumbs';
+import { GlobalSearch } from '@/components/search/GlobalSearch';
+import { SearchButton } from '@/components/search/SearchButton';
 import { useAuth } from '@/hooks/useAuth';
 import { Loader2 } from 'lucide-react';
 
@@ -13,6 +15,7 @@ interface AppLayoutProps {
 
 export function AppLayout({ children }: AppLayoutProps) {
   const { user, loading } = useAuth();
+  const [searchOpen, setSearchOpen] = useState(false);
 
   if (loading) {
     return (
@@ -34,11 +37,15 @@ export function AppLayout({ children }: AppLayoutProps) {
           <SidebarTrigger className="-ml-1" />
           <Separator orientation="vertical" className="mr-2 h-4" />
           <Breadcrumbs />
+          <div className="ml-auto">
+            <SearchButton onClick={() => setSearchOpen(true)} />
+          </div>
         </header>
         <main className="flex-1 overflow-auto p-4 md:p-6">
           {children}
         </main>
       </SidebarInset>
+      <GlobalSearch open={searchOpen} onOpenChange={setSearchOpen} />
     </SidebarProvider>
   );
 }
