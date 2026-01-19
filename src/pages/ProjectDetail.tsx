@@ -22,6 +22,7 @@ import { TaskFormModal } from '@/components/tasks/TaskFormModal';
 import { TaskDetailModal } from '@/components/tasks/TaskDetailModal';
 import { InviteMemberModal } from '@/components/projects/InviteMemberModal';
 import { ProjectFilesList } from '@/components/files/ProjectFilesList';
+import { ReportsList } from '@/components/reports/ReportsList';
 
 type Project = Tables<'projects'>;
 type Task = Tables<'tasks'>;
@@ -440,23 +441,7 @@ export default function ProjectDetail() {
         </TabsContent>
 
         <TabsContent value="reports">
-          <Card className="border-dashed">
-            <CardHeader className="text-center">
-              <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-muted">
-                <FileText className="h-6 w-6 text-muted-foreground" />
-              </div>
-              <CardTitle className="text-base">Nenhum relatório</CardTitle>
-              <CardDescription>
-                Documente os resultados e conclusões do projeto
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="text-center">
-              <Button>
-                <Plus className="mr-2 h-4 w-4" />
-                Novo Relatório
-              </Button>
-            </CardContent>
-          </Card>
+          <ReportsList projectId={id!} />
         </TabsContent>
       </Tabs>
 
