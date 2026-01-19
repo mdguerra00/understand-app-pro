@@ -546,6 +546,7 @@ export type Database = {
       }
       reports: {
         Row: {
+          ai_model_used: string | null
           approved_at: string | null
           approved_by: string | null
           archived_at: string | null
@@ -555,11 +556,13 @@ export type Database = {
           created_by: string
           deleted_at: string | null
           deleted_by: string | null
+          generated_by_ai: boolean | null
           id: string
           project_id: string
           review_notes: string | null
           reviewed_at: string | null
           reviewed_by: string | null
+          source_insights_count: number | null
           status: Database["public"]["Enums"]["report_status"]
           submitted_at: string | null
           submitted_by: string | null
@@ -568,6 +571,7 @@ export type Database = {
           updated_at: string
         }
         Insert: {
+          ai_model_used?: string | null
           approved_at?: string | null
           approved_by?: string | null
           archived_at?: string | null
@@ -577,11 +581,13 @@ export type Database = {
           created_by: string
           deleted_at?: string | null
           deleted_by?: string | null
+          generated_by_ai?: boolean | null
           id?: string
           project_id: string
           review_notes?: string | null
           reviewed_at?: string | null
           reviewed_by?: string | null
+          source_insights_count?: number | null
           status?: Database["public"]["Enums"]["report_status"]
           submitted_at?: string | null
           submitted_by?: string | null
@@ -590,6 +596,7 @@ export type Database = {
           updated_at?: string
         }
         Update: {
+          ai_model_used?: string | null
           approved_at?: string | null
           approved_by?: string | null
           archived_at?: string | null
@@ -599,11 +606,13 @@ export type Database = {
           created_by?: string
           deleted_at?: string | null
           deleted_by?: string | null
+          generated_by_ai?: boolean | null
           id?: string
           project_id?: string
           review_notes?: string | null
           reviewed_at?: string | null
           reviewed_by?: string | null
+          source_insights_count?: number | null
           status?: Database["public"]["Enums"]["report_status"]
           submitted_at?: string | null
           submitted_by?: string | null
