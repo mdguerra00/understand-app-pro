@@ -60,16 +60,24 @@ function verifyEvidence(evidence: string, originalContent: string): boolean {
   return false;
 }
 
+interface SpreadsheetResult {
+  content: string;
+  quality: string;
+  sheetsFound: number;
+  sheetsWithData: number;
+}
+
 /**
  * Parse Excel/spreadsheet files into readable tabular text
  */
-function parseSpreadsheet(arrayBuffer: ArrayBuffer, fileName: string): { content: string; quality: string } {
+function parseSpreadsheet(arrayBuffer: ArrayBuffer, fileName: string): SpreadsheetResult {
   try {
     const workbook = XLSX.read(arrayBuffer, { type: "array" });
     
     const sheets: string[] = [];
     let totalCells = 0;
     let emptyCells = 0;
+    const totalSheets = workbook.SheetNames.length;
     
     for (const sheetName of workbook.SheetNames) {
       const sheet = workbook.Sheets[sheetName];
@@ -99,14 +107,21 @@ function parseSpreadsheet(arrayBuffer: ArrayBuffer, fileName: string): { content
       quality = 'partial';
     }
     
-    console.log(`Parsed spreadsheet ${fileName}: ${sheets.length} sheets, ${totalCells} cells, quality: ${quality}`);
+    console.log(`Parsed spreadsheet ${fileName}: ${sheets.length}/${totalSheets} sheets with data, ${totalCells} cells, quality: ${quality}`);
     
-    return { content, quality };
+    return { 
+      content, 
+      quality, 
+      sheetsFound: totalSheets, 
+      sheetsWithData: sheets.length 
+    };
   } catch (error) {
     console.error(`Failed to parse spreadsheet ${fileName}:`, error);
     return { 
       content: `[ERRO: Não foi possível ler a planilha ${fileName}. Formato incompatível ou arquivo corrompido.]`,
-      quality: 'failed'
+      quality: 'failed',
+      sheetsFound: 0,
+      sheetsWithData: 0
     };
   }
 }
@@ -227,6 +242,8 @@ serve(async (req) => {
     // Extract text content based on file type
     let textContent = "";
     let parsingQuality = "unknown";
+    let sheetsFound = 0;
+    let contentTruncated = false;
     const mimeType = fileData.mime_type || "";
     const fileName = fileData.name || "";
 
@@ -243,6 +260,11 @@ serve(async (req) => {
       const parsed = parseSpreadsheet(arrayBuffer, fileName);
       textContent = parsed.content;
       parsingQuality = parsed.quality;
+      sheetsFound = parsed.sheetsFound;
+      
+      // Add header with sheet info
+      const headerInfo = `[Arquivo: ${fileName}]\n[Abas encontradas: ${parsed.sheetsFound}]\n[Abas com dados: ${parsed.sheetsWithData}]\n\n`;
+      textContent = headerInfo + textContent;
       
     } else if (mimeType === "text/csv" || fileName.endsWith(".csv")) {
       // Handle CSV files
@@ -280,10 +302,13 @@ serve(async (req) => {
       }
     }
 
-    // Update job with parsing quality
+    // Update job with parsing quality and sheets info
     await supabaseAdmin
       .from("extraction_jobs")
-      .update({ parsing_quality: parsingQuality })
+      .update({ 
+        parsing_quality: parsingQuality,
+        sheets_found: sheetsFound > 0 ? sheetsFound : null,
+      })
       .eq("id", job_id);
 
     console.log(`File parsed with quality: ${parsingQuality}, content length: ${textContent.length}`);
@@ -311,10 +336,18 @@ serve(async (req) => {
       );
     }
 
-    // Limit content size to avoid token limits
-    const maxChars = 30000;
+    // Limit content size to avoid token limits (increased from 30k to 60k)
+    const maxChars = 60000;
     if (textContent.length > maxChars) {
-      textContent = textContent.substring(0, maxChars) + "\n\n[Content truncated...]";
+      contentTruncated = true;
+      textContent = textContent.substring(0, maxChars) + 
+        `\n\n[⚠️ CONTEÚDO TRUNCADO: O arquivo original contém ${Math.ceil(textContent.length / 1000)}k caracteres. Apenas os primeiros ${maxChars / 1000}k foram processados pela IA.]`;
+      
+      // Update job with truncation status
+      await supabaseAdmin
+        .from("extraction_jobs")
+        .update({ content_truncated: true })
+        .eq("id", job_id);
     }
 
     // Create the analytical extraction prompt with anti-hallucination rules
