@@ -50,6 +50,145 @@ export type Database = {
         }
         Relationships: []
       }
+      extraction_jobs: {
+        Row: {
+          completed_at: string | null
+          created_at: string
+          created_by: string
+          error_message: string | null
+          file_hash: string
+          file_id: string
+          id: string
+          items_extracted: number | null
+          project_id: string
+          started_at: string | null
+          status: Database["public"]["Enums"]["extraction_status"]
+          tokens_used: number | null
+        }
+        Insert: {
+          completed_at?: string | null
+          created_at?: string
+          created_by: string
+          error_message?: string | null
+          file_hash: string
+          file_id: string
+          id?: string
+          items_extracted?: number | null
+          project_id: string
+          started_at?: string | null
+          status?: Database["public"]["Enums"]["extraction_status"]
+          tokens_used?: number | null
+        }
+        Update: {
+          completed_at?: string | null
+          created_at?: string
+          created_by?: string
+          error_message?: string | null
+          file_hash?: string
+          file_id?: string
+          id?: string
+          items_extracted?: number | null
+          project_id?: string
+          started_at?: string | null
+          status?: Database["public"]["Enums"]["extraction_status"]
+          tokens_used?: number | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "extraction_jobs_file_id_fkey"
+            columns: ["file_id"]
+            isOneToOne: false
+            referencedRelation: "project_files"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "extraction_jobs_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      knowledge_items: {
+        Row: {
+          category: Database["public"]["Enums"]["knowledge_category"]
+          confidence: number | null
+          content: string
+          deleted_at: string | null
+          deleted_by: string | null
+          evidence: string | null
+          evidence_page: number | null
+          extracted_at: string
+          extracted_by: string
+          extraction_job_id: string | null
+          id: string
+          project_id: string
+          source_file_id: string | null
+          title: string
+          validated_at: string | null
+          validated_by: string | null
+        }
+        Insert: {
+          category: Database["public"]["Enums"]["knowledge_category"]
+          confidence?: number | null
+          content: string
+          deleted_at?: string | null
+          deleted_by?: string | null
+          evidence?: string | null
+          evidence_page?: number | null
+          extracted_at?: string
+          extracted_by: string
+          extraction_job_id?: string | null
+          id?: string
+          project_id: string
+          source_file_id?: string | null
+          title: string
+          validated_at?: string | null
+          validated_by?: string | null
+        }
+        Update: {
+          category?: Database["public"]["Enums"]["knowledge_category"]
+          confidence?: number | null
+          content?: string
+          deleted_at?: string | null
+          deleted_by?: string | null
+          evidence?: string | null
+          evidence_page?: number | null
+          extracted_at?: string
+          extracted_by?: string
+          extraction_job_id?: string | null
+          id?: string
+          project_id?: string
+          source_file_id?: string | null
+          title?: string
+          validated_at?: string | null
+          validated_by?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "knowledge_items_extraction_job_id_fkey"
+            columns: ["extraction_job_id"]
+            isOneToOne: false
+            referencedRelation: "extraction_jobs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "knowledge_items_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "knowledge_items_source_file_id_fkey"
+            columns: ["source_file_id"]
+            isOneToOne: false
+            referencedRelation: "project_files"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       profiles: {
         Row: {
           avatar_url: string | null
@@ -591,18 +730,31 @@ export type Database = {
         Args: { _project_id: string; _user_id: string }
         Returns: Database["public"]["Enums"]["project_role"]
       }
-      global_search: {
-        Args: { search_query: string }
-        Returns: {
-          project_id: string
-          project_name: string
-          relevance: number
-          result_id: string
-          result_type: string
-          subtitle: string
-          title: string
-        }[]
-      }
+      global_search:
+        | {
+            Args: { search_query: string }
+            Returns: {
+              project_id: string
+              project_name: string
+              relevance: number
+              result_id: string
+              result_type: string
+              subtitle: string
+              title: string
+            }[]
+          }
+        | {
+            Args: { p_user_id: string; search_query: string }
+            Returns: {
+              id: string
+              project_id: string
+              project_name: string
+              relevance: number
+              subtitle: string
+              title: string
+              type: string
+            }[]
+          }
       has_project_role: {
         Args: {
           _min_role: Database["public"]["Enums"]["project_role"]
@@ -625,6 +777,13 @@ export type Database = {
     }
     Enums: {
       app_role: "admin" | "user"
+      extraction_status: "pending" | "processing" | "completed" | "failed"
+      knowledge_category:
+        | "compound"
+        | "parameter"
+        | "result"
+        | "method"
+        | "observation"
       project_role: "owner" | "manager" | "researcher" | "viewer"
       project_status:
         | "planning"
@@ -768,6 +927,14 @@ export const Constants = {
   public: {
     Enums: {
       app_role: ["admin", "user"],
+      extraction_status: ["pending", "processing", "completed", "failed"],
+      knowledge_category: [
+        "compound",
+        "parameter",
+        "result",
+        "method",
+        "observation",
+      ],
       project_role: ["owner", "manager", "researcher", "viewer"],
       project_status: [
         "planning",
