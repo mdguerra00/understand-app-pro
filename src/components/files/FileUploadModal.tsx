@@ -91,15 +91,36 @@ export function FileUploadModal({
       const sanitizedName = file.name.replace(/[^a-zA-Z0-9.-]/g, '_');
       const storagePath = `${projectId}/${timestamp}_${sanitizedName}`;
 
+      // Debug: Log file info
+      console.log('Upload debug:', {
+        fileName: file.name,
+        fileSize: file.size,
+        fileType: file.type,
+        storagePath,
+        isBlob: file instanceof Blob,
+      });
+
       // Simulate progress for better UX
       const progressInterval = setInterval(() => {
         setProgress((prev) => Math.min(prev + 10, 90));
       }, 200);
 
+      // Read file as ArrayBuffer to ensure content is properly sent
+      const arrayBuffer = await file.arrayBuffer();
+      const fileBlob = new Blob([arrayBuffer], { type: file.type });
+
+      console.log('Blob created:', {
+        blobSize: fileBlob.size,
+        blobType: fileBlob.type,
+      });
+
       // Upload to storage
       const { error: storageError } = await supabase.storage
         .from('project-files')
-        .upload(storagePath, file);
+        .upload(storagePath, fileBlob, {
+          contentType: file.type,
+          upsert: false,
+        });
 
       clearInterval(progressInterval);
 
