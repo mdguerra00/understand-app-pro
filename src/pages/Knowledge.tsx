@@ -8,8 +8,8 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Brain, Search, Sparkles, Filter, LayoutGrid, List } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/hooks/useAuth';
-import { KnowledgeCard, KnowledgeItem } from '@/components/knowledge/KnowledgeCard';
-import { KnowledgeFilters, KnowledgeCategory } from '@/components/knowledge/KnowledgeFilters';
+import { KnowledgeCard, KnowledgeItem, KnowledgeCategory } from '@/components/knowledge/KnowledgeCard';
+import { KnowledgeFilters } from '@/components/knowledge/KnowledgeFilters';
 import { KnowledgeDetailModal } from '@/components/knowledge/KnowledgeDetailModal';
 import { ExtractionStatus } from '@/components/knowledge/ExtractionStatus';
 import {

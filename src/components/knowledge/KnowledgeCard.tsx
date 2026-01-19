@@ -9,16 +9,33 @@ import {
   Lightbulb,
   FileText,
   CheckCircle2,
-  ExternalLink
+  ExternalLink,
+  TrendingUp,
+  Link2,
+  AlertTriangle,
+  Scale,
+  Zap
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
+
+export type KnowledgeCategory = 
+  | 'compound' 
+  | 'parameter' 
+  | 'result' 
+  | 'method' 
+  | 'observation'
+  | 'finding'
+  | 'correlation'
+  | 'anomaly'
+  | 'benchmark'
+  | 'recommendation';
 
 export interface KnowledgeItem {
   id: string;
   project_id: string;
   source_file_id: string | null;
-  category: 'compound' | 'parameter' | 'result' | 'method' | 'observation';
+  category: KnowledgeCategory;
   title: string;
   content: string;
   evidence: string | null;
@@ -36,36 +53,78 @@ interface KnowledgeCardProps {
   onViewFile?: () => void;
 }
 
-const categoryConfig = {
+export const categoryConfig: Record<KnowledgeCategory, {
+  label: string;
+  icon: typeof FlaskConical;
+  color: string;
+  description: string;
+}> = {
+  // New analytical categories (prioritized)
+  finding: {
+    label: 'Descoberta',
+    icon: TrendingUp,
+    color: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900 dark:text-emerald-200',
+    description: 'Descoberta quantitativa com valores numéricos específicos',
+  },
+  correlation: {
+    label: 'Correlação',
+    icon: Link2,
+    color: 'bg-cyan-100 text-cyan-800 dark:bg-cyan-900 dark:text-cyan-200',
+    description: 'Relação identificada entre duas ou mais variáveis',
+  },
+  anomaly: {
+    label: 'Anomalia',
+    icon: AlertTriangle,
+    color: 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200',
+    description: 'Dados fora do padrão que requerem atenção',
+  },
+  benchmark: {
+    label: 'Benchmark',
+    icon: Scale,
+    color: 'bg-indigo-100 text-indigo-800 dark:bg-indigo-900 dark:text-indigo-200',
+    description: 'Comparativo com referência (norma, controle, literatura)',
+  },
+  recommendation: {
+    label: 'Recomendação',
+    icon: Zap,
+    color: 'bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200',
+    description: 'Sugestão de ação baseada na análise dos dados',
+  },
+  // Legacy categories (still supported)
   compound: {
     label: 'Composto',
     icon: FlaskConical,
     color: 'bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200',
+    description: 'Ingrediente ou formulação química identificada',
   },
   parameter: {
     label: 'Parâmetro',
     icon: Gauge,
     color: 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200',
+    description: 'Medição ou especificação técnica',
   },
   result: {
     label: 'Resultado',
     icon: Target,
     color: 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200',
+    description: 'Conclusão ou resultado de teste',
   },
   method: {
     label: 'Metodologia',
     icon: BookOpen,
     color: 'bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200',
+    description: 'Procedimento ou método utilizado',
   },
   observation: {
     label: 'Observação',
     icon: Lightbulb,
     color: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200',
+    description: 'Nota ou observação importante',
   },
 };
 
 export function KnowledgeCard({ item, onClick, onViewFile }: KnowledgeCardProps) {
-  const config = categoryConfig[item.category];
+  const config = categoryConfig[item.category] || categoryConfig.observation;
   const Icon = config.icon;
   const confidencePercent = Math.round((item.confidence || 0) * 100);
 
