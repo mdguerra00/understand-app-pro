@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import * as XLSX from "https://esm.sh/xlsx@0.18.5?target=deno";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -12,6 +13,124 @@ interface ExtractionInsight {
   content: string;
   evidence: string;
   confidence: number;
+}
+
+interface InsightWithVerification extends ExtractionInsight {
+  evidence_verified: boolean;
+}
+
+/**
+ * Validates if the evidence text exists in the original content
+ * Uses fuzzy matching to account for whitespace/formatting differences
+ */
+function verifyEvidence(evidence: string, originalContent: string): boolean {
+  if (!evidence || !originalContent) return false;
+  
+  // Normalize both strings for comparison
+  const normalizeText = (text: string) => 
+    text.toLowerCase()
+      .replace(/\s+/g, ' ')
+      .replace(/[^\w\s\d.,%-]/g, '')
+      .trim();
+  
+  const normalizedEvidence = normalizeText(evidence);
+  const normalizedContent = normalizeText(originalContent);
+  
+  // Check if evidence exists in content
+  if (normalizedContent.includes(normalizedEvidence)) {
+    return true;
+  }
+  
+  // Try with first 50 chars of evidence (in case of truncation)
+  const shortEvidence = normalizedEvidence.substring(0, 50);
+  if (shortEvidence.length >= 20 && normalizedContent.includes(shortEvidence)) {
+    return true;
+  }
+  
+  // Extract key numbers from evidence and verify they exist in content
+  const numbersInEvidence = evidence.match(/\d+[.,]?\d*/g) || [];
+  if (numbersInEvidence.length > 0) {
+    const foundNumbers = numbersInEvidence.filter(num => 
+      originalContent.includes(num)
+    );
+    // If at least 60% of numbers are found, consider it partially verified
+    return foundNumbers.length >= Math.ceil(numbersInEvidence.length * 0.6);
+  }
+  
+  return false;
+}
+
+/**
+ * Parse Excel/spreadsheet files into readable tabular text
+ */
+function parseSpreadsheet(arrayBuffer: ArrayBuffer, fileName: string): { content: string; quality: string } {
+  try {
+    const workbook = XLSX.read(arrayBuffer, { type: "array" });
+    
+    const sheets: string[] = [];
+    let totalCells = 0;
+    let emptyCells = 0;
+    
+    for (const sheetName of workbook.SheetNames) {
+      const sheet = workbook.Sheets[sheetName];
+      const csv = XLSX.utils.sheet_to_csv(sheet, { blankrows: false });
+      
+      // Count data quality
+      const rows = csv.split('\n').filter(r => r.trim());
+      for (const row of rows) {
+        const cells = row.split(',');
+        totalCells += cells.length;
+        emptyCells += cells.filter(c => !c.trim()).length;
+      }
+      
+      if (csv.trim()) {
+        sheets.push(`=== Planilha: ${sheetName} ===\n${csv}`);
+      }
+    }
+    
+    const content = sheets.join('\n\n');
+    const dataRatio = totalCells > 0 ? (totalCells - emptyCells) / totalCells : 0;
+    
+    // Determine parsing quality
+    let quality = 'good';
+    if (!content || content.length < 100) {
+      quality = 'poor';
+    } else if (dataRatio < 0.3) {
+      quality = 'partial';
+    }
+    
+    console.log(`Parsed spreadsheet ${fileName}: ${sheets.length} sheets, ${totalCells} cells, quality: ${quality}`);
+    
+    return { content, quality };
+  } catch (error) {
+    console.error(`Failed to parse spreadsheet ${fileName}:`, error);
+    return { 
+      content: `[ERRO: Não foi possível ler a planilha ${fileName}. Formato incompatível ou arquivo corrompido.]`,
+      quality: 'failed'
+    };
+  }
+}
+
+/**
+ * Parse CSV files
+ */
+function parseCSV(text: string): { content: string; quality: string } {
+  try {
+    const lines = text.split('\n').filter(l => l.trim());
+    if (lines.length < 2) {
+      return { content: text, quality: 'poor' };
+    }
+    
+    // Format as readable table
+    const formatted = lines.map((line, i) => {
+      if (i === 0) return `CABEÇALHO: ${line}`;
+      return `LINHA ${i}: ${line}`;
+    }).join('\n');
+    
+    return { content: formatted, quality: 'good' };
+  } catch {
+    return { content: text, quality: 'partial' };
+  }
 }
 
 serve(async (req) => {
@@ -107,22 +226,89 @@ serve(async (req) => {
 
     // Extract text content based on file type
     let textContent = "";
+    let parsingQuality = "unknown";
     const mimeType = fileData.mime_type || "";
+    const fileName = fileData.name || "";
 
-    if (mimeType.startsWith("text/") || mimeType === "application/json") {
+    // Handle Excel files
+    if (mimeType.includes("spreadsheet") || 
+        mimeType.includes("excel") || 
+        mimeType === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" ||
+        mimeType === "application/vnd.ms-excel" ||
+        fileName.endsWith(".xlsx") || 
+        fileName.endsWith(".xls")) {
+      
+      console.log(`Parsing Excel file: ${fileName}`);
+      const arrayBuffer = await fileContent.arrayBuffer();
+      const parsed = parseSpreadsheet(arrayBuffer, fileName);
+      textContent = parsed.content;
+      parsingQuality = parsed.quality;
+      
+    } else if (mimeType === "text/csv" || fileName.endsWith(".csv")) {
+      // Handle CSV files
+      const rawText = await fileContent.text();
+      const parsed = parseCSV(rawText);
+      textContent = parsed.content;
+      parsingQuality = parsed.quality;
+      
+    } else if (mimeType.startsWith("text/") || mimeType === "application/json") {
       textContent = await fileContent.text();
+      parsingQuality = textContent.length > 100 ? "good" : "partial";
+      
     } else if (mimeType === "application/pdf") {
       // For PDFs, we'll send the base64 to the AI for analysis
       const arrayBuffer = await fileContent.arrayBuffer();
       const base64 = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
       textContent = `[PDF Document: ${fileData.name}]\n\nBase64 content available for analysis. Please extract R&D insights from this document.`;
+      parsingQuality = "pdf_base64";
+      
     } else {
       // For other file types, try to extract text
       try {
         textContent = await fileContent.text();
+        // Check if it looks like binary garbage
+        const nonPrintable = (textContent.match(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g) || []).length;
+        if (nonPrintable > textContent.length * 0.1) {
+          textContent = `[AVISO: Arquivo binário não suportado: ${fileData.name}. Formato: ${mimeType}]`;
+          parsingQuality = "unsupported";
+        } else {
+          parsingQuality = "partial";
+        }
       } catch {
-        textContent = `[Binary File: ${fileData.name}] - Unable to extract text content.`;
+        textContent = `[ERRO: Não foi possível ler o arquivo: ${fileData.name}]`;
+        parsingQuality = "failed";
       }
+    }
+
+    // Update job with parsing quality
+    await supabaseAdmin
+      .from("extraction_jobs")
+      .update({ parsing_quality: parsingQuality })
+      .eq("id", job_id);
+
+    console.log(`File parsed with quality: ${parsingQuality}, content length: ${textContent.length}`);
+
+    // If parsing failed, return early with appropriate error
+    if (parsingQuality === "failed" || parsingQuality === "unsupported") {
+      await supabaseAdmin
+        .from("extraction_jobs")
+        .update({
+          status: "completed",
+          completed_at: new Date().toISOString(),
+          items_extracted: 0,
+          error_message: `Arquivo não pôde ser processado: ${parsingQuality}`,
+        })
+        .eq("id", job_id);
+
+      return new Response(
+        JSON.stringify({
+          success: true,
+          insights_count: 0,
+          parsing_quality: parsingQuality,
+          message: "Arquivo não suportado para extração de conhecimento",
+        }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
     }
 
     // Limit content size to avoid token limits
@@ -131,62 +317,82 @@ serve(async (req) => {
       textContent = textContent.substring(0, maxChars) + "\n\n[Content truncated...]";
     }
 
-    // Create the analytical extraction prompt
+    // Create the analytical extraction prompt with anti-hallucination rules
     const systemPrompt = `Você é um cientista sênior de P&D odontológico/dental analisando dados experimentais.
 
-Sua tarefa NÃO é simplesmente catalogar o que existe no documento, mas sim ANALISAR PROFUNDAMENTE os dados e extrair DESCOBERTAS SIGNIFICATIVAS com valor científico real.
+Sua tarefa é ANALISAR PROFUNDAMENTE os dados e extrair DESCOBERTAS SIGNIFICATIVAS com valor científico real.
 
-## REGRAS CRÍTICAS:
+## ⚠️ REGRA ABSOLUTA DE INTEGRIDADE - NUNCA VIOLAR:
 
-1. **SEMPRE extraia VALORES NUMÉRICOS concretos** (ex: "145.2 MPa ±8.3", "pH 6.8", "concentração 15%")
-2. **IDENTIFIQUE PADRÕES e CORRELAÇÕES** nos dados quando existirem
-3. **COMPARE com REFERÊNCIAS** quando disponíveis (normas ISO, literatura científica, controles)
-4. **APONTE ANOMALIAS** ou resultados fora do esperado que merecem atenção
-5. **SUGIRA AÇÕES** quando os dados indicarem oportunidades ou problemas
+1. **NUNCA invente ou estime valores** que NÃO estejam EXPLICITAMENTE escritos no documento
+2. O campo "evidence" DEVE ser uma **CÓPIA EXATA** de um trecho do documento original
+3. Se os dados estiverem ilegíveis, incompletos ou o formato não permitir leitura, retorne um único insight de categoria "observation" explicando a limitação
+4. **Preferível extrair ZERO insights do que UM insight fabricado**
+5. Se você não consegue ver números/valores específicos no texto, NÃO os mencione na análise
 
-## O QUE NÃO FAZER (exemplos ruins):
-❌ "O documento contém informação sobre resistência flexural"
-❌ "Foram utilizados monômeros como Bis-GMA e UDMA"
-❌ "Há dados estatísticos de média e desvio padrão"
-❌ "O arquivo apresenta resultados de testes"
+## QUANDO EXTRAIR INSIGHTS:
 
-## O QUE FAZER (exemplos bons):
-✅ "Formulação V3 atingiu 148.5 MPa (±8.2), superando requisito ISO 4049 de 80 MPa em 85.6%"
-✅ "Correlação positiva identificada: aumento de UDMA de 10%→20% elevou resistência de 120→145 MPa (+20.8%)"
-✅ "ALERTA: CP7 (98 MPa) está 2.5σ abaixo da média do grupo - investigar processo de fabricação"
-✅ "Recomendação: Formulação com 18% UDMA apresentou melhor custo-benefício (142 MPa, 15% mais barata)"
-✅ "Benchmark superado: Resistência média de 143 MPa excede literatura (130 MPa) em 10%"
+✅ EXTRAIA quando você VÊ explicitamente no documento:
+- Valores numéricos concretos (ex: "145.2 MPa", "pH 6.8", "15%")
+- Comparações diretas com referências citadas
+- Anomalias descritas pelo autor
+- Conclusões escritas pelo pesquisador
+
+❌ NÃO EXTRAIA / NÃO INVENTE:
+- Valores que você "acha" que deveriam estar lá
+- Correlações não explicitamente mencionadas
+- Comparações com normas que você conhece mas não estão no documento
+- Análises estatísticas não apresentadas
 
 ## CATEGORIAS DE INSIGHTS:
 
-- **finding**: Descoberta quantitativa com valores numéricos específicos e significado científico
-- **correlation**: Relação identificada entre duas ou mais variáveis com dados de suporte
-- **anomaly**: Dados fora do padrão, outliers, ou resultados que requerem atenção/investigação
-- **benchmark**: Comparativo com referência (norma ISO, controle, literatura, versão anterior)
-- **recommendation**: Sugestão de ação baseada na análise dos dados
+- **finding**: Descoberta quantitativa com valores numéricos VISTOS no documento
+- **correlation**: Relação EXPLICITAMENTE identificada pelo autor entre variáveis
+- **anomaly**: Dados fora do padrão APONTADOS no documento
+- **benchmark**: Comparativo com referência CITADA no documento
+- **recommendation**: Sugestão de ação ESCRITA pelo autor
+- **observation**: Observações gerais ou LIMITAÇÕES na leitura do arquivo
 
-Também aceitas (usar com moderação para contexto essencial):
-- **compound**: Apenas quando houver DESCOBERTA sobre o composto (não listar ingredientes)
-- **parameter**: Apenas quando houver ANÁLISE do parâmetro (não listar medições)
-- **result**: Apenas conclusões significativas com impacto prático
-- **method**: Apenas insights sobre a metodologia (não descrever procedimentos)
-- **observation**: Observações críticas não classificáveis acima
+Também aceitas (usar com moderação):
+- **compound**, **parameter**, **result**, **method**: Apenas para descobertas significativas
 
 ## FORMATO DE SAÍDA:
 
-Para cada insight extraído, forneça:
+Para cada insight:
 1. **category**: Uma das categorias acima
-2. **title**: Título analítico resumido (máx 100 caracteres) - deve conter o insight, não descrição
-3. **content**: Análise completa com valores, comparações e significado (máx 500 caracteres)
-4. **evidence**: Trecho exato do documento que comprova a análise (máx 300 caracteres)
-5. **confidence**: Nível de confiança de 0 a 1 (0.95+ para dados diretos, 0.7-0.9 para inferências)
+2. **title**: Título analítico resumido (máx 100 chars) - DEVE conter o insight real
+3. **content**: Análise completa com valores EXATOS do documento (máx 500 chars)
+4. **evidence**: **TRECHO EXATO COPIADO** do documento que comprova a análise (máx 300 chars)
+5. **confidence**: 
+   - 0.95+ para dados diretamente copiados do documento
+   - 0.7-0.9 para inferências baseadas em dados do documento
+   - 0.5-0.7 se houver incerteza sobre a leitura
+
+## SE O ARQUIVO NÃO PUDER SER LIDO CORRETAMENTE:
+
+Retorne apenas UM insight:
+{
+  "category": "observation",
+  "title": "Limitação na leitura do arquivo",
+  "content": "Descreva o problema específico: dados ilegíveis, formato binário, etc.",
+  "evidence": "Trecho que mostra o problema ou 'Arquivo em formato não-texto'",
+  "confidence": 0.3
+}
 
 Projeto: ${fileData.projects?.name || "Desconhecido"}
-Arquivo: ${fileData.name}`;
+Arquivo: ${fileData.name}
+Qualidade do parsing: ${parsingQuality}`;
 
-    const userPrompt = `Analise profundamente o seguinte documento e extraia DESCOBERTAS ANALÍTICAS de P&D (não simplesmente liste o conteúdo):
+    const userPrompt = `Analise o documento abaixo e extraia APENAS descobertas que você pode COMPROVAR com evidências do texto.
 
-${textContent}`;
+LEMBRE-SE: O campo "evidence" deve ser uma CÓPIA EXATA do documento. Nunca invente valores.
+
+CONTEÚDO DO DOCUMENTO:
+---
+${textContent}
+---
+
+Se o conteúdo acima parecer ilegível ou corrompido, retorne apenas um insight de "observation" explicando o problema.`;
 
     // Call Lovable AI Gateway with tool calling
     const aiResponse = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
@@ -206,7 +412,7 @@ ${textContent}`;
             type: "function",
             function: {
               name: "extract_insights",
-              description: "Extract analytical R&D discoveries from the document with quantitative data, correlations, anomalies, benchmarks, and recommendations",
+              description: "Extract VERIFIED analytical R&D discoveries from the document. Evidence must be EXACT quotes from the document.",
               parameters: {
                 type: "object",
                 properties: {
@@ -277,27 +483,51 @@ ${textContent}`;
     }
 
     const aiData = await aiResponse.json();
-    console.log("AI Response:", JSON.stringify(aiData, null, 2));
+    console.log("AI Response received, processing insights...");
 
     // Extract insights from tool call
-    let insights: ExtractionInsight[] = [];
+    let rawInsights: ExtractionInsight[] = [];
     const toolCall = aiData.choices?.[0]?.message?.tool_calls?.[0];
     
     if (toolCall?.function?.arguments) {
       try {
         const args = JSON.parse(toolCall.function.arguments);
-        insights = args.insights || [];
+        rawInsights = args.insights || [];
       } catch (parseError) {
         console.error("Failed to parse tool arguments:", parseError);
       }
     }
 
+    // Validate evidence for each insight
+    const validatedInsights: InsightWithVerification[] = rawInsights.map((insight) => {
+      const evidenceVerified = verifyEvidence(insight.evidence, textContent);
+      
+      // Reduce confidence if evidence not verified
+      let adjustedConfidence = insight.confidence;
+      if (!evidenceVerified) {
+        adjustedConfidence = Math.min(0.5, insight.confidence * 0.5);
+        console.log(`Evidence NOT verified for insight: "${insight.title.substring(0, 50)}..." - confidence reduced to ${adjustedConfidence}`);
+      } else {
+        console.log(`Evidence VERIFIED for insight: "${insight.title.substring(0, 50)}..."`);
+      }
+      
+      return {
+        ...insight,
+        confidence: adjustedConfidence,
+        evidence_verified: evidenceVerified,
+      };
+    });
+
+    // Log verification stats
+    const verifiedCount = validatedInsights.filter(i => i.evidence_verified).length;
+    console.log(`Evidence verification: ${verifiedCount}/${validatedInsights.length} insights verified`);
+
     // Estimate tokens used (rough approximation)
-    const tokensUsed = Math.ceil((textContent.length + JSON.stringify(insights).length) / 4);
+    const tokensUsed = Math.ceil((textContent.length + JSON.stringify(validatedInsights).length) / 4);
 
     // Save insights to database
-    if (insights.length > 0) {
-      const insightsToInsert = insights.map((insight) => ({
+    if (validatedInsights.length > 0) {
+      const insightsToInsert = validatedInsights.map((insight) => ({
         project_id: fileData.project_id,
         source_file_id: file_id,
         extraction_job_id: job_id,
@@ -306,6 +536,7 @@ ${textContent}`;
         content: insight.content.substring(0, 500),
         evidence: insight.evidence?.substring(0, 300) || null,
         confidence: Math.min(1, Math.max(0, insight.confidence)),
+        evidence_verified: insight.evidence_verified,
         extracted_by: user.id,
       }));
 
@@ -325,17 +556,20 @@ ${textContent}`;
       .update({
         status: "completed",
         completed_at: new Date().toISOString(),
-        items_extracted: insights.length,
+        items_extracted: validatedInsights.length,
         tokens_used: tokensUsed,
+        parsing_quality: parsingQuality,
       })
       .eq("id", job_id);
 
-    console.log(`Extraction completed: ${insights.length} insights extracted`);
+    console.log(`Extraction completed: ${validatedInsights.length} insights (${verifiedCount} verified)`);
 
     return new Response(
       JSON.stringify({
         success: true,
-        insights_count: insights.length,
+        insights_count: validatedInsights.length,
+        verified_count: verifiedCount,
+        parsing_quality: parsingQuality,
         tokens_used: tokensUsed,
       }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }

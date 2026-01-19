@@ -9,12 +9,16 @@ import {
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
+import { Alert, AlertDescription } from '@/components/ui/alert';
 import { 
   FileText,
   CheckCircle2,
   ExternalLink,
   Calendar,
-  User
+  User,
+  ShieldCheck,
+  ShieldAlert,
+  AlertTriangle
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
@@ -113,16 +117,50 @@ export function KnowledgeDetailModal({
             <Badge variant="outline" className={config.color}>
               {config.label}
             </Badge>
-            <Badge variant="secondary">
+            <Badge 
+              variant="secondary"
+              className={confidencePercent >= 70 ? '' : 'bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200'}
+            >
               {confidencePercent}% confiança
             </Badge>
+            {item.evidence_verified !== undefined && (
+              <Badge 
+                variant={item.evidence_verified ? "default" : "secondary"}
+                className={item.evidence_verified 
+                  ? "bg-green-600" 
+                  : "bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200"
+                }
+              >
+                {item.evidence_verified ? (
+                  <>
+                    <ShieldCheck className="h-3 w-3 mr-1" />
+                    Verificado
+                  </>
+                ) : (
+                  <>
+                    <ShieldAlert className="h-3 w-3 mr-1" />
+                    Não verificado
+                  </>
+                )}
+              </Badge>
+            )}
             {item.validated_by && (
-              <Badge variant="default" className="bg-green-600">
+              <Badge variant="default" className="bg-blue-600">
                 <CheckCircle2 className="h-3 w-3 mr-1" />
-                Validado
+                Validado manualmente
               </Badge>
             )}
           </div>
+
+          {/* Warning for unverified evidence */}
+          {item.evidence_verified === false && (
+            <Alert variant="default" className="border-amber-300 bg-amber-50 dark:bg-amber-950">
+              <AlertTriangle className="h-4 w-4 text-amber-600" />
+              <AlertDescription className="text-amber-800 dark:text-amber-200">
+                A evidência citada não foi encontrada no documento original. Verifique manualmente antes de confiar neste insight.
+              </AlertDescription>
+            </Alert>
+          )}
 
           {/* Content */}
           <div className="space-y-2">
