@@ -4,13 +4,16 @@ import { useAuth } from '@/hooks/useAuth';
 import { Card, CardContent } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
 import { Badge } from '@/components/ui/badge';
-import { Loader2, CheckCircle2, XCircle, Clock } from 'lucide-react';
+import { Loader2, CheckCircle2, XCircle, Clock, AlertTriangle, FileSpreadsheet } from 'lucide-react';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 
 interface ExtractionJob {
   id: string;
   status: string;
   items_extracted: number | null;
   created_at: string;
+  sheets_found: number | null;
+  content_truncated: boolean | null;
   project_files: { name: string } | null;
 }
 
@@ -22,7 +25,7 @@ export function ExtractionStatus() {
     queryFn: async () => {
       const { data, error } = await supabase
         .from('extraction_jobs')
-        .select('id, status, items_extracted, created_at, project_files(name)')
+        .select('id, status, items_extracted, created_at, sheets_found, content_truncated, project_files(name)')
         .in('status', ['pending', 'processing'])
         .order('created_at', { ascending: false })
         .limit(5);
@@ -76,20 +79,28 @@ interface ExtractionBadgeProps {
   fileId: string;
 }
 
+interface ExtendedJob {
+  id: string;
+  status: string;
+  items_extracted: number | null;
+  sheets_found: number | null;
+  content_truncated: boolean | null;
+}
+
 export function ExtractionBadge({ fileId }: ExtractionBadgeProps) {
   const { data: job } = useQuery({
     queryKey: ['file-extraction', fileId],
     queryFn: async () => {
       const { data, error } = await supabase
         .from('extraction_jobs')
-        .select('id, status, items_extracted')
+        .select('id, status, items_extracted, sheets_found, content_truncated')
         .eq('file_id', fileId)
         .order('created_at', { ascending: false })
         .limit(1)
         .maybeSingle();
 
       if (error) throw error;
-      return data;
+      return data as ExtendedJob | null;
     },
     refetchInterval: (query) => {
       // Only poll if job is pending or processing
@@ -122,12 +133,45 @@ export function ExtractionBadge({ fileId }: ExtractionBadgeProps) {
   }
 
   if (job.status === 'completed' && job.items_extracted && job.items_extracted > 0) {
-    return (
+    const hasSheetInfo = job.sheets_found && job.sheets_found > 1;
+    const wasTruncated = job.content_truncated;
+    
+    const badgeContent = (
       <Badge variant="secondary" className="text-xs gap-1">
         <CheckCircle2 className="h-3 w-3 text-green-500" />
         {job.items_extracted} insight{job.items_extracted > 1 ? 's' : ''}
+        {hasSheetInfo && (
+          <FileSpreadsheet className="h-3 w-3 ml-1 text-muted-foreground" />
+        )}
+        {wasTruncated && (
+          <AlertTriangle className="h-3 w-3 ml-1 text-amber-500" />
+        )}
       </Badge>
     );
+
+    if (hasSheetInfo || wasTruncated) {
+      return (
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              {badgeContent}
+            </TooltipTrigger>
+            <TooltipContent>
+              <div className="text-xs space-y-1">
+                {hasSheetInfo && (
+                  <p>{job.sheets_found} abas processadas</p>
+                )}
+                {wasTruncated && (
+                  <p className="text-amber-500">⚠️ Conteúdo truncado (arquivo muito grande)</p>
+                )}
+              </div>
+            </TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+      );
+    }
+
+    return badgeContent;
   }
 
   if (job.status === 'failed') {

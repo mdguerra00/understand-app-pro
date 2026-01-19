@@ -53,6 +53,7 @@ export type Database = {
       extraction_jobs: {
         Row: {
           completed_at: string | null
+          content_truncated: boolean | null
           created_at: string
           created_by: string
           error_message: string | null
@@ -62,12 +63,14 @@ export type Database = {
           items_extracted: number | null
           parsing_quality: string | null
           project_id: string
+          sheets_found: number | null
           started_at: string | null
           status: Database["public"]["Enums"]["extraction_status"]
           tokens_used: number | null
         }
         Insert: {
           completed_at?: string | null
+          content_truncated?: boolean | null
           created_at?: string
           created_by: string
           error_message?: string | null
@@ -77,12 +80,14 @@ export type Database = {
           items_extracted?: number | null
           parsing_quality?: string | null
           project_id: string
+          sheets_found?: number | null
           started_at?: string | null
           status?: Database["public"]["Enums"]["extraction_status"]
           tokens_used?: number | null
         }
         Update: {
           completed_at?: string | null
+          content_truncated?: boolean | null
           created_at?: string
           created_by?: string
           error_message?: string | null
@@ -92,6 +97,7 @@ export type Database = {
           items_extracted?: number | null
           parsing_quality?: string | null
           project_id?: string
+          sheets_found?: number | null
           started_at?: string | null
           status?: Database["public"]["Enums"]["extraction_status"]
           tokens_used?: number | null
