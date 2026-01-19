@@ -18,7 +18,8 @@ import {
   User,
   ShieldCheck,
   ShieldAlert,
-  AlertTriangle
+  AlertTriangle,
+  Trash2
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
@@ -46,6 +47,7 @@ export function KnowledgeDetailModal({
   const { user } = useAuth();
   const { toast } = useToast();
   const [validating, setValidating] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   if (!item) return null;
 
@@ -91,6 +93,40 @@ export function KnowledgeDetailModal({
       });
     } finally {
       setValidating(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!user) return;
+    
+    setDeleting(true);
+    try {
+      const { error } = await supabase
+        .from('knowledge_items')
+        .update({
+          deleted_at: new Date().toISOString(),
+          deleted_by: user.id,
+        })
+        .eq('id', item.id);
+
+      if (error) throw error;
+
+      toast({
+        title: 'Insight descartado',
+        description: 'O insight foi removido da base de conhecimento.',
+      });
+
+      onUpdate?.();
+      onOpenChange(false);
+    } catch (error) {
+      console.error('Delete error:', error);
+      toast({
+        title: 'Erro ao descartar',
+        description: 'Não foi possível descartar o insight.',
+        variant: 'destructive',
+      });
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -212,6 +248,15 @@ export function KnowledgeDetailModal({
         </div>
 
         <DialogFooter className="flex-col sm:flex-row gap-2">
+          <Button 
+            variant="destructive" 
+            onClick={handleDelete}
+            disabled={deleting}
+            className="sm:mr-auto"
+          >
+            <Trash2 className="h-4 w-4 mr-2" />
+            {deleting ? 'Descartando...' : 'Descartar insight'}
+          </Button>
           {!item.validated_by && (
             <Button 
               variant="outline" 
