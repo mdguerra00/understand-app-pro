@@ -9,7 +9,7 @@ import {
   CommandList,
 } from '@/components/ui/command';
 import { Badge } from '@/components/ui/badge';
-import { FolderKanban, CheckSquare, FileIcon, FileText } from 'lucide-react';
+import { FolderKanban, CheckSquare, FileIcon, FileText, Brain } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 
 interface SearchResult {
@@ -90,6 +90,8 @@ export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
       navigate(`/projects/${result.project_id}?tab=files&file=${result.result_id}`);
     } else if (result.result_type === 'report') {
       navigate(`/projects/${result.project_id}?tab=reports&report=${result.result_id}`);
+    } else if (result.result_type === 'knowledge') {
+      navigate(`/knowledge`);
     }
   };
 
@@ -103,6 +105,8 @@ export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
         return <FileIcon className="mr-2 h-4 w-4" />;
       case 'report':
         return <FileText className="mr-2 h-4 w-4" />;
+      case 'knowledge':
+        return <Brain className="mr-2 h-4 w-4" />;
       default:
         return null;
     }
@@ -118,6 +122,8 @@ export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
         return 'Arquivo';
       case 'report':
         return 'Relatório';
+      case 'knowledge':
+        return 'Conhecimento';
       default:
         return type;
     }
@@ -127,6 +133,7 @@ export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
   const taskResults = results.filter((r) => r.result_type === 'task');
   const fileResults = results.filter((r) => r.result_type === 'file');
   const reportResults = results.filter((r) => r.result_type === 'report');
+  const knowledgeResults = results.filter((r) => r.result_type === 'knowledge');
 
   return (
     <CommandDialog open={open} onOpenChange={onOpenChange}>

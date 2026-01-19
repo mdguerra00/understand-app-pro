@@ -161,6 +161,26 @@ export function FileUploadModal({
         uploaded_by: user.id,
       });
 
+      // Create extraction job and trigger AI extraction
+      const fileHash = `${file.name}-${file.size}-${Date.now()}`;
+      const { data: jobData } = await supabase
+        .from('extraction_jobs')
+        .insert({
+          file_id: fileRecord.id,
+          project_id: projectId,
+          file_hash: fileHash,
+          created_by: user.id,
+        })
+        .select()
+        .single();
+
+      // Trigger extraction asynchronously (don't wait)
+      if (jobData) {
+        supabase.functions.invoke('extract-knowledge', {
+          body: { file_id: fileRecord.id, job_id: jobData.id },
+        }).catch(console.error);
+      }
+
       setProgress(100);
 
       toast({
