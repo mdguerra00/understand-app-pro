@@ -32,11 +32,13 @@ import {
   CheckCircle,
   Clock,
   Archive,
+  Sparkles,
 } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/hooks/useAuth';
 import { ReportEditorModal } from './ReportEditorModal';
+import { GenerateReportButton } from './GenerateReportButton';
 import { format } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import type { Database } from '@/integrations/supabase/types';
@@ -56,6 +58,7 @@ interface Report {
   submitted_at: string | null;
   approved_at: string | null;
   review_notes: string | null;
+  generated_by_ai?: boolean;
 }
 
 interface ReportsListProps {
@@ -158,6 +161,29 @@ export function ReportsList({ projectId, initialReportId, onReportOpened }: Repo
     setIsEditorOpen(true);
   };
 
+  const handleAIGenerated = (reportId: string) => {
+    fetchReports().then(() => {
+      const report = reports.find(r => r.id === reportId);
+      if (report) {
+        setSelectedReport(report);
+        setIsEditorOpen(true);
+      } else {
+        // Report might not be in state yet, refetch and open
+        supabase
+          .from('reports')
+          .select('*')
+          .eq('id', reportId)
+          .single()
+          .then(({ data }) => {
+            if (data) {
+              setSelectedReport(data as Report);
+              setIsEditorOpen(true);
+            }
+          });
+      }
+    });
+  };
+
   const filteredReports = reports.filter(report =>
     report.title.toLowerCase().includes(search.toLowerCase()) ||
     report.summary?.toLowerCase().includes(search.toLowerCase())
@@ -191,10 +217,16 @@ export function ReportsList({ projectId, initialReportId, onReportOpened }: Repo
                 {reports.length} relatório{reports.length !== 1 ? 's' : ''} no projeto
               </CardDescription>
             </div>
-            <Button onClick={handleCreateNew}>
-              <Plus className="mr-2 h-4 w-4" />
-              Novo Relatório
-            </Button>
+            <div className="flex items-center gap-2">
+              <GenerateReportButton 
+                projectId={projectId} 
+                onReportGenerated={handleAIGenerated} 
+              />
+              <Button onClick={handleCreateNew}>
+                <Plus className="mr-2 h-4 w-4" />
+                Novo Relatório
+              </Button>
+            </div>
           </div>
         </CardHeader>
         <CardContent>
@@ -239,7 +271,15 @@ export function ReportsList({ projectId, initialReportId, onReportOpened }: Repo
                     <div className="flex items-center gap-3 min-w-0 flex-1">
                       <FileText className="h-5 w-5 text-muted-foreground shrink-0" />
                       <div className="min-w-0">
-                        <h4 className="font-medium truncate">{report.title}</h4>
+                        <div className="flex items-center gap-2">
+                          <h4 className="font-medium truncate">{report.title}</h4>
+                          {report.generated_by_ai && (
+                            <Badge variant="outline" className="gap-1 text-xs shrink-0">
+                              <Sparkles className="h-3 w-3" />
+                              IA
+                            </Badge>
+                          )}
+                        </div>
                         {report.summary && (
                           <p className="text-sm text-muted-foreground truncate">
                             {report.summary}
