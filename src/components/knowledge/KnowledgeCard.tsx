@@ -1,6 +1,7 @@
 import { Card, CardContent, CardHeader } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { 
   FlaskConical, 
   Gauge, 
@@ -14,7 +15,9 @@ import {
   Link2,
   AlertTriangle,
   Scale,
-  Zap
+  Zap,
+  ShieldCheck,
+  ShieldAlert
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
@@ -40,6 +43,7 @@ export interface KnowledgeItem {
   content: string;
   evidence: string | null;
   confidence: number;
+  evidence_verified?: boolean;
   extracted_at: string;
   validated_by: string | null;
   validated_at: string | null;
@@ -158,13 +162,34 @@ export function KnowledgeCard({ item, onClick, onViewFile }: KnowledgeCardProps)
         )}
 
         <div className="flex items-center justify-between pt-2">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <Badge variant="outline" className={config.color}>
               {config.label}
             </Badge>
-            <Badge variant="secondary" className="text-xs">
+            <Badge 
+              variant="secondary" 
+              className={`text-xs ${confidencePercent >= 70 ? '' : 'bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200'}`}
+            >
               {confidencePercent}% confiança
             </Badge>
+            {item.evidence_verified !== undefined && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <div className="flex items-center">
+                    {item.evidence_verified ? (
+                      <ShieldCheck className="h-4 w-4 text-green-600" />
+                    ) : (
+                      <ShieldAlert className="h-4 w-4 text-amber-500" />
+                    )}
+                  </div>
+                </TooltipTrigger>
+                <TooltipContent>
+                  {item.evidence_verified 
+                    ? 'Evidência verificada no documento original' 
+                    : 'Evidência não confirmada - verificar manualmente'}
+                </TooltipContent>
+              </Tooltip>
+            )}
           </div>
         </div>
 

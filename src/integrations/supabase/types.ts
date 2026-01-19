@@ -60,6 +60,7 @@ export type Database = {
           file_id: string
           id: string
           items_extracted: number | null
+          parsing_quality: string | null
           project_id: string
           started_at: string | null
           status: Database["public"]["Enums"]["extraction_status"]
@@ -74,6 +75,7 @@ export type Database = {
           file_id: string
           id?: string
           items_extracted?: number | null
+          parsing_quality?: string | null
           project_id: string
           started_at?: string | null
           status?: Database["public"]["Enums"]["extraction_status"]
@@ -88,6 +90,7 @@ export type Database = {
           file_id?: string
           id?: string
           items_extracted?: number | null
+          parsing_quality?: string | null
           project_id?: string
           started_at?: string | null
           status?: Database["public"]["Enums"]["extraction_status"]
@@ -119,6 +122,7 @@ export type Database = {
           deleted_by: string | null
           evidence: string | null
           evidence_page: number | null
+          evidence_verified: boolean | null
           extracted_at: string
           extracted_by: string
           extraction_job_id: string | null
@@ -137,6 +141,7 @@ export type Database = {
           deleted_by?: string | null
           evidence?: string | null
           evidence_page?: number | null
+          evidence_verified?: boolean | null
           extracted_at?: string
           extracted_by: string
           extraction_job_id?: string | null
@@ -155,6 +160,7 @@ export type Database = {
           deleted_by?: string | null
           evidence?: string | null
           evidence_page?: number | null
+          evidence_verified?: boolean | null
           extracted_at?: string
           extracted_by?: string
           extraction_job_id?: string | null
