@@ -126,6 +126,7 @@ export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
   const projectResults = results.filter((r) => r.result_type === 'project');
   const taskResults = results.filter((r) => r.result_type === 'task');
   const fileResults = results.filter((r) => r.result_type === 'file');
+  const reportResults = results.filter((r) => r.result_type === 'report');
 
   return (
     <CommandDialog open={open} onOpenChange={onOpenChange}>
