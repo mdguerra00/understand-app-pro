@@ -784,6 +784,11 @@ export type Database = {
         | "result"
         | "method"
         | "observation"
+        | "finding"
+        | "correlation"
+        | "anomaly"
+        | "benchmark"
+        | "recommendation"
       project_role: "owner" | "manager" | "researcher" | "viewer"
       project_status:
         | "planning"
@@ -934,6 +939,11 @@ export const Constants = {
         "result",
         "method",
         "observation",
+        "finding",
+        "correlation",
+        "anomaly",
+        "benchmark",
+        "recommendation",
       ],
       project_role: ["owner", "manager", "researcher", "viewer"],
       project_status: [

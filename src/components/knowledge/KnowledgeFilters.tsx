@@ -8,16 +8,21 @@ import {
 } from '@/components/ui/select';
 import { Slider } from '@/components/ui/slider';
 import { Label } from '@/components/ui/label';
+import { Separator } from '@/components/ui/separator';
 import { 
   FlaskConical, 
   Gauge, 
   Target, 
   BookOpen, 
   Lightbulb,
+  TrendingUp,
+  Link2,
+  AlertTriangle,
+  Scale,
+  Zap,
   X
 } from 'lucide-react';
-
-export type KnowledgeCategory = 'compound' | 'parameter' | 'result' | 'method' | 'observation';
+import { KnowledgeCategory } from './KnowledgeCard';
 
 interface Project {
   id: string;
@@ -35,7 +40,17 @@ interface KnowledgeFiltersProps {
   onClearFilters: () => void;
 }
 
-const categories: { value: KnowledgeCategory; label: string; icon: typeof FlaskConical }[] = [
+// Analytical categories (primary)
+const analyticalCategories: { value: KnowledgeCategory; label: string; icon: typeof FlaskConical }[] = [
+  { value: 'finding', label: 'Descoberta', icon: TrendingUp },
+  { value: 'correlation', label: 'Correlação', icon: Link2 },
+  { value: 'anomaly', label: 'Anomalia', icon: AlertTriangle },
+  { value: 'benchmark', label: 'Benchmark', icon: Scale },
+  { value: 'recommendation', label: 'Recomendação', icon: Zap },
+];
+
+// Legacy categories (secondary)
+const legacyCategories: { value: KnowledgeCategory; label: string; icon: typeof FlaskConical }[] = [
   { value: 'compound', label: 'Composto', icon: FlaskConical },
   { value: 'parameter', label: 'Parâmetro', icon: Gauge },
   { value: 'result', label: 'Resultado', icon: Target },
@@ -88,11 +103,36 @@ export function KnowledgeFilters({
         </Select>
       </div>
 
-      {/* Category Filter */}
+      {/* Analytical Categories (Primary) */}
       <div className="space-y-2">
-        <Label className="text-xs text-muted-foreground">Categorias</Label>
+        <Label className="text-xs text-muted-foreground">Análises</Label>
         <div className="flex flex-wrap gap-2">
-          {categories.map((cat) => {
+          {analyticalCategories.map((cat) => {
+            const Icon = cat.icon;
+            const isSelected = selectedCategories.includes(cat.value);
+            return (
+              <Button
+                key={cat.value}
+                variant={isSelected ? 'default' : 'outline'}
+                size="sm"
+                className="text-xs"
+                onClick={() => onCategoryToggle(cat.value)}
+              >
+                <Icon className="h-3 w-3 mr-1" />
+                {cat.label}
+              </Button>
+            );
+          })}
+        </div>
+      </div>
+
+      <Separator />
+
+      {/* Legacy Categories (Secondary) */}
+      <div className="space-y-2">
+        <Label className="text-xs text-muted-foreground">Categorias Básicas</Label>
+        <div className="flex flex-wrap gap-2">
+          {legacyCategories.map((cat) => {
             const Icon = cat.icon;
             const isSelected = selectedCategories.includes(cat.value);
             return (

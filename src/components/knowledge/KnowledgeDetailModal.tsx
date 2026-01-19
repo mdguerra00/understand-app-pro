@@ -10,11 +10,6 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import { 
-  FlaskConical, 
-  Gauge, 
-  Target, 
-  BookOpen, 
-  Lightbulb,
   FileText,
   CheckCircle2,
   ExternalLink,
@@ -23,7 +18,7 @@ import {
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
-import { KnowledgeItem } from './KnowledgeCard';
+import { KnowledgeItem, categoryConfig } from './KnowledgeCard';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/hooks/useAuth';
@@ -36,39 +31,6 @@ interface KnowledgeDetailModalProps {
   onOpenChange: (open: boolean) => void;
   onUpdate?: () => void;
 }
-
-const categoryConfig = {
-  compound: {
-    label: 'Composto Químico',
-    icon: FlaskConical,
-    color: 'bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200',
-    description: 'Ingrediente ou formulação química identificada',
-  },
-  parameter: {
-    label: 'Parâmetro de Teste',
-    icon: Gauge,
-    color: 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200',
-    description: 'Medição ou especificação técnica',
-  },
-  result: {
-    label: 'Resultado de Ensaio',
-    icon: Target,
-    color: 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200',
-    description: 'Conclusão ou resultado de teste',
-  },
-  method: {
-    label: 'Metodologia',
-    icon: BookOpen,
-    color: 'bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200',
-    description: 'Procedimento ou método utilizado',
-  },
-  observation: {
-    label: 'Observação',
-    icon: Lightbulb,
-    color: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200',
-    description: 'Nota ou observação importante',
-  },
-};
 
 export function KnowledgeDetailModal({ 
   item, 
@@ -83,7 +45,7 @@ export function KnowledgeDetailModal({
 
   if (!item) return null;
 
-  const config = categoryConfig[item.category];
+  const config = categoryConfig[item.category] || categoryConfig.observation;
   const Icon = config.icon;
   const confidencePercent = Math.round((item.confidence || 0) * 100);
 

@@ -7,7 +7,7 @@ const corsHeaders = {
 };
 
 interface ExtractionInsight {
-  category: "compound" | "parameter" | "result" | "method" | "observation";
+  category: "compound" | "parameter" | "result" | "method" | "observation" | "finding" | "correlation" | "anomaly" | "benchmark" | "recommendation";
   title: string;
   content: string;
   evidence: string;
@@ -131,27 +131,62 @@ serve(async (req) => {
       textContent = textContent.substring(0, maxChars) + "\n\n[Content truncated...]";
     }
 
-    // Create the extraction prompt
-    const systemPrompt = `Você é um especialista em P&D odontológico/dental. Sua tarefa é analisar documentos e extrair informações relevantes de pesquisa.
+    // Create the analytical extraction prompt
+    const systemPrompt = `Você é um cientista sênior de P&D odontológico/dental analisando dados experimentais.
 
-Analise o documento fornecido e extraia insights nas seguintes categorias:
-- compound: Compostos químicos, ingredientes, formulações (ex: "Flúor 1450ppm", "Silica hidratada 15%")
-- parameter: Parâmetros de testes e medições (ex: "pH 6.8", "Viscosidade 25000 cP", "Dureza Mohs 4")
-- result: Resultados de ensaios e conclusões (ex: "Redução de 30% na abrasão", "Aprovado no teste de estabilidade")
-- method: Metodologias e procedimentos utilizados (ex: "Teste de abrasividade ISO 11609", "Análise por HPLC")
-- observation: Observações importantes e notas relevantes
+Sua tarefa NÃO é simplesmente catalogar o que existe no documento, mas sim ANALISAR PROFUNDAMENTE os dados e extrair DESCOBERTAS SIGNIFICATIVAS com valor científico real.
+
+## REGRAS CRÍTICAS:
+
+1. **SEMPRE extraia VALORES NUMÉRICOS concretos** (ex: "145.2 MPa ±8.3", "pH 6.8", "concentração 15%")
+2. **IDENTIFIQUE PADRÕES e CORRELAÇÕES** nos dados quando existirem
+3. **COMPARE com REFERÊNCIAS** quando disponíveis (normas ISO, literatura científica, controles)
+4. **APONTE ANOMALIAS** ou resultados fora do esperado que merecem atenção
+5. **SUGIRA AÇÕES** quando os dados indicarem oportunidades ou problemas
+
+## O QUE NÃO FAZER (exemplos ruins):
+❌ "O documento contém informação sobre resistência flexural"
+❌ "Foram utilizados monômeros como Bis-GMA e UDMA"
+❌ "Há dados estatísticos de média e desvio padrão"
+❌ "O arquivo apresenta resultados de testes"
+
+## O QUE FAZER (exemplos bons):
+✅ "Formulação V3 atingiu 148.5 MPa (±8.2), superando requisito ISO 4049 de 80 MPa em 85.6%"
+✅ "Correlação positiva identificada: aumento de UDMA de 10%→20% elevou resistência de 120→145 MPa (+20.8%)"
+✅ "ALERTA: CP7 (98 MPa) está 2.5σ abaixo da média do grupo - investigar processo de fabricação"
+✅ "Recomendação: Formulação com 18% UDMA apresentou melhor custo-benefício (142 MPa, 15% mais barata)"
+✅ "Benchmark superado: Resistência média de 143 MPa excede literatura (130 MPa) em 10%"
+
+## CATEGORIAS DE INSIGHTS:
+
+- **finding**: Descoberta quantitativa com valores numéricos específicos e significado científico
+- **correlation**: Relação identificada entre duas ou mais variáveis com dados de suporte
+- **anomaly**: Dados fora do padrão, outliers, ou resultados que requerem atenção/investigação
+- **benchmark**: Comparativo com referência (norma ISO, controle, literatura, versão anterior)
+- **recommendation**: Sugestão de ação baseada na análise dos dados
+
+Também aceitas (usar com moderação para contexto essencial):
+- **compound**: Apenas quando houver DESCOBERTA sobre o composto (não listar ingredientes)
+- **parameter**: Apenas quando houver ANÁLISE do parâmetro (não listar medições)
+- **result**: Apenas conclusões significativas com impacto prático
+- **method**: Apenas insights sobre a metodologia (não descrever procedimentos)
+- **observation**: Observações críticas não classificáveis acima
+
+## FORMATO DE SAÍDA:
 
 Para cada insight extraído, forneça:
-1. category: Uma das categorias acima
-2. title: Título resumido (máx 100 caracteres)
-3. content: Descrição completa do insight (máx 500 caracteres)
-4. evidence: Trecho exato do documento que comprova o insight (máx 300 caracteres)
-5. confidence: Nível de confiança de 0 a 1 (ex: 0.95 para informação clara, 0.7 para inferência)
+1. **category**: Uma das categorias acima
+2. **title**: Título analítico resumido (máx 100 caracteres) - deve conter o insight, não descrição
+3. **content**: Análise completa com valores, comparações e significado (máx 500 caracteres)
+4. **evidence**: Trecho exato do documento que comprova a análise (máx 300 caracteres)
+5. **confidence**: Nível de confiança de 0 a 1 (0.95+ para dados diretos, 0.7-0.9 para inferências)
 
 Projeto: ${fileData.projects?.name || "Desconhecido"}
 Arquivo: ${fileData.name}`;
 
-    const userPrompt = `Analise o seguinte documento e extraia todos os insights de P&D relevantes:\n\n${textContent}`;
+    const userPrompt = `Analise profundamente o seguinte documento e extraia DESCOBERTAS ANALÍTICAS de P&D (não simplesmente liste o conteúdo):
+
+${textContent}`;
 
     // Call Lovable AI Gateway with tool calling
     const aiResponse = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
@@ -171,7 +206,7 @@ Arquivo: ${fileData.name}`;
             type: "function",
             function: {
               name: "extract_insights",
-              description: "Extract R&D insights from the document",
+              description: "Extract analytical R&D discoveries from the document with quantitative data, correlations, anomalies, benchmarks, and recommendations",
               parameters: {
                 type: "object",
                 properties: {
@@ -182,7 +217,7 @@ Arquivo: ${fileData.name}`;
                       properties: {
                         category: {
                           type: "string",
-                          enum: ["compound", "parameter", "result", "method", "observation"],
+                          enum: ["finding", "correlation", "anomaly", "benchmark", "recommendation", "compound", "parameter", "result", "method", "observation"],
                         },
                         title: { type: "string", maxLength: 100 },
                         content: { type: "string", maxLength: 500 },
