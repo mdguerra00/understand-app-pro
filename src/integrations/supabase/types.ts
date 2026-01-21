@@ -119,6 +119,65 @@ export type Database = {
           },
         ]
       }
+      indexing_jobs: {
+        Row: {
+          chunks_created: number | null
+          created_at: string | null
+          created_by: string | null
+          error_message: string | null
+          finished_at: string | null
+          id: string
+          job_type: string
+          priority: number
+          project_id: string
+          retry_count: number | null
+          source_id: string | null
+          source_type: string | null
+          started_at: string | null
+          status: string
+        }
+        Insert: {
+          chunks_created?: number | null
+          created_at?: string | null
+          created_by?: string | null
+          error_message?: string | null
+          finished_at?: string | null
+          id?: string
+          job_type: string
+          priority?: number
+          project_id: string
+          retry_count?: number | null
+          source_id?: string | null
+          source_type?: string | null
+          started_at?: string | null
+          status?: string
+        }
+        Update: {
+          chunks_created?: number | null
+          created_at?: string | null
+          created_by?: string | null
+          error_message?: string | null
+          finished_at?: string | null
+          id?: string
+          job_type?: string
+          priority?: number
+          project_id?: string
+          retry_count?: number | null
+          source_id?: string | null
+          source_type?: string | null
+          started_at?: string | null
+          status?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "indexing_jobs_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       knowledge_items: {
         Row: {
           category: Database["public"]["Enums"]["knowledge_category"]
@@ -461,6 +520,51 @@ export type Database = {
         }
         Relationships: []
       }
+      rag_logs: {
+        Row: {
+          chunks_count: number | null
+          chunks_used: string[] | null
+          created_at: string | null
+          id: string
+          latency_ms: number | null
+          model_used: string | null
+          query: string
+          query_embedding: string | null
+          response_summary: string | null
+          tokens_input: number | null
+          tokens_output: number | null
+          user_id: string
+        }
+        Insert: {
+          chunks_count?: number | null
+          chunks_used?: string[] | null
+          created_at?: string | null
+          id?: string
+          latency_ms?: number | null
+          model_used?: string | null
+          query: string
+          query_embedding?: string | null
+          response_summary?: string | null
+          tokens_input?: number | null
+          tokens_output?: number | null
+          user_id: string
+        }
+        Update: {
+          chunks_count?: number | null
+          chunks_used?: string[] | null
+          created_at?: string | null
+          id?: string
+          latency_ms?: number | null
+          model_used?: string | null
+          query?: string
+          query_embedding?: string | null
+          response_summary?: string | null
+          tokens_input?: number | null
+          tokens_output?: number | null
+          user_id?: string
+        }
+        Relationships: []
+      }
       report_attachments: {
         Row: {
           added_at: string
@@ -623,6 +727,56 @@ export type Database = {
         Relationships: [
           {
             foreignKeyName: "reports_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      search_chunks: {
+        Row: {
+          chunk_hash: string
+          chunk_index: number
+          chunk_text: string
+          created_at: string | null
+          embedding: string | null
+          id: string
+          metadata: Json
+          project_id: string
+          source_id: string
+          source_type: string
+          tsv: unknown
+        }
+        Insert: {
+          chunk_hash: string
+          chunk_index?: number
+          chunk_text: string
+          created_at?: string | null
+          embedding?: string | null
+          id?: string
+          metadata?: Json
+          project_id: string
+          source_id: string
+          source_type: string
+          tsv?: unknown
+        }
+        Update: {
+          chunk_hash?: string
+          chunk_index?: number
+          chunk_text?: string
+          created_at?: string | null
+          embedding?: string | null
+          id?: string
+          metadata?: Json
+          project_id?: string
+          source_id?: string
+          source_type?: string
+          tsv?: unknown
+        }
+        Relationships: [
+          {
+            foreignKeyName: "search_chunks_project_id_fkey"
             columns: ["project_id"]
             isOneToOne: false
             referencedRelation: "projects"
@@ -794,6 +948,30 @@ export type Database = {
       is_project_member: {
         Args: { _project_id: string; _user_id: string }
         Returns: boolean
+      }
+      search_chunks_hybrid: {
+        Args: {
+          p_fts_weight?: number
+          p_limit?: number
+          p_project_ids: string[]
+          p_query_embedding: string
+          p_query_text: string
+          p_semantic_weight?: number
+        }
+        Returns: {
+          chunk_id: string
+          chunk_index: number
+          chunk_text: string
+          metadata: Json
+          project_id: string
+          project_name: string
+          score_final: number
+          score_fts: number
+          score_semantic: number
+          source_id: string
+          source_title: string
+          source_type: string
+        }[]
       }
     }
     Enums: {

@@ -4,7 +4,7 @@ import { SidebarProvider, SidebarInset, SidebarTrigger } from '@/components/ui/s
 import { Separator } from '@/components/ui/separator';
 import { AppSidebar } from './AppSidebar';
 import { Breadcrumbs } from './Breadcrumbs';
-import { GlobalSearch } from '@/components/search/GlobalSearch';
+import { SmartSearchDialog } from '@/components/search/SmartSearchDialog';
 import { SearchButton } from '@/components/search/SearchButton';
 import { useAuth } from '@/hooks/useAuth';
 import { Loader2 } from 'lucide-react';
@@ -45,7 +45,7 @@ export function AppLayout({ children }: AppLayoutProps) {
           {children}
         </main>
       </SidebarInset>
-      <GlobalSearch open={searchOpen} onOpenChange={setSearchOpen} />
+      <SmartSearchDialog open={searchOpen} onOpenChange={setSearchOpen} />
     </SidebarProvider>
   );
 }
