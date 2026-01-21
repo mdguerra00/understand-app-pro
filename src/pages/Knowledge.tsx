@@ -5,12 +5,14 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Brain, Search, Sparkles, Filter, LayoutGrid, List } from 'lucide-react';
+import { Brain, Search, Sparkles, Filter, LayoutGrid, List, FileText } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/hooks/useAuth';
 import { KnowledgeCard, KnowledgeItem, KnowledgeCategory } from '@/components/knowledge/KnowledgeCard';
-import { KnowledgeFilters } from '@/components/knowledge/KnowledgeFilters';
+import { DocumentCard, DocumentItem } from '@/components/knowledge/DocumentCard';
+import { KnowledgeFilters, EntryTypeFilter } from '@/components/knowledge/KnowledgeFilters';
 import { KnowledgeDetailModal } from '@/components/knowledge/KnowledgeDetailModal';
+import { DocumentDetailModal } from '@/components/knowledge/DocumentDetailModal';
 import { ExtractionStatus } from '@/components/knowledge/ExtractionStatus';
 import {
   Sheet,
@@ -21,6 +23,11 @@ import {
   SheetTrigger,
 } from '@/components/ui/sheet';
 
+// Unified entry type for documents and insights
+type UnifiedEntry = 
+  | { entry_type: 'document'; data: DocumentItem }
+  | { entry_type: 'insight'; data: KnowledgeItem };
+
 export default function Knowledge() {
   const { user } = useAuth();
   const navigate = useNavigate();
@@ -28,9 +35,12 @@ export default function Knowledge() {
   const [selectedProject, setSelectedProject] = useState<string | null>(null);
   const [selectedCategories, setSelectedCategories] = useState<KnowledgeCategory[]>([]);
   const [minConfidence, setMinConfidence] = useState(0);
-  const [selectedItem, setSelectedItem] = useState<KnowledgeItem | null>(null);
-  const [detailOpen, setDetailOpen] = useState(false);
+  const [selectedInsight, setSelectedInsight] = useState<KnowledgeItem | null>(null);
+  const [selectedDocument, setSelectedDocument] = useState<DocumentItem | null>(null);
+  const [insightDetailOpen, setInsightDetailOpen] = useState(false);
+  const [documentDetailOpen, setDocumentDetailOpen] = useState(false);
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
+  const [entryType, setEntryType] = useState<EntryTypeFilter>('all');
 
   // Fetch user's projects
   const { data: projects } = useQuery({
@@ -49,8 +59,8 @@ export default function Knowledge() {
     enabled: !!user,
   });
 
-  // Fetch knowledge items
-  const { data: knowledgeItems, isLoading, refetch } = useQuery({
+  // Fetch knowledge items (insights)
+  const { data: knowledgeItems, isLoading: loadingInsights, refetch: refetchInsights } = useQuery({
     queryKey: ['knowledge-items', user?.id],
     queryFn: async () => {
       const { data, error } = await supabase
@@ -69,39 +79,108 @@ export default function Knowledge() {
     enabled: !!user,
   });
 
-  // Filter items
-  const filteredItems = useMemo(() => {
-    if (!knowledgeItems) return [];
+  // Fetch all documents
+  const { data: documents, isLoading: loadingDocuments } = useQuery({
+    queryKey: ['all-documents', user?.id],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('project_files')
+        .select(`
+          id,
+          name,
+          mime_type,
+          size_bytes,
+          project_id,
+          created_at,
+          storage_path,
+          projects(name)
+        `)
+        .is('deleted_at', null)
+        .order('created_at', { ascending: false });
 
-    return knowledgeItems.filter((item) => {
-      // Search filter
-      if (searchQuery) {
-        const query = searchQuery.toLowerCase();
-        const matchesSearch =
-          item.title.toLowerCase().includes(query) ||
-          item.content.toLowerCase().includes(query) ||
-          item.evidence?.toLowerCase().includes(query);
-        if (!matchesSearch) return false;
-      }
+      if (error) throw error;
+      
+      // Count insights per document
+      const docsWithInsights = await Promise.all(
+        (data || []).map(async (doc) => {
+          const { count } = await supabase
+            .from('knowledge_items')
+            .select('*', { count: 'exact', head: true })
+            .eq('source_file_id', doc.id)
+            .is('deleted_at', null);
+          
+          return {
+            ...doc,
+            insights_count: count || 0,
+          } as DocumentItem;
+        })
+      );
+      
+      return docsWithInsights;
+    },
+    enabled: !!user,
+  });
 
-      // Project filter
-      if (selectedProject && item.project_id !== selectedProject) {
-        return false;
-      }
+  const isLoading = loadingInsights || loadingDocuments;
 
-      // Category filter
-      if (selectedCategories.length > 0 && !selectedCategories.includes(item.category)) {
-        return false;
-      }
+  // Create unified entries and filter
+  const filteredEntries = useMemo(() => {
+    const entries: UnifiedEntry[] = [];
 
-      // Confidence filter
-      if (item.confidence < minConfidence) {
-        return false;
-      }
+    // Add documents if filter allows
+    if (entryType === 'all' || entryType === 'documents') {
+      (documents || []).forEach((doc) => {
+        // Search filter for documents
+        if (searchQuery) {
+          const query = searchQuery.toLowerCase();
+          const matchesSearch =
+            doc.name.toLowerCase().includes(query) ||
+            doc.projects?.name?.toLowerCase().includes(query);
+          if (!matchesSearch) return;
+        }
+        // Project filter
+        if (selectedProject && doc.project_id !== selectedProject) {
+          return;
+        }
+        entries.push({ entry_type: 'document', data: doc });
+      });
+    }
 
-      return true;
+    // Add insights if filter allows
+    if (entryType === 'all' || entryType === 'insights') {
+      (knowledgeItems || []).forEach((item) => {
+        // Search filter
+        if (searchQuery) {
+          const query = searchQuery.toLowerCase();
+          const matchesSearch =
+            item.title.toLowerCase().includes(query) ||
+            item.content.toLowerCase().includes(query) ||
+            item.evidence?.toLowerCase().includes(query);
+          if (!matchesSearch) return;
+        }
+        // Project filter
+        if (selectedProject && item.project_id !== selectedProject) {
+          return;
+        }
+        // Category filter
+        if (selectedCategories.length > 0 && !selectedCategories.includes(item.category)) {
+          return;
+        }
+        // Confidence filter
+        if (item.confidence < minConfidence) {
+          return;
+        }
+        entries.push({ entry_type: 'insight', data: item });
+      });
+    }
+
+    // Sort by date (newest first)
+    return entries.sort((a, b) => {
+      const dateA = a.entry_type === 'document' ? a.data.created_at : a.data.extracted_at;
+      const dateB = b.entry_type === 'document' ? b.data.created_at : b.data.extracted_at;
+      return new Date(dateB).getTime() - new Date(dateA).getTime();
     });
-  }, [knowledgeItems, searchQuery, selectedProject, selectedCategories, minConfidence]);
+  }, [documents, knowledgeItems, searchQuery, selectedProject, selectedCategories, minConfidence, entryType]);
 
   const handleCategoryToggle = (category: KnowledgeCategory) => {
     setSelectedCategories((prev) =>
@@ -115,11 +194,17 @@ export default function Knowledge() {
     setSelectedProject(null);
     setSelectedCategories([]);
     setMinConfidence(0);
+    setEntryType('all');
   };
 
-  const handleItemClick = (item: KnowledgeItem) => {
-    setSelectedItem(item);
-    setDetailOpen(true);
+  const handleInsightClick = (item: KnowledgeItem) => {
+    setSelectedInsight(item);
+    setInsightDetailOpen(true);
+  };
+
+  const handleDocumentClick = (doc: DocumentItem) => {
+    setSelectedDocument(doc);
+    setDocumentDetailOpen(true);
   };
 
   const handleViewFile = (item: KnowledgeItem) => {
@@ -128,22 +213,33 @@ export default function Knowledge() {
     }
   };
 
+  const handleViewProject = (doc: DocumentItem) => {
+    navigate(`/projects/${doc.project_id}?tab=files&file=${doc.id}`);
+  };
+
   // Stats
   const stats = useMemo(() => {
-    if (!knowledgeItems) return { total: 0, validated: 0, byCategory: {} };
-    
-    const byCategory: Record<string, number> = {};
-    let validated = 0;
+    const totalDocuments = documents?.length || 0;
+    const totalInsights = knowledgeItems?.length || 0;
+    const validated = knowledgeItems?.filter(i => i.validated_by).length || 0;
 
-    knowledgeItems.forEach((item) => {
-      byCategory[item.category] = (byCategory[item.category] || 0) + 1;
-      if (item.validated_by) validated++;
-    });
+    return { totalDocuments, totalInsights, validated };
+  }, [documents, knowledgeItems]);
 
-    return { total: knowledgeItems.length, validated, byCategory };
-  }, [knowledgeItems]);
+  const hasActiveFilters = selectedProject || selectedCategories.length > 0 || minConfidence > 0 || entryType !== 'all';
 
-  const hasActiveFilters = selectedProject || selectedCategories.length > 0 || minConfidence > 0;
+  const filterProps = {
+    projects: projects || [],
+    selectedProject,
+    onProjectChange: setSelectedProject,
+    selectedCategories,
+    onCategoryToggle: handleCategoryToggle,
+    minConfidence,
+    onConfidenceChange: setMinConfidence,
+    onClearFilters: handleClearFilters,
+    entryType,
+    onEntryTypeChange: setEntryType,
+  };
 
   return (
     <div className="space-y-6">
@@ -152,9 +248,9 @@ export default function Knowledge() {
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Base de Conhecimento</h1>
           <p className="text-muted-foreground">
-            {stats.total > 0
-              ? `${stats.total} insights extraídos • ${stats.validated} validados`
-              : 'Insights extraídos automaticamente dos seus documentos via IA'}
+            {stats.totalDocuments + stats.totalInsights > 0
+              ? `${stats.totalDocuments} documentos • ${stats.totalInsights} insights • ${stats.validated} validados`
+              : 'Documentos e insights extraídos automaticamente via IA'}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -183,7 +279,7 @@ export default function Knowledge() {
         <div className="relative flex-1">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input
-            placeholder="Buscar conhecimento (ex: formulação com flúor, testes de abrasão...)"
+            placeholder="Buscar documentos e insights..."
             className="pl-9"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
@@ -209,16 +305,7 @@ export default function Knowledge() {
               </SheetDescription>
             </SheetHeader>
             <div className="mt-4">
-              <KnowledgeFilters
-                projects={projects || []}
-                selectedProject={selectedProject}
-                onProjectChange={setSelectedProject}
-                selectedCategories={selectedCategories}
-                onCategoryToggle={handleCategoryToggle}
-                minConfidence={minConfidence}
-                onConfidenceChange={setMinConfidence}
-                onClearFilters={handleClearFilters}
-              />
+              <KnowledgeFilters {...filterProps} />
             </div>
           </SheetContent>
         </Sheet>
@@ -228,16 +315,7 @@ export default function Knowledge() {
       <div className="flex gap-6">
         {/* Desktop Filters Sidebar */}
         <div className="hidden lg:block w-64 flex-shrink-0">
-          <KnowledgeFilters
-            projects={projects || []}
-            selectedProject={selectedProject}
-            onProjectChange={setSelectedProject}
-            selectedCategories={selectedCategories}
-            onCategoryToggle={handleCategoryToggle}
-            minConfidence={minConfidence}
-            onConfidenceChange={setMinConfidence}
-            onClearFilters={handleClearFilters}
-          />
+          <KnowledgeFilters {...filterProps} />
         </div>
 
         {/* Content */}
@@ -262,21 +340,25 @@ export default function Knowledge() {
                 </Card>
               ))}
             </div>
-          ) : filteredItems.length === 0 ? (
+          ) : filteredEntries.length === 0 ? (
             <Card className="border-dashed">
               <CardHeader className="text-center">
                 <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-primary/10">
-                  <Brain className="h-6 w-6 text-primary" />
+                  {entryType === 'documents' ? (
+                    <FileText className="h-6 w-6 text-primary" />
+                  ) : (
+                    <Brain className="h-6 w-6 text-primary" />
+                  )}
                 </div>
                 <CardTitle>
-                  {knowledgeItems && knowledgeItems.length > 0
+                  {(documents?.length || 0) + (knowledgeItems?.length || 0) > 0
                     ? 'Nenhum resultado encontrado'
                     : 'Base de conhecimento vazia'}
                 </CardTitle>
                 <CardDescription className="max-w-md mx-auto">
-                  {knowledgeItems && knowledgeItems.length > 0
+                  {(documents?.length || 0) + (knowledgeItems?.length || 0) > 0
                     ? 'Tente ajustar os filtros ou termo de busca.'
-                    : 'Quando você fizer upload de documentos nos projetos, a IA irá extrair automaticamente informações importantes como compostos químicos, parâmetros de teste e resultados.'}
+                    : 'Quando você fizer upload de documentos nos projetos, eles aparecerão aqui junto com os insights extraídos pela IA.'}
                 </CardDescription>
               </CardHeader>
               <CardContent className="text-center">
@@ -291,25 +373,44 @@ export default function Knowledge() {
               ? 'grid gap-4 md:grid-cols-2 xl:grid-cols-3' 
               : 'space-y-4'
             }>
-              {filteredItems.map((item) => (
-                <KnowledgeCard
-                  key={item.id}
-                  item={item}
-                  onClick={() => handleItemClick(item)}
-                  onViewFile={() => handleViewFile(item)}
-                />
-              ))}
+              {filteredEntries.map((entry) => {
+                if (entry.entry_type === 'document') {
+                  return (
+                    <DocumentCard
+                      key={`doc-${entry.data.id}`}
+                      item={entry.data}
+                      onClick={() => handleDocumentClick(entry.data)}
+                      onViewProject={() => handleViewProject(entry.data)}
+                    />
+                  );
+                } else {
+                  return (
+                    <KnowledgeCard
+                      key={`insight-${entry.data.id}`}
+                      item={entry.data}
+                      onClick={() => handleInsightClick(entry.data)}
+                      onViewFile={() => handleViewFile(entry.data)}
+                    />
+                  );
+                }
+              })}
             </div>
           )}
         </div>
       </div>
 
-      {/* Detail Modal */}
+      {/* Detail Modals */}
       <KnowledgeDetailModal
-        item={selectedItem}
-        open={detailOpen}
-        onOpenChange={setDetailOpen}
-        onUpdate={refetch}
+        item={selectedInsight}
+        open={insightDetailOpen}
+        onOpenChange={setInsightDetailOpen}
+        onUpdate={refetchInsights}
+      />
+
+      <DocumentDetailModal
+        item={selectedDocument}
+        open={documentDetailOpen}
+        onOpenChange={setDocumentDetailOpen}
       />
     </div>
   );
