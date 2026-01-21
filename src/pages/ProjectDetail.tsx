@@ -24,6 +24,7 @@ import { InviteMemberModal } from '@/components/projects/InviteMemberModal';
 import { ProjectFilesList } from '@/components/files/ProjectFilesList';
 import { ReportsList } from '@/components/reports/ReportsList';
 import { ReindexProjectButton } from '@/components/projects/ReindexProjectButton';
+import { IndexingStatus } from '@/components/projects/IndexingStatus';
 
 type Project = Tables<'projects'>;
 type Task = Tables<'tasks'>;
@@ -280,7 +281,8 @@ export default function ProjectDetail() {
             )}
           </div>
         </div>
-        <div className="flex gap-2">
+        <div className="flex items-center gap-2">
+          <IndexingStatus projectId={project.id} />
           <ReindexProjectButton projectId={project.id} projectName={project.name} />
           <Button variant="outline" size="sm">
             <Settings className="mr-2 h-4 w-4" />
