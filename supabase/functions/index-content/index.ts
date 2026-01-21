@@ -78,23 +78,32 @@ function chunkText(
   return chunks;
 }
 
-// Generate embedding using Lovable AI Gateway
+// Generate embedding using OpenAI API
 async function generateEmbedding(text: string): Promise<number[] | null> {
+  const openaiKey = Deno.env.get("OPENAI_API_KEY");
+  
+  // If no OpenAI key, skip embedding generation (FTS will still work)
+  if (!openaiKey) {
+    console.log("No OPENAI_API_KEY configured, skipping embedding generation");
+    return null;
+  }
+  
   try {
-    const response = await fetch("https://ai-gateway.lovable.dev/embed", {
+    const response = await fetch("https://api.openai.com/v1/embeddings", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "Authorization": `Bearer ${Deno.env.get("LOVABLE_API_KEY")}`,
+        "Authorization": `Bearer ${openaiKey}`,
       },
       body: JSON.stringify({
-        input: text,
+        input: text.slice(0, 8000), // Limit to 8000 chars for embedding
         model: "text-embedding-3-small",
       }),
     });
 
     if (!response.ok) {
-      console.error("Embedding API error:", await response.text());
+      const errorText = await response.text();
+      console.error("OpenAI Embedding API error:", errorText);
       return null;
     }
 
@@ -269,28 +278,33 @@ serve(async (req) => {
       .eq("source_type", source_type === "reports" ? "report" : source_type === "tasks" ? "task" : source_type === "knowledge_items" ? "insight" : source_type)
       .eq("source_id", source_id);
 
-    // Insert new chunks with embeddings
+    // Insert new chunks with embeddings (or without if no API key)
     let chunksCreated = 0;
+    let embeddingsCreated = 0;
+    
     for (const chunk of chunks) {
       const embedding = await generateEmbedding(chunk.text);
       
-      if (!embedding) {
-        console.warn(`Failed to generate embedding for chunk ${chunk.index}`);
-        continue;
+      // Build insert object
+      const insertData: Record<string, unknown> = {
+        project_id,
+        source_type: source_type === "reports" ? "report" : source_type === "tasks" ? "task" : source_type === "knowledge_items" ? "insight" : source_type,
+        source_id,
+        chunk_index: chunk.index,
+        chunk_text: chunk.text,
+        chunk_hash: chunk.hash,
+        metadata: chunk.metadata,
+      };
+      
+      // Only add embedding if generated
+      if (embedding) {
+        insertData.embedding = `[${embedding.join(",")}]`;
+        embeddingsCreated++;
       }
 
       const { error: insertError } = await supabase
         .from("search_chunks")
-        .insert({
-          project_id,
-          source_type: source_type === "reports" ? "report" : source_type === "tasks" ? "task" : source_type === "knowledge_items" ? "insight" : source_type,
-          source_id,
-          chunk_index: chunk.index,
-          chunk_text: chunk.text,
-          chunk_hash: chunk.hash,
-          embedding: `[${embedding.join(",")}]`,
-          metadata: chunk.metadata,
-        });
+        .insert(insertData);
 
       if (insertError) {
         // Skip duplicate hash errors
@@ -314,10 +328,13 @@ serve(async (req) => {
         .eq("id", job_id);
     }
 
+    console.log(`Indexed ${chunksCreated} chunks, ${embeddingsCreated} with embeddings for ${source_type}:${source_id}`);
+
     return new Response(
       JSON.stringify({
         success: true,
         chunks_created: chunksCreated,
+        embeddings_created: embeddingsCreated,
         source_type,
         source_id,
       }),
