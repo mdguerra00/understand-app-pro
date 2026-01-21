@@ -119,16 +119,25 @@ serve(async (req) => {
     // Get authorization header for user context
     const authHeader = req.headers.get("Authorization");
     
-    const { job_id, source_type, source_id, project_id } = await req.json();
+    const { job_id, source_type, source_id, project_id, internal_call } = await req.json();
 
-    // Validate user has access to project if auth provided
-    if (authHeader) {
+    // Skip auth validation for internal calls (from indexing-worker)
+    // Internal calls are trusted as they come from the worker with service role
+    if (!internal_call && authHeader) {
       const userClient = createClient(supabaseUrl, Deno.env.get("SUPABASE_ANON_KEY")!, {
         global: { headers: { Authorization: authHeader } },
       });
       
+      const { data: { user } } = await userClient.auth.getUser();
+      if (!user) {
+        return new Response(
+          JSON.stringify({ error: "Invalid authentication token" }),
+          { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+      
       const { data: hasAccess } = await userClient.rpc("is_project_member", {
-        _user_id: (await userClient.auth.getUser()).data.user?.id,
+        _user_id: user.id,
         _project_id: project_id,
       });
       
