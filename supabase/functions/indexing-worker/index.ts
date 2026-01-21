@@ -56,7 +56,7 @@ serve(async (req) => {
           sourceType = job.job_type.replace("index_", "");
         }
 
-        // Call the index-content function
+        // Call the index-content function (internal call - no user auth needed)
         const response = await fetch(`${supabaseUrl}/functions/v1/index-content`, {
           method: "POST",
           headers: {
@@ -68,6 +68,7 @@ serve(async (req) => {
             source_type: sourceType,
             source_id: job.source_id,
             project_id: job.project_id,
+            internal_call: true, // Skip user auth validation
           }),
         });
 
