@@ -20,9 +20,14 @@ import {
   AlertTriangle,
   Scale,
   Zap,
-  X
+  X,
+  FileText,
+  Brain,
+  Layers
 } from 'lucide-react';
 import { KnowledgeCategory } from './KnowledgeCard';
+
+export type EntryTypeFilter = 'all' | 'documents' | 'insights';
 
 interface Project {
   id: string;
@@ -38,6 +43,8 @@ interface KnowledgeFiltersProps {
   minConfidence: number;
   onConfidenceChange: (value: number) => void;
   onClearFilters: () => void;
+  entryType: EntryTypeFilter;
+  onEntryTypeChange: (type: EntryTypeFilter) => void;
 }
 
 // Analytical categories (primary)
@@ -67,8 +74,10 @@ export function KnowledgeFilters({
   minConfidence,
   onConfidenceChange,
   onClearFilters,
+  entryType,
+  onEntryTypeChange,
 }: KnowledgeFiltersProps) {
-  const hasActiveFilters = selectedProject || selectedCategories.length > 0 || minConfidence > 0;
+  const hasActiveFilters = selectedProject || selectedCategories.length > 0 || minConfidence > 0 || entryType !== 'all';
 
   return (
     <div className="space-y-4 p-4 bg-muted/30 rounded-lg border">
@@ -81,6 +90,42 @@ export function KnowledgeFilters({
           </Button>
         )}
       </div>
+
+      {/* Entry Type Filter */}
+      <div className="space-y-2">
+        <Label className="text-xs text-muted-foreground">Tipo de Entrada</Label>
+        <div className="flex flex-wrap gap-2">
+          <Button
+            variant={entryType === 'all' ? 'default' : 'outline'}
+            size="sm"
+            className="text-xs"
+            onClick={() => onEntryTypeChange('all')}
+          >
+            <Layers className="h-3 w-3 mr-1" />
+            Todos
+          </Button>
+          <Button
+            variant={entryType === 'documents' ? 'default' : 'outline'}
+            size="sm"
+            className="text-xs"
+            onClick={() => onEntryTypeChange('documents')}
+          >
+            <FileText className="h-3 w-3 mr-1" />
+            Documentos
+          </Button>
+          <Button
+            variant={entryType === 'insights' ? 'default' : 'outline'}
+            size="sm"
+            className="text-xs"
+            onClick={() => onEntryTypeChange('insights')}
+          >
+            <Brain className="h-3 w-3 mr-1" />
+            Insights
+          </Button>
+        </div>
+      </div>
+
+      <Separator />
 
       {/* Project Filter */}
       <div className="space-y-2">
@@ -103,69 +148,73 @@ export function KnowledgeFilters({
         </Select>
       </div>
 
-      {/* Analytical Categories (Primary) */}
-      <div className="space-y-2">
-        <Label className="text-xs text-muted-foreground">Análises</Label>
-        <div className="flex flex-wrap gap-2">
-          {analyticalCategories.map((cat) => {
-            const Icon = cat.icon;
-            const isSelected = selectedCategories.includes(cat.value);
-            return (
-              <Button
-                key={cat.value}
-                variant={isSelected ? 'default' : 'outline'}
-                size="sm"
-                className="text-xs"
-                onClick={() => onCategoryToggle(cat.value)}
-              >
-                <Icon className="h-3 w-3 mr-1" />
-                {cat.label}
-              </Button>
-            );
-          })}
-        </div>
-      </div>
+      {/* Analytical Categories (Primary) - Only show when insights are visible */}
+      {entryType !== 'documents' && (
+        <>
+          <div className="space-y-2">
+            <Label className="text-xs text-muted-foreground">Análises</Label>
+            <div className="flex flex-wrap gap-2">
+              {analyticalCategories.map((cat) => {
+                const Icon = cat.icon;
+                const isSelected = selectedCategories.includes(cat.value);
+                return (
+                  <Button
+                    key={cat.value}
+                    variant={isSelected ? 'default' : 'outline'}
+                    size="sm"
+                    className="text-xs"
+                    onClick={() => onCategoryToggle(cat.value)}
+                  >
+                    <Icon className="h-3 w-3 mr-1" />
+                    {cat.label}
+                  </Button>
+                );
+              })}
+            </div>
+          </div>
 
-      <Separator />
+          <Separator />
 
-      {/* Legacy Categories (Secondary) */}
-      <div className="space-y-2">
-        <Label className="text-xs text-muted-foreground">Categorias Básicas</Label>
-        <div className="flex flex-wrap gap-2">
-          {legacyCategories.map((cat) => {
-            const Icon = cat.icon;
-            const isSelected = selectedCategories.includes(cat.value);
-            return (
-              <Button
-                key={cat.value}
-                variant={isSelected ? 'default' : 'outline'}
-                size="sm"
-                className="text-xs"
-                onClick={() => onCategoryToggle(cat.value)}
-              >
-                <Icon className="h-3 w-3 mr-1" />
-                {cat.label}
-              </Button>
-            );
-          })}
-        </div>
-      </div>
+          {/* Legacy Categories (Secondary) */}
+          <div className="space-y-2">
+            <Label className="text-xs text-muted-foreground">Categorias Básicas</Label>
+            <div className="flex flex-wrap gap-2">
+              {legacyCategories.map((cat) => {
+                const Icon = cat.icon;
+                const isSelected = selectedCategories.includes(cat.value);
+                return (
+                  <Button
+                    key={cat.value}
+                    variant={isSelected ? 'default' : 'outline'}
+                    size="sm"
+                    className="text-xs"
+                    onClick={() => onCategoryToggle(cat.value)}
+                  >
+                    <Icon className="h-3 w-3 mr-1" />
+                    {cat.label}
+                  </Button>
+                );
+              })}
+            </div>
+          </div>
 
-      {/* Confidence Filter */}
-      <div className="space-y-2">
-        <div className="flex items-center justify-between">
-          <Label className="text-xs text-muted-foreground">Confiança mínima</Label>
-          <span className="text-xs font-medium">{Math.round(minConfidence * 100)}%</span>
-        </div>
-        <Slider
-          value={[minConfidence]}
-          onValueChange={([value]) => onConfidenceChange(value)}
-          min={0}
-          max={1}
-          step={0.1}
-          className="w-full"
-        />
-      </div>
+          {/* Confidence Filter */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <Label className="text-xs text-muted-foreground">Confiança mínima</Label>
+              <span className="text-xs font-medium">{Math.round(minConfidence * 100)}%</span>
+            </div>
+            <Slider
+              value={[minConfidence]}
+              onValueChange={([value]) => onConfidenceChange(value)}
+              min={0}
+              max={1}
+              step={0.1}
+              className="w-full"
+            />
+          </div>
+        </>
+      )}
     </div>
   );
 }
