@@ -19,6 +19,7 @@ import Knowledge from "./pages/Knowledge";
 import Settings from "./pages/Settings";
 import AcceptInvite from "./pages/AcceptInvite";
 import NotFound from "./pages/NotFound";
+import Assistant from "./pages/Assistant";
 
 const queryClient = new QueryClient();
 
@@ -39,6 +40,14 @@ const App = () => (
               element={
                 <AppLayout>
                   <Dashboard />
+                </AppLayout>
+              }
+            />
+            <Route
+              path="/assistant"
+              element={
+                <AppLayout>
+                  <Assistant />
                 </AppLayout>
               }
             />
