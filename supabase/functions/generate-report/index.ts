@@ -108,7 +108,7 @@ serve(async (req) => {
     // Fetch knowledge items
     let insightsQuery = supabase
       .from('knowledge_items')
-      .select('id, title, content, category, confidence, evidence, extracted_at, project_files(name)')
+      .select('id, title, content, category, confidence, evidence, evidence_verified, extracted_at, project_files(name)')
       .eq('project_id', project_id)
       .is('deleted_at', null)
       .order('extracted_at', { ascending: false });
@@ -161,10 +161,14 @@ serve(async (req) => {
       for (const item of items) {
         const fileData = item.project_files as unknown as { name: string } | null;
         const fileName = fileData?.name || 'Arquivo desconhecido';
-        insightsText += `- **${item.title}** (Confiança: ${item.confidence || 'N/A'}%)\n`;
-        insightsText += `  ${item.content}\n`;
+        insightsText += `- **${item.title}**\n`;
+        insightsText += `  Conteúdo: ${item.content}\n`;
+        insightsText += `  Confiança: ${item.confidence || 'N/A'}%\n`;
         if (item.evidence) {
-          insightsText += `  > Evidência: "${item.evidence.substring(0, 200)}${item.evidence.length > 200 ? '...' : ''}"\n`;
+          insightsText += `  Evidência Original: "${item.evidence.substring(0, 300)}${item.evidence.length > 300 ? '...' : ''}"\n`;
+        }
+        if (item.evidence_verified === false) {
+          insightsText += `  [!] AVISO: Evidência não verificada no documento original\n`;
         }
         insightsText += `  Fonte: ${fileName}\n\n`;
       }
@@ -178,20 +182,54 @@ serve(async (req) => {
       }
     }
 
-    const systemPrompt = `Você é um redator técnico especializado em P&D odontológico. 
-Sua tarefa é criar um ${typeConfig.name} profissional e bem estruturado.
+    const systemPrompt = `Você é um redator técnico que sintetiza dados de P&D.
+Sua tarefa é criar um ${typeConfig.name}.
 
-FOCO DO RELATÓRIO: ${typeConfig.focus}
+FOCO: ${typeConfig.focus}
 ESTILO: ${typeConfig.style}
 
-REGRAS IMPORTANTES:
-1. Use linguagem técnica mas acessível
-2. Cite evidências dos insights quando relevante
-3. Mantenha objetividade científica
-4. Estruture com seções claras usando markdown
-5. Inclua recomendações acionáveis quando apropriado
-6. NÃO invente dados - use apenas as informações fornecidas
-7. Se houver poucos insights, mencione que o relatório é preliminar`;
+## REGRA ABSOLUTA - ZERO ALUCINAÇÃO:
+
+1. Você SÓ pode escrever afirmações que estão EXPLICITAMENTE nos insights fornecidos
+2. NUNCA adicione conhecimento próprio sobre ciência de materiais, química ou odontologia
+3. NUNCA use frases como "conforme esperado", "como se sabe", "correlação conhecida", "é sabido que"
+4. NUNCA faça recomendações que NÃO estejam explicitamente nos insights
+5. Se não houver dados suficientes, diga "dados insuficientes" em vez de inventar
+6. NUNCA interprete ou tire conclusões além do que está literalmente escrito
+
+## ESTRUTURA OBRIGATÓRIA:
+
+Para cada afirmação no relatório:
+- CITE a fonte: "Conforme o insight '[título do insight]': [afirmação direta]"
+- Use APENAS valores numéricos que aparecem nos insights
+- Se dois insights parecem se relacionar, diga "os dados indicam" e NÃO "confirma-se" ou "demonstra-se"
+
+## O QUE VOCÊ NÃO PODE FAZER:
+
+- Inventar correlações (ex: "correlação inversa esperada")
+- Adicionar teoria científica não mencionada nos insights
+- Fazer recomendações especulativas
+- Usar seu conhecimento prévio de química/materiais/odontologia
+- Tirar conclusões além dos dados fornecidos
+- Usar linguagem afirmativa sobre relações não comprovadas
+
+## O QUE VOCÊ PODE FAZER:
+
+- Organizar os insights por categoria
+- Citar valores EXATOS dos insights
+- Resumir o que os insights dizem LITERALMENTE
+- Apontar lacunas nos dados
+- Marcar áreas que precisam de mais pesquisa
+- Usar linguagem condicional ("os dados sugerem", "observou-se que")
+
+## FORMATO ESPERADO:
+
+### [Seção]
+Conforme o insight '[título]':
+- Resultado A: [valor exato do insight]
+- Resultado B: [valor exato do insight]
+
+**Limitação:** [o que os dados NÃO mostram]`;
 
     const userPrompt = `## PROJETO: ${project.name}
 ${project.description ? `Descrição: ${project.description}` : ''}
@@ -232,7 +270,7 @@ Gere o relatório completo em português brasileiro.`;
             type: "function",
             function: {
               name: "create_report",
-              description: "Cria um relatório estruturado de P&D",
+              description: "Cria um relatório estruturado de P&D baseado APENAS nos insights fornecidos",
               parameters: {
                 type: "object",
                 properties: {
@@ -242,14 +280,18 @@ Gere o relatório completo em português brasileiro.`;
                   },
                   resumo: { 
                     type: "string", 
-                    description: "Resumo executivo do relatório (máx 500 palavras)" 
+                    description: "Resumo que cita APENAS dados dos insights, sem adições ou interpretações próprias. Use citações explícitas." 
                   },
                   conteudo: { 
                     type: "string", 
-                    description: "Conteúdo completo do relatório em markdown" 
+                    description: "Relatório em markdown com citações explícitas no formato [Insight: título]. NUNCA adicione conhecimento próprio ou interpretações especulativas." 
+                  },
+                  limitacoes: {
+                    type: "string",
+                    description: "Lista do que os dados NÃO mostram, lacunas identificadas e áreas que precisam de mais pesquisa. Seja honesto sobre o que não pode ser concluído."
                   }
                 },
-                required: ["titulo", "resumo", "conteudo"],
+                required: ["titulo", "resumo", "conteudo", "limitacoes"],
                 additionalProperties: false
               }
             }
@@ -288,6 +330,12 @@ Gere o relatório completo em português brasileiro.`;
 
     const reportData = JSON.parse(toolCall.function.arguments);
     
+    // Append limitations section to content if provided
+    let finalContent = reportData.conteudo;
+    if (reportData.limitacoes) {
+      finalContent += `\n\n---\n\n## Limitações e Lacunas\n\n${reportData.limitacoes}`;
+    }
+    
     // Create the report in the database
     const { data: newReport, error: createError } = await supabase
       .from('reports')
@@ -295,7 +343,7 @@ Gere o relatório completo em português brasileiro.`;
         project_id,
         title: reportData.titulo,
         summary: reportData.resumo,
-        content: reportData.conteudo,
+        content: finalContent,
         status: 'draft',
         created_by: user.id,
         generated_by_ai: true,
