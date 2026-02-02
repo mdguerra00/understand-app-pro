@@ -19,11 +19,17 @@ interface ChunkSource {
 // Generate embedding for query
 async function generateQueryEmbedding(query: string): Promise<number[] | null> {
   try {
+    const apiKey = Deno.env.get("LOVABLE_API_KEY");
+    if (!apiKey) {
+      console.error("LOVABLE_API_KEY not configured");
+      return null;
+    }
+
     const response = await fetch("https://ai-gateway.lovable.dev/embed", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "Authorization": `Bearer ${Deno.env.get("LOVABLE_API_KEY")}`,
+        "Authorization": `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
         input: query,
@@ -32,12 +38,15 @@ async function generateQueryEmbedding(query: string): Promise<number[] | null> {
     });
 
     if (!response.ok) {
+      const errorText = await response.text();
+      console.error("Embedding API error:", response.status, errorText);
       return null;
     }
 
     const data = await response.json();
     return data.data?.[0]?.embedding || null;
-  } catch {
+  } catch (error) {
+    console.error("Query embedding error:", error);
     return null;
   }
 }
@@ -207,41 +216,70 @@ serve(async (req) => {
       // Otherwise, search for relevant chunks
       const queryEmbedding = await generateQueryEmbedding(query);
       
-      if (!queryEmbedding) {
-        return new Response(
-          JSON.stringify({ error: "Failed to process query" }),
-          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
-      }
-
       const targetProjectIds = project_ids?.length > 0
         ? project_ids.filter((id: string) => allowedProjectIds.includes(id))
         : allowedProjectIds;
 
-      // Get top chunks via hybrid search
-      const { data, error } = await supabase.rpc("search_chunks_hybrid", {
-        p_query_text: query,
-        p_query_embedding: `[${queryEmbedding.join(",")}]`,
-        p_project_ids: targetProjectIds,
-        p_limit: 12,
-        p_semantic_weight: 0.65,
-        p_fts_weight: 0.35,
-      });
+      if (queryEmbedding) {
+        // Full hybrid search with embeddings
+        const { data, error } = await supabase.rpc("search_chunks_hybrid", {
+          p_query_text: query,
+          p_query_embedding: `[${queryEmbedding.join(",")}]`,
+          p_project_ids: targetProjectIds,
+          p_limit: 12,
+          p_semantic_weight: 0.65,
+          p_fts_weight: 0.35,
+        });
 
-      if (error) {
-        console.error("Search error:", error);
-        throw error;
+        if (error) {
+          console.error("Hybrid search error:", error);
+          throw error;
+        }
+
+        chunks = (data || []).map((row: any) => ({
+          id: row.chunk_id,
+          source_type: row.source_type,
+          source_id: row.source_id,
+          source_title: row.source_title || "Sem título",
+          project_name: row.project_name || "Projeto",
+          chunk_text: row.chunk_text,
+          chunk_index: row.chunk_index || 0,
+        }));
+      } else {
+        // Fallback to FTS-only search when embeddings aren't available
+        console.warn("Embedding generation failed, using FTS only");
+        
+        const { data, error } = await supabase
+          .from("search_chunks")
+          .select(`
+            id,
+            project_id,
+            source_type,
+            source_id,
+            chunk_text,
+            chunk_index,
+            metadata,
+            projects!inner(name)
+          `)
+          .in("project_id", targetProjectIds)
+          .textSearch("tsv", query, { type: "websearch", config: "portuguese" })
+          .limit(12);
+
+        if (error) {
+          console.error("FTS search error:", error);
+          throw error;
+        }
+
+        chunks = (data || []).map((row: any) => ({
+          id: row.id,
+          source_type: row.source_type,
+          source_id: row.source_id,
+          source_title: row.metadata?.title || "Sem título",
+          project_name: row.projects?.name || "Projeto",
+          chunk_text: row.chunk_text,
+          chunk_index: row.chunk_index || 0,
+        }));
       }
-
-      chunks = (data || []).map((row: any) => ({
-        id: row.chunk_id,
-        source_type: row.source_type,
-        source_id: row.source_id,
-        source_title: row.source_title || "Sem título",
-        project_name: row.project_name || "Projeto",
-        chunk_text: row.chunk_text,
-        chunk_index: row.chunk_index || 0,
-      }));
     }
 
     // Validate we have chunks
