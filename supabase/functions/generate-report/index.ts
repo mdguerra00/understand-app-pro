@@ -135,11 +135,39 @@ serve(async (req) => {
     // Fetch project files for context
     const { data: files } = await supabase
       .from('project_files')
-      .select('name, mime_type, created_at, description')
+      .select('id, name, mime_type, created_at, description')
       .eq('project_id', project_id)
       .is('deleted_at', null)
       .order('created_at', { ascending: false })
       .limit(20);
+
+    // Fetch document chunks (parsed content from files)
+    const { data: documentChunks, error: chunksError } = await supabase
+      .from('search_chunks')
+      .select('chunk_text, chunk_index, source_id, metadata')
+      .eq('project_id', project_id)
+      .eq('source_type', 'file')
+      .order('source_id', { ascending: true })
+      .order('chunk_index', { ascending: true })
+      .limit(100); // Limit to prevent token overflow
+
+    if (chunksError) {
+      console.error("Error fetching document chunks:", chunksError);
+    }
+
+    // Group chunks by source file
+    const chunksByFile: Record<string, { title: string; chunks: string[] }> = {};
+    for (const chunk of documentChunks || []) {
+      const sourceId = chunk.source_id;
+      const metadata = chunk.metadata as { title?: string } | null;
+      if (!chunksByFile[sourceId]) {
+        chunksByFile[sourceId] = {
+          title: metadata?.title || 'Documento',
+          chunks: []
+        };
+      }
+      chunksByFile[sourceId].chunks.push(chunk.chunk_text);
+    }
 
     // Group insights by category
     const insightsByCategory: Record<string, typeof insights> = {};
@@ -154,6 +182,22 @@ serve(async (req) => {
     // Build the prompt
     const typeConfig = REPORT_TYPE_CONFIG[report_type];
     
+    // Build document content section
+    let documentsText = '';
+    for (const [fileId, fileData] of Object.entries(chunksByFile)) {
+      documentsText += `\n### Documento: ${fileData.title}\n`;
+      documentsText += `---\n`;
+      // Join chunks with line breaks, limit each file's content
+      const fullContent = fileData.chunks.join('\n\n');
+      const truncatedContent = fullContent.substring(0, 8000); // ~2000 tokens per file
+      documentsText += truncatedContent;
+      if (fullContent.length > 8000) {
+        documentsText += '\n[... conteúdo truncado por limite de tamanho ...]\n';
+      }
+      documentsText += `\n---\n\n`;
+    }
+
+    // Build insights section
     let insightsText = '';
     for (const [category, items] of Object.entries(insightsByCategory)) {
       const label = CATEGORY_LABELS[category] || category;
@@ -182,32 +226,40 @@ serve(async (req) => {
       }
     }
 
-    const systemPrompt = `Você é um redator técnico que sintetiza dados de P&D.
+    const systemPrompt = `Você é um redator técnico-científico que analisa dados de P&D.
 Sua tarefa é criar um ${typeConfig.name}.
 
 FOCO: ${typeConfig.focus}
 ESTILO: ${typeConfig.style}
 
+## FONTES DE INFORMAÇÃO:
+
+Você receberá DUAS fontes de dados:
+1. **CONTEÚDO DOS DOCUMENTOS**: Texto extraído diretamente dos arquivos do projeto (planilhas, PDFs, etc.)
+2. **INSIGHTS PRÉ-EXTRAÍDOS**: Resumos analíticos já identificados por IA anteriormente
+
+Você DEVE analisar AMBAS as fontes para gerar o relatório.
+
 ## REGRA ABSOLUTA - ZERO ALUCINAÇÃO:
 
-1. Você SÓ pode escrever afirmações que estão EXPLICITAMENTE nos insights fornecidos
+1. Você SÓ pode escrever afirmações que estão EXPLICITAMENTE nos documentos ou insights fornecidos
 2. NUNCA adicione conhecimento próprio sobre ciência de materiais, química ou odontologia
 3. NUNCA use frases como "conforme esperado", "como se sabe", "correlação conhecida", "é sabido que"
-4. NUNCA faça recomendações que NÃO estejam explicitamente nos insights
+4. NUNCA faça recomendações que NÃO estejam explicitamente nos dados
 5. Se não houver dados suficientes, diga "dados insuficientes" em vez de inventar
 6. NUNCA interprete ou tire conclusões além do que está literalmente escrito
 
 ## ESTRUTURA OBRIGATÓRIA:
 
 Para cada afirmação no relatório:
-- CITE a fonte: "Conforme o insight '[título do insight]': [afirmação direta]"
-- Use APENAS valores numéricos que aparecem nos insights
-- Se dois insights parecem se relacionar, diga "os dados indicam" e NÃO "confirma-se" ou "demonstra-se"
+- CITE a fonte: "Conforme [documento/insight]: [afirmação direta]"
+- Use APENAS valores numéricos que aparecem nos documentos ou insights
+- Se dois dados parecem se relacionar, diga "os dados indicam" e NÃO "confirma-se" ou "demonstra-se"
 
 ## O QUE VOCÊ NÃO PODE FAZER:
 
 - Inventar correlações (ex: "correlação inversa esperada")
-- Adicionar teoria científica não mencionada nos insights
+- Adicionar teoria científica não mencionada nos documentos
 - Fazer recomendações especulativas
 - Usar seu conhecimento prévio de química/materiais/odontologia
 - Tirar conclusões além dos dados fornecidos
@@ -215,19 +267,19 @@ Para cada afirmação no relatório:
 
 ## O QUE VOCÊ PODE FAZER:
 
-- Organizar os insights por categoria
-- Citar valores EXATOS dos insights
-- Resumir o que os insights dizem LITERALMENTE
-- Apontar lacunas nos dados
-- Marcar áreas que precisam de mais pesquisa
+- Analisar o conteúdo completo dos documentos
+- Cruzar informações entre documentos e insights
+- Identificar padrões nos dados QUANDO EXPLÍCITOS
+- Citar valores EXATOS dos documentos
+- Apontar lacunas e inconsistências nos dados
 - Usar linguagem condicional ("os dados sugerem", "observou-se que")
 
 ## FORMATO ESPERADO:
 
 ### [Seção]
-Conforme o insight '[título]':
-- Resultado A: [valor exato do insight]
-- Resultado B: [valor exato do insight]
+Conforme o documento '[nome]' / insight '[título]':
+- Resultado A: [valor exato]
+- Resultado B: [valor exato]
 
 **Limitação:** [o que os dados NÃO mostram]`;
 
@@ -235,15 +287,19 @@ Conforme o insight '[título]':
 ${project.description ? `Descrição: ${project.description}` : ''}
 ${project.objectives ? `Objetivos: ${project.objectives}` : ''}
 
-## INSIGHTS EXTRAÍDOS (${insights?.length || 0} total):
+## CONTEÚDO DOS DOCUMENTOS (${Object.keys(chunksByFile).length} arquivos):
+${documentsText || 'Nenhum documento indexado ainda.'}
+
+## INSIGHTS PRÉ-EXTRAÍDOS (${insights?.length || 0} total):
 ${insightsText || 'Nenhum insight disponível ainda.'}
 
-## ARQUIVOS DO PROJETO:
+## LISTA DE ARQUIVOS:
 ${filesText || 'Nenhum arquivo registrado.'}
 
 ---
 
-Gere o relatório completo em português brasileiro.`;
+Analise profundamente o conteúdo dos documentos E os insights extraídos.
+Gere o relatório completo em português brasileiro, citando as fontes específicas.`;
 
     // Call Lovable AI Gateway with tool calling for structured output
     const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
@@ -251,7 +307,7 @@ Gere o relatório completo em português brasileiro.`;
       throw new Error("LOVABLE_API_KEY não configurada");
     }
 
-    console.log(`Generating ${report_type} report for project ${project_id} with ${insights?.length || 0} insights`);
+    console.log(`Generating ${report_type} report for project ${project_id} with ${insights?.length || 0} insights and ${Object.keys(chunksByFile).length} documents`);
 
     const aiResponse = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
       method: "POST",
@@ -270,7 +326,7 @@ Gere o relatório completo em português brasileiro.`;
             type: "function",
             function: {
               name: "create_report",
-              description: "Cria um relatório estruturado de P&D baseado APENAS nos insights fornecidos",
+              description: "Cria um relatório estruturado de P&D baseado na análise dos documentos e insights fornecidos",
               parameters: {
                 type: "object",
                 properties: {
@@ -280,11 +336,11 @@ Gere o relatório completo em português brasileiro.`;
                   },
                   resumo: { 
                     type: "string", 
-                    description: "Resumo que cita APENAS dados dos insights, sem adições ou interpretações próprias. Use citações explícitas." 
+                    description: "Resumo baseado na análise dos documentos e insights, sem adições ou interpretações próprias. Use citações explícitas." 
                   },
                   conteudo: { 
                     type: "string", 
-                    description: "Relatório em markdown com citações explícitas no formato [Insight: título]. NUNCA adicione conhecimento próprio ou interpretações especulativas." 
+                    description: "Relatório em markdown com citações explícitas de documentos e insights. Analise os dados dos documentos. NUNCA adicione conhecimento próprio." 
                   },
                   limitacoes: {
                     type: "string",
