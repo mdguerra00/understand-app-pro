@@ -33,11 +33,13 @@ import {
   LogOut,
   ChevronUp,
   User,
+  MessageCircle,
 } from 'lucide-react';
 import { useAuth } from '@/hooks/useAuth';
 
 const mainNavItems = [
   { title: 'Dashboard', url: '/', icon: LayoutDashboard },
+  { title: 'Assistente IA', url: '/assistant', icon: MessageCircle },
   { title: 'Projetos', url: '/projects', icon: FolderKanban },
   { title: 'Tarefas', url: '/tasks', icon: CheckSquare },
   { title: 'Relatórios', url: '/reports', icon: FileText },
