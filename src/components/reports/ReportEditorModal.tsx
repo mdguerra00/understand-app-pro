@@ -10,6 +10,7 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
+import { Alert, AlertDescription } from '@/components/ui/alert';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -26,6 +27,8 @@ import {
   FileText,
   Edit,
   Download,
+  AlertCircle,
+  Bot,
 } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
@@ -51,6 +54,7 @@ interface Report {
   submitted_at: string | null;
   approved_at: string | null;
   review_notes: string | null;
+  generated_by_ai?: boolean | null;
 }
 
 interface ReportEditorModalProps {
@@ -363,6 +367,19 @@ export function ReportEditorModal({
         </DialogHeader>
 
         <div className="flex-1 overflow-y-auto space-y-4 py-4">
+          {/* AI Generated Warning */}
+          {report?.generated_by_ai && (
+            <Alert variant="warning">
+              <Bot className="h-4 w-4" />
+              <AlertDescription className="flex items-start gap-2">
+                <span>
+                  <strong>Relatório gerado por IA.</strong> Revise todas as conclusões e citações antes de aprovar.
+                  Os dados são baseados apenas nos insights extraídos, mas recomenda-se verificação humana.
+                </span>
+              </AlertDescription>
+            </Alert>
+          )}
+
           {/* Outdated Banner - only show for existing reports */}
           {!isNewReport && report && (
             <OutdatedReportBanner
