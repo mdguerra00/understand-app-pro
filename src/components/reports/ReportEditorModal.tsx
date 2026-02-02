@@ -33,6 +33,8 @@ import { useAuth } from '@/hooks/useAuth';
 import { format } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import type { Database } from '@/integrations/supabase/types';
+import { OutdatedReportBanner } from './OutdatedReportBanner';
+import { GenerateReportButton } from './GenerateReportButton';
 
 type ReportStatus = Database['public']['Enums']['report_status'];
 
@@ -84,6 +86,7 @@ export function ReportEditorModal({
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
   const [hasChanges, setHasChanges] = useState(false);
   const [reportId, setReportId] = useState<string | null>(null);
+  const [regenerateDialogOpen, setRegenerateDialogOpen] = useState(false);
   const autosaveTimer = useRef<NodeJS.Timeout | null>(null);
 
   const isReadOnly = status !== 'draft';
@@ -360,6 +363,15 @@ export function ReportEditorModal({
         </DialogHeader>
 
         <div className="flex-1 overflow-y-auto space-y-4 py-4">
+          {/* Outdated Banner - only show for existing reports */}
+          {!isNewReport && report && (
+            <OutdatedReportBanner
+              projectId={projectId}
+              reportCreatedAt={report.created_at}
+              onRegenerateClick={() => setRegenerateDialogOpen(true)}
+            />
+          )}
+
           {/* Title */}
           <div>
             <Input
@@ -462,6 +474,19 @@ export function ReportEditorModal({
           </div>
         </div>
       </DialogContent>
+
+      {/* Regenerate Report Dialog */}
+      <GenerateReportButton
+        projectId={projectId}
+        onReportGenerated={(newReportId) => {
+          setRegenerateDialogOpen(false);
+          onOpenChange(false);
+          onSuccess?.();
+        }}
+        externalOpen={regenerateDialogOpen}
+        onExternalOpenChange={setRegenerateDialogOpen}
+        triggerButton={null}
+      />
     </Dialog>
   );
 }

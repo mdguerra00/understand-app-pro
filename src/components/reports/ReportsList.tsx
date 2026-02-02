@@ -39,6 +39,7 @@ import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/hooks/useAuth';
 import { ReportEditorModal } from './ReportEditorModal';
 import { GenerateReportButton } from './GenerateReportButton';
+import { OutdatedReportBadge } from './OutdatedReportBadge';
 import { format } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import type { Database } from '@/integrations/supabase/types';
@@ -271,7 +272,7 @@ export function ReportsList({ projectId, initialReportId, onReportOpened }: Repo
                     <div className="flex items-center gap-3 min-w-0 flex-1">
                       <FileText className="h-5 w-5 text-muted-foreground shrink-0" />
                       <div className="min-w-0">
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
                           <h4 className="font-medium truncate">{report.title}</h4>
                           {report.generated_by_ai && (
                             <Badge variant="outline" className="gap-1 text-xs shrink-0">
@@ -279,6 +280,10 @@ export function ReportsList({ projectId, initialReportId, onReportOpened }: Repo
                               IA
                             </Badge>
                           )}
+                          <OutdatedReportBadge
+                            projectId={projectId}
+                            reportCreatedAt={report.created_at}
+                          />
                         </div>
                         {report.summary && (
                           <p className="text-sm text-muted-foreground truncate">

@@ -30,6 +30,10 @@ type KnowledgeCategory = Database['public']['Enums']['knowledge_category'];
 interface GenerateReportButtonProps {
   projectId: string;
   onReportGenerated: (reportId: string) => void;
+  externalOpen?: boolean;
+  onExternalOpenChange?: (open: boolean) => void;
+  defaultReportType?: 'progress' | 'final' | 'executive';
+  triggerButton?: React.ReactNode;
 }
 
 const REPORT_TYPES = [
@@ -63,12 +67,24 @@ const CATEGORY_LABELS: Record<KnowledgeCategory, string> = {
   recommendation: 'Recomendações'
 };
 
-export function GenerateReportButton({ projectId, onReportGenerated }: GenerateReportButtonProps) {
+export function GenerateReportButton({ 
+  projectId, 
+  onReportGenerated,
+  externalOpen,
+  onExternalOpenChange,
+  defaultReportType,
+  triggerButton,
+}: GenerateReportButtonProps) {
   const { toast } = useToast();
-  const [open, setOpen] = useState(false);
+  const [internalOpen, setInternalOpen] = useState(false);
   const [generating, setGenerating] = useState(false);
-  const [reportType, setReportType] = useState<string>('progress');
+  const [reportType, setReportType] = useState<string>(defaultReportType || 'progress');
   const [selectedCategories, setSelectedCategories] = useState<KnowledgeCategory[]>([]);
+
+  // Support external control of the dialog
+  const isControlled = externalOpen !== undefined;
+  const open = isControlled ? externalOpen : internalOpen;
+  const setOpen = isControlled ? (onExternalOpenChange || (() => {})) : setInternalOpen;
 
   // Fetch insights count by category
   const { data: insightStats } = useQuery({
@@ -149,12 +165,16 @@ export function GenerateReportButton({ projectId, onReportGenerated }: GenerateR
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>
-        <Button variant="outline">
-          <Sparkles className="mr-2 h-4 w-4" />
-          Gerar com IA
-        </Button>
-      </DialogTrigger>
+      {triggerButton !== undefined ? (
+        triggerButton
+      ) : (
+        <DialogTrigger asChild>
+          <Button variant="outline">
+            <Sparkles className="mr-2 h-4 w-4" />
+            Gerar com IA
+          </Button>
+        </DialogTrigger>
+      )}
       <DialogContent className="sm:max-w-[500px]">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
