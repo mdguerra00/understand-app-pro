@@ -248,6 +248,12 @@ serve(async (req) => {
       } else {
         // Fallback to FTS-only search when embeddings aren't available
         console.warn("Embedding generation failed, using FTS only");
+        console.log("Searching in projects:", targetProjectIds);
+        console.log("Query:", query);
+        
+        // Use plain text search instead of websearch for better compatibility
+        const searchQuery = query.split(/\s+/).filter((w: string) => w.length > 2).join(' | ');
+        console.log("FTS query:", searchQuery);
         
         const { data, error } = await supabase
           .from("search_chunks")
@@ -262,9 +268,11 @@ serve(async (req) => {
             projects!inner(name)
           `)
           .in("project_id", targetProjectIds)
-          .textSearch("tsv", query, { type: "websearch", config: "portuguese" })
+          .textSearch("tsv", searchQuery, { type: "plain", config: "portuguese" })
           .limit(12);
 
+        console.log("FTS results count:", data?.length || 0);
+        
         if (error) {
           console.error("FTS search error:", error);
           throw error;
