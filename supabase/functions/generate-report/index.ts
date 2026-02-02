@@ -273,6 +273,21 @@ Para cada afirmação no relatório:
 - Citar valores EXATOS dos documentos
 - Apontar lacunas e inconsistências nos dados
 - Usar linguagem condicional ("os dados sugerem", "observou-se que")
+- PROPOR PRÓXIMOS PASSOS baseados nas lacunas identificadas
+
+## PRÓXIMOS PASSOS - DIRETRIZES:
+
+Ao propor próximos passos, você DEVE:
+1. Basear-se APENAS nas lacunas e limitações identificadas nos dados
+2. Sugerir experimentos ou análises que preencham gaps específicos encontrados
+3. Priorizar ações que validem ou refutem hipóteses implícitas nos dados
+4. Ser específico: "Testar formulação X com concentração Y" em vez de "fazer mais testes"
+5. Justificar cada sugestão citando a lacuna ou dado que a motiva
+
+Você NÃO pode:
+- Sugerir experimentos baseados em conhecimento teórico externo
+- Propor ações genéricas sem ligação com os dados analisados
+- Fazer recomendações que exigem informações não presentes nos documentos
 
 ## FORMATO ESPERADO:
 
@@ -281,7 +296,12 @@ Conforme o documento '[nome]' / insight '[título]':
 - Resultado A: [valor exato]
 - Resultado B: [valor exato]
 
-**Limitação:** [o que os dados NÃO mostram]`;
+**Limitação:** [o que os dados NÃO mostram]
+
+### Próximos Passos Sugeridos
+Com base nas lacunas identificadas:
+1. **[Ação específica]** - Justificativa: [citar dado ou lacuna que motiva]
+2. **[Ação específica]** - Justificativa: [citar dado ou lacuna que motiva]`;
 
     const userPrompt = `## PROJETO: ${project.name}
 ${project.description ? `Descrição: ${project.description}` : ''}
@@ -345,9 +365,13 @@ Gere o relatório completo em português brasileiro, citando as fontes específi
                   limitacoes: {
                     type: "string",
                     description: "Lista do que os dados NÃO mostram, lacunas identificadas e áreas que precisam de mais pesquisa. Seja honesto sobre o que não pode ser concluído."
+                  },
+                  proximos_passos: {
+                    type: "string",
+                    description: "Próximos passos sugeridos baseados EXCLUSIVAMENTE nas lacunas e dados identificados. Cada sugestão deve citar a lacuna ou dado que a justifica. Seja específico e acionável."
                   }
                 },
-                required: ["titulo", "resumo", "conteudo", "limitacoes"],
+                required: ["titulo", "resumo", "conteudo", "limitacoes", "proximos_passos"],
                 additionalProperties: false
               }
             }
@@ -386,10 +410,13 @@ Gere o relatório completo em português brasileiro, citando as fontes específi
 
     const reportData = JSON.parse(toolCall.function.arguments);
     
-    // Append limitations section to content if provided
+    // Append limitations and next steps sections to content
     let finalContent = reportData.conteudo;
     if (reportData.limitacoes) {
       finalContent += `\n\n---\n\n## Limitações e Lacunas\n\n${reportData.limitacoes}`;
+    }
+    if (reportData.proximos_passos) {
+      finalContent += `\n\n---\n\n## Próximos Passos Sugeridos\n\n${reportData.proximos_passos}`;
     }
     
     // Create the report in the database
