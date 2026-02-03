@@ -1,7 +1,8 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import * as XLSX from "https://esm.sh/xlsx@0.18.5?target=deno";
-import { encode as base64Encode } from "https://deno.land/std@0.168.0/encoding/base64.ts";
+// @ts-ignore - pdfjs-serverless types
+import { getDocument } from "https://esm.sh/pdfjs-serverless";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -279,19 +280,48 @@ serve(async (req) => {
       parsingQuality = textContent.length > 100 ? "good" : "partial";
       
     } else if (mimeType === "application/pdf") {
-      // For PDFs, use Deno's native base64 encoding from std library
+      // Use pdfjs-serverless to extract text from PDF
       console.log(`Processing PDF: ${fileData.name}`);
-      const arrayBuffer = await fileContent.arrayBuffer();
-      const uint8Array = new Uint8Array(arrayBuffer);
-      
-      // Use Deno's standard library for base64 encoding (safe for large files)
-      const base64 = base64Encode(arrayBuffer);
-      
-      console.log(`PDF encoded to base64. Size: ${uint8Array.length} bytes, base64 length: ${base64.length}`);
-      
-      // Store base64 for multimodal analysis (will be sent as inline data)
-      textContent = `[PDF_BASE64_DATA:${base64}]`;
-      parsingQuality = "pdf_multimodal";
+      try {
+        const arrayBuffer = await fileContent.arrayBuffer();
+        const uint8Array = new Uint8Array(arrayBuffer);
+        
+        // Load PDF document
+        const pdfDoc = await getDocument({ data: uint8Array, useSystemFonts: true }).promise;
+        console.log(`PDF loaded. Pages: ${pdfDoc.numPages}`);
+        
+        // Extract text from all pages
+        const textParts: string[] = [];
+        for (let i = 1; i <= pdfDoc.numPages; i++) {
+          const page = await pdfDoc.getPage(i);
+          const content = await page.getTextContent();
+          const pageText = content.items
+            .map((item: any) => item.str)
+            .join(' ');
+          if (pageText.trim()) {
+            textParts.push(`--- Página ${i} ---\n${pageText}`);
+          }
+        }
+        
+        const extractedText = textParts.join('\n\n');
+        console.log(`PDF text extracted. Length: ${extractedText.length}, Pages with text: ${textParts.length}`);
+        
+        if (extractedText.length > 100) {
+          textContent = `[PDF Document: ${fileData.name}]\n[Páginas: ${pdfDoc.numPages}]\n\n${extractedText}`;
+          parsingQuality = "good";
+        } else if (extractedText.length > 0) {
+          textContent = `[PDF Document: ${fileData.name}]\n[Páginas: ${pdfDoc.numPages}]\n\n${extractedText}`;
+          parsingQuality = "partial";
+        } else {
+          textContent = `[PDF Document: ${fileData.name}]\n[AVISO: PDF não contém texto extraível - pode ser um PDF escaneado/imagem]`;
+          parsingQuality = "failed";
+        }
+      } catch (pdfError: unknown) {
+        const errorMessage = pdfError instanceof Error ? pdfError.message : String(pdfError);
+        console.error("PDF parsing error:", pdfError);
+        textContent = `[PDF Document: ${fileData.name}]\n[ERRO: Falha ao processar PDF - ${errorMessage}]`;
+        parsingQuality = "failed";
+      }
       
     } else {
       // For other file types, try to extract text
@@ -425,40 +455,8 @@ Projeto: ${fileData.projects?.name || "Desconhecido"}
 Arquivo: ${fileData.name}
 Qualidade do parsing: ${parsingQuality}`;
 
-    // Build user message - handle PDF multimodal separately
-    let userMessage: any;
-    
-    if (parsingQuality === "pdf_multimodal" && textContent.startsWith("[PDF_BASE64_DATA:")) {
-      // Extract base64 data from the marker
-      const base64Data = textContent.replace("[PDF_BASE64_DATA:", "").replace("]", "");
-      
-      console.log(`Sending PDF as multimodal content. Base64 length: ${base64Data.length}`);
-      
-      // For PDFs, send as multimodal with inline document
-      userMessage = {
-        role: "user",
-        content: [
-          {
-            type: "text",
-            text: `Analise este documento PDF e extraia APENAS descobertas que você pode COMPROVAR com evidências do texto.
-
-LEMBRE-SE: O campo "evidence" deve ser uma CÓPIA EXATA do documento. Nunca invente valores.
-
-Arquivo: ${fileData.name}
-
-Se o documento não puder ser lido corretamente, retorne apenas um insight de "observation" explicando o problema.`
-          },
-          {
-            type: "image_url",
-            image_url: {
-              url: `data:application/pdf;base64,${base64Data}`
-            }
-          }
-        ]
-      };
-    } else {
-      // For text content, use regular message
-      const userPrompt = `Analise o documento abaixo e extraia APENAS descobertas que você pode COMPROVAR com evidências do texto.
+    // Build user message - all content is now text-based (including PDFs)
+    const userPrompt = `Analise o documento abaixo e extraia APENAS descobertas que você pode COMPROVAR com evidências do texto.
 
 LEMBRE-SE: O campo "evidence" deve ser uma CÓPIA EXATA do documento. Nunca invente valores.
 
@@ -468,9 +466,8 @@ ${textContent}
 ---
 
 Se o conteúdo acima parecer ilegível ou corrompido, retorne apenas um insight de "observation" explicando o problema.`;
-      
-      userMessage = { role: "user", content: userPrompt };
-    }
+    
+    const userMessage = { role: "user", content: userPrompt };
 
     // Call Lovable AI Gateway with tool calling
     const aiResponse = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
