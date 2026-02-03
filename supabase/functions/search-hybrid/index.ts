@@ -15,38 +15,8 @@ interface SearchResult {
   source_title: string;
   chunk_text: string;
   chunk_index: number;
-  score_semantic: number;
-  score_fts: number;
   score_final: number;
   metadata: Record<string, unknown>;
-}
-
-// Generate embedding for query
-async function generateQueryEmbedding(query: string): Promise<number[] | null> {
-  try {
-    const response = await fetch("https://ai.gateway.lovable.dev/embed", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${Deno.env.get("LOVABLE_API_KEY")}`,
-      },
-      body: JSON.stringify({
-        input: query,
-        model: "text-embedding-3-small",
-      }),
-    });
-
-    if (!response.ok) {
-      console.error("Embedding API error:", await response.text());
-      return null;
-    }
-
-    const data = await response.json();
-    return data.data?.[0]?.embedding || null;
-  } catch (error) {
-    console.error("Query embedding error:", error);
-    return null;
-  }
 }
 
 serve(async (req) => {
@@ -109,40 +79,14 @@ serve(async (req) => {
       ? project_ids.filter((id: string) => allowedProjectIds.includes(id))
       : allowedProjectIds;
 
-    // Generate embedding for query
-    const queryEmbedding = await generateQueryEmbedding(query);
+    // Extract search terms for ILIKE matching
+    const searchTerms = query.split(/\s+/).filter((w: string) => w.length > 2);
     
-    if (!queryEmbedding) {
-      // Fallback to FTS only
-      console.warn("Embedding generation failed, using FTS only");
-    }
-
-    // Perform hybrid search using raw SQL
-    const semanticWeight = 0.65;
-    const ftsWeight = 0.35;
-
     let results: SearchResult[] = [];
 
-    if (queryEmbedding) {
-      // Full hybrid search
-      const { data, error } = await supabase.rpc("search_chunks_hybrid", {
-        p_query_text: query,
-        p_query_embedding: `[${queryEmbedding.join(",")}]`,
-        p_project_ids: targetProjectIds,
-        p_limit: limit * 2,
-        p_semantic_weight: semanticWeight,
-        p_fts_weight: ftsWeight,
-      });
-
-      if (error) {
-        console.error("Hybrid search error:", error);
-        throw error;
-      }
-
-      results = data || [];
-    } else {
-      // FTS only fallback
-      const { data, error } = await supabase
+    // Try Full-Text Search first
+    try {
+      const { data: ftsData, error: ftsError } = await supabase
         .from("search_chunks")
         .select(`
           id,
@@ -158,24 +102,58 @@ serve(async (req) => {
         .textSearch("tsv", query, { type: "websearch", config: "portuguese" })
         .limit(limit);
 
-      if (error) {
-        throw error;
+      if (!ftsError && ftsData && ftsData.length > 0) {
+        results = ftsData.map((row: any, index: number) => ({
+          chunk_id: row.id,
+          project_id: row.project_id,
+          project_name: row.projects?.name || "Unknown",
+          source_type: row.source_type,
+          source_id: row.source_id,
+          source_title: row.metadata?.title || "Untitled",
+          chunk_text: row.chunk_text,
+          chunk_index: row.chunk_index,
+          score_final: 1 - index * 0.05,
+          metadata: row.metadata,
+        }));
       }
+    } catch (ftsError) {
+      console.warn("FTS search failed, falling back to ILIKE:", ftsError);
+    }
 
-      results = (data || []).map((row: any, index: number) => ({
-        chunk_id: row.id,
-        project_id: row.project_id,
-        project_name: row.projects?.name || "Unknown",
-        source_type: row.source_type,
-        source_id: row.source_id,
-        source_title: row.metadata?.title || "Untitled",
-        chunk_text: row.chunk_text,
-        chunk_index: row.chunk_index,
-        score_semantic: 0,
-        score_fts: 1 - index * 0.05, // Approximate ranking
-        score_final: 1 - index * 0.05,
-        metadata: row.metadata,
-      }));
+    // Fallback to ILIKE if FTS returned no results
+    if (results.length === 0 && searchTerms.length > 0) {
+      const orConditions = searchTerms.map((term: string) => `chunk_text.ilike.%${term}%`).join(',');
+      
+      const { data: ilikeData, error: ilikeError } = await supabase
+        .from("search_chunks")
+        .select(`
+          id,
+          project_id,
+          source_type,
+          source_id,
+          chunk_text,
+          chunk_index,
+          metadata,
+          projects!inner(name)
+        `)
+        .in("project_id", targetProjectIds)
+        .or(orConditions)
+        .limit(limit);
+
+      if (!ilikeError && ilikeData) {
+        results = ilikeData.map((row: any, index: number) => ({
+          chunk_id: row.id,
+          project_id: row.project_id,
+          project_name: row.projects?.name || "Unknown",
+          source_type: row.source_type,
+          source_id: row.source_id,
+          source_title: row.metadata?.title || "Untitled",
+          chunk_text: row.chunk_text,
+          chunk_index: row.chunk_index,
+          score_final: 1 - index * 0.05,
+          metadata: row.metadata,
+        }));
+      }
     }
 
     // Deduplicate by source (keep highest scoring chunk per source)
@@ -197,7 +175,6 @@ serve(async (req) => {
         results: dedupedResults,
         total: dedupedResults.length,
         query,
-        has_semantic: !!queryEmbedding,
       }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
