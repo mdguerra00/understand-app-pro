@@ -1,152 +1,202 @@
 
-
-# Plano: Integrar Perplexity AI no Sistema RAG
+# Plano: Assistente IA Contextualizado por Projeto
 
 ## Visao Geral
 
-Substituir o Lovable AI Gateway pelo Perplexity API para gerar respostas no Assistente IA. O Perplexity oferece respostas de alta qualidade com capacidade de "grounded search" que pode complementar a busca nos documentos internos.
+Adicionar uma aba "Assistente IA" na pagina de detalhe do projeto (`/projects/:id`) que busca e responde apenas com dados do projeto especifico. Isso complementa o Assistente global existente em `/assistant`.
 
-## Situacao Atual
+## Problema de Segunda Ordem: Rastreabilidade de Origem
 
-O sistema possui 3 Edge Functions que usam IA:
+Conforme mencionado, o usuario precisa saber de qual projeto veio cada informacao. A boa noticia: **a infraestrutura ja existe!**
 
-| Funcao | Uso Atual | Mudanca |
-|--------|-----------|---------|
-| `rag-answer` | Lovable Gateway para chat | Migrar para Perplexity |
-| `extract-knowledge` | Lovable Gateway para extração | Manter Lovable (funciona bem) |
-| `index-content` | Embeddings (falhando) | Remover - usar busca por texto |
+| Elemento | Status | Onde |
+|----------|--------|------|
+| `project_id` nos chunks | Existe | `search_chunks.project_id` |
+| `project_name` nas fontes | Existe | Retornado pelo `rag-answer` |
+| Filtro por `project_ids` | Existe | Parametro aceito pela Edge Function |
+| Exibicao do projeto na fonte | Existe | `SourcesPanel` agrupa por projeto |
 
 ## Arquitetura Proposta
 
 ```text
-Usuario pergunta
-      |
-      v
-+------------------+     +------------------+
-| Frontend         | --> | rag-answer       |
-| (Assistant.tsx)  |     | Edge Function    |
-+------------------+     +------------------+
-                               |
-       +-----------------------+-----------------------+
-       |                                               |
-       v                                               v
-+------------------+                         +------------------+
-| Busca Local      |                         | Perplexity API   |
-| (ILIKE/FTS)      |                         | Geracao Resposta |
-| search_chunks    |                         | Grounded in Docs |
-+------------------+                         +------------------+
++---------------------+                    +---------------------+
+|   /assistant        |                    |  /projects/:id      |
+|   (Global)          |                    |  (Contextualizado)  |
++---------------------+                    +---------------------+
+         |                                          |
+         | project_ids = []                         | project_ids = [id]
+         | (todos os projetos)                      | (apenas este projeto)
+         |                                          |
+         +------------------+   +-------------------+
+                            |   |
+                            v   v
+                    +------------------+
+                    |   rag-answer     |
+                    |  Edge Function   |
+                    +------------------+
+                            |
+                            v
+                    +------------------+
+                    |  search_chunks   |
+                    |  (filtrado por   |
+                    |   project_id)    |
+                    +------------------+
 ```
 
 ## Mudancas Necessarias
 
-### 1. Edge Function `rag-answer/index.ts`
+### 1. Hook `useAssistantChat` - Aceitar `projectId` Opcional
 
-**Antes:**
-- Tentava gerar embeddings via Lovable Gateway (falhava)
-- Usava Lovable Gateway para chat completions
+**Antes:** O hook nao aceita parametros, busca em todos os projetos.
 
-**Depois:**
-- Remove tentativa de embeddings
-- Usa busca ILIKE/FTS diretamente (ja funciona)
-- Usa Perplexity API para gerar resposta baseada nos chunks encontrados
+**Depois:** Aceita `projectId?: string` e passa como `project_ids: [projectId]` para a API.
 
-### 2. Edge Function `index-content/index.ts`
+### 2. Componente `ProjectAssistant` - Chat Embutido no Projeto
 
-**Antes:**
-- Tentava gerar embeddings via Lovable Gateway (falhava)
-- Chunks eram salvos sem embeddings
+Criar componente que:
+- Recebe `projectId` e `projectName` como props
+- Usa o hook com filtro de projeto
+- Exibe mensagens contextualizadas ("Pergunte sobre o projeto X")
+- Layout compacto para caber na tab
 
-**Depois:**
-- Remove toda logica de embeddings
-- Mantem apenas chunking e salvamento no banco
-- Indexacao passa a funcionar sem erros
+### 3. Pagina `ProjectDetail` - Nova Aba "IA"
+
+Adicionar quarta aba ao sistema de tabs existente:
+- Tarefas | Arquivos | Relatorios | **Assistente IA**
+
+### 4. Sugestoes Dinamicas por Projeto
+
+Em vez de perguntas genericas, gerar sugestoes baseadas no contexto:
+- "Quais insights foram extraidos neste projeto?"
+- "Resuma os principais resultados deste projeto"
+- "Quais arquivos foram analisados?"
+
+## Diagrama de Componentes
+
+```text
+ProjectDetail.tsx
+    |
+    +-- Tabs
+         |
+         +-- TabsContent value="tasks" -> Tarefas
+         +-- TabsContent value="files" -> Arquivos  
+         +-- TabsContent value="reports" -> Relatorios
+         +-- TabsContent value="assistant" -> ProjectAssistant (NOVO)
+                                                    |
+                                                    +-- useAssistantChat({ projectId })
+                                                    +-- ChatMessage (reutilizado)
+                                                    +-- SourcesPanel (reutilizado)
+```
 
 ## Secao Tecnica
 
-### Integracao Perplexity API
-
-O Perplexity usa API compativel com OpenAI:
+### Modificacao do Hook
 
 ```typescript
-// Novo codigo em rag-answer/index.ts
-async function generateRAGResponse(
-  query: string,
-  chunks: ChunkSource[],
-): Promise<{ response: string }> {
-  const PERPLEXITY_API_KEY = Deno.env.get("PERPLEXITY_API_KEY");
-  
-  // Formatar chunks como contexto
-  const context = chunks.map((chunk, i) => 
-    `[${i+1}] ${chunk.chunk_text}`
-  ).join("\n\n");
-
-  const response = await fetch("https://api.perplexity.ai/chat/completions", {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${PERPLEXITY_API_KEY}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: "sonar",
-      messages: [
-        { 
-          role: "system", 
-          content: `Voce e um assistente de P&D. Responda baseado APENAS nos trechos fornecidos. 
-                    Use citacoes [1], [2] para cada afirmacao.`
-        },
-        { 
-          role: "user", 
-          content: `Contexto dos documentos:\n${context}\n\nPergunta: ${query}` 
-        }
-      ],
-    }),
-  });
-
-  const data = await response.json();
-  return { response: data.choices[0].message.content };
+// useAssistantChat.ts
+export function useAssistantChat(options?: { projectId?: string }) {
+  const sendMessage = useCallback(async (content: string) => {
+    // ... existing code ...
+    
+    const response = await fetch(
+      `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/rag-answer`,
+      {
+        method: 'POST',
+        headers: { /* ... */ },
+        body: JSON.stringify({ 
+          query: content.trim(),
+          // NOVO: Passar project_ids se especificado
+          project_ids: options?.projectId ? [options.projectId] : undefined,
+        }),
+      }
+    );
+  }, [isLoading, options?.projectId]);
 }
 ```
 
-### Busca Simplificada (Remove Embeddings)
+### Componente ProjectAssistant
 
 ```typescript
-// Remover generateQueryEmbedding() completamente
-// Usar apenas busca ILIKE que ja funciona:
+// src/components/projects/ProjectAssistant.tsx
+interface ProjectAssistantProps {
+  projectId: string;
+  projectName: string;
+}
 
-const searchTerms = query.split(/\s+/).filter(w => w.length > 2);
-const orConditions = searchTerms.map(term => 
-  `chunk_text.ilike.%${term}%`
-).join(',');
+export function ProjectAssistant({ projectId, projectName }: ProjectAssistantProps) {
+  const { messages, isLoading, sendMessage, clearMessages } = useAssistantChat({ projectId });
+  
+  const suggestedQuestions = [
+    `Quais insights foram extraidos do projeto ${projectName}?`,
+    'Resuma os principais resultados encontrados',
+    'Quais materiais foram testados neste projeto?',
+    'Quais lacunas de conhecimento foram identificadas?',
+  ];
+  
+  // ... render similar to Assistant.tsx but with project context
+}
+```
 
-const { data } = await supabase
-  .from("search_chunks")
-  .select(`id, chunk_text, metadata, projects(name)`)
-  .in("project_id", targetProjectIds)
-  .or(orConditions)
-  .limit(12);
+### Integracao com ProjectDetail
+
+```typescript
+// ProjectDetail.tsx - adicionar na area de tabs
+<TabsList>
+  <TabsTrigger value="tasks">Tarefas</TabsTrigger>
+  <TabsTrigger value="files">Arquivos</TabsTrigger>
+  <TabsTrigger value="reports">Relatorios</TabsTrigger>
+  <TabsTrigger value="assistant">Assistente IA</TabsTrigger> {/* NOVO */}
+</TabsList>
+
+<TabsContent value="assistant">
+  <ProjectAssistant projectId={id!} projectName={project.name} />
+</TabsContent>
+```
+
+## Indicador Visual de Contexto
+
+Para deixar claro ao usuario que esta em modo "projeto especifico":
+
+```typescript
+// No header do ProjectAssistant
+<Badge variant="outline" className="bg-primary/10">
+  <FolderOpen className="h-3 w-3 mr-1" />
+  Contexto: {projectName}
+</Badge>
+```
+
+E nas fontes, destacar que todas vem do mesmo projeto (ou alertar se vierem de outro, o que nao deveria acontecer):
+
+```typescript
+// SourcesPanel - quando projectId esta definido
+{source.project !== projectName && (
+  <Badge variant="destructive" className="text-xs">
+    Fonte externa
+  </Badge>
+)}
 ```
 
 ## Arquivos a Modificar
 
 | Arquivo | Acao | Descricao |
 |---------|------|-----------|
-| `supabase/functions/rag-answer/index.ts` | Modificar | Substituir Lovable Gateway por Perplexity |
-| `supabase/functions/index-content/index.ts` | Modificar | Remover logica de embeddings |
-| `supabase/functions/search-hybrid/index.ts` | Modificar | Remover embeddings, usar apenas FTS/ILIKE |
+| `src/hooks/useAssistantChat.ts` | Modificar | Adicionar parametro `projectId` |
+| `src/components/projects/ProjectAssistant.tsx` | Criar | Componente de chat do projeto |
+| `src/pages/ProjectDetail.tsx` | Modificar | Adicionar tab "Assistente IA" |
+| `src/components/assistant/SourcesPanel.tsx` | Modificar | Indicador de contexto de projeto |
 
 ## Beneficios
 
-1. **Erro de indexacao resolvido** - Sem tentativa de embeddings que falham
-2. **Assistente funcional** - Perplexity gera respostas de qualidade
-3. **Busca funciona** - ILIKE/FTS ja encontra documentos
-4. **Custo controlado** - Usa creditos Perplexity do usuario
+1. **Foco contextualizado** - Respostas apenas sobre o projeto atual
+2. **Menos ruido** - Nao mistura informacoes de outros projetos
+3. **UX intuitiva** - Acesso direto na pagina do projeto
+4. **Reutilizacao** - Mesmos componentes do Assistente global
+5. **Rastreabilidade** - Fontes mostram claramente a origem
 
 ## Ordem de Implementacao
 
-1. Modificar `index-content` para remover embeddings
-2. Modificar `search-hybrid` para usar apenas FTS/ILIKE
-3. Modificar `rag-answer` para usar Perplexity
-4. Redeployar todas as funcoes
-5. Testar reindexacao (deve funcionar sem erros)
-6. Testar Assistente IA (deve responder corretamente)
-
+1. Modificar `useAssistantChat` para aceitar `projectId`
+2. Criar `ProjectAssistant` componente
+3. Adicionar tab em `ProjectDetail`
+4. Atualizar `SourcesPanel` com indicador de contexto
+5. Testar no projeto existente
