@@ -27,6 +27,8 @@ import { ReportsList } from '@/components/reports/ReportsList';
 import { ReindexProjectButton } from '@/components/projects/ReindexProjectButton';
 import { IndexingStatus } from '@/components/projects/IndexingStatus';
 import { ProjectAssistant } from '@/components/projects/ProjectAssistant';
+import { ProjectSettingsModal } from '@/components/projects/ProjectSettingsModal';
+import { useAuth } from '@/hooks/useAuth';
 
 type Project = Tables<'projects'>;
 type Task = Tables<'tasks'>;
@@ -74,19 +76,24 @@ export default function ProjectDetail() {
   const { id } = useParams<{ id: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
+  const { user } = useAuth();
   const [project, setProject] = useState<Project | null>(null);
   const [members, setMembers] = useState<MemberWithProfile[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
+  const [userRole, setUserRole] = useState<string | null>(null);
   
   const [isTaskModalOpen, setIsTaskModalOpen] = useState(false);
   const [isInviteModalOpen, setIsInviteModalOpen] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [isTaskDetailOpen, setIsTaskDetailOpen] = useState(false);
   
   // Tab control for URL navigation
   const [activeTab, setActiveTab] = useState('tasks');
   const [initialFileId, setInitialFileId] = useState<string | null>(null);
+
+  const isOwner = userRole === 'owner';
 
   // Handle URL params for task and file navigation (from global search)
   useEffect(() => {
@@ -155,8 +162,13 @@ export default function ProjectDetail() {
         });
 
         setMembers(membersWithProfiles);
+
+        // Check current user's role
+        const currentUserMembership = membersData.find(m => m.user_id === user?.id);
+        setUserRole(currentUserMembership?.role_in_project || null);
       } else {
         setMembers([]);
+        setUserRole(null);
       }
 
       // Fetch tasks
@@ -286,7 +298,7 @@ export default function ProjectDetail() {
         <div className="flex items-center gap-2">
           <IndexingStatus projectId={project.id} />
           <ReindexProjectButton projectId={project.id} projectName={project.name} />
-          <Button variant="outline" size="sm">
+          <Button variant="outline" size="sm" onClick={() => setIsSettingsOpen(true)}>
             <Settings className="mr-2 h-4 w-4" />
             Configurações
           </Button>
@@ -481,6 +493,16 @@ export default function ProjectDetail() {
         onOpenChange={setIsInviteModalOpen}
         onSuccess={refreshMembers}
       />
+      {project && (
+        <ProjectSettingsModal
+          projectId={id!}
+          projectName={project.name}
+          isOwner={isOwner}
+          open={isSettingsOpen}
+          onOpenChange={setIsSettingsOpen}
+          onDeleted={() => navigate('/projects')}
+        />
+      )}
     </div>
   );
 }
