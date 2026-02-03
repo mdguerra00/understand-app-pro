@@ -16,47 +16,17 @@ interface ChunkSource {
   chunk_index: number;
 }
 
-// Generate embedding for query
-async function generateQueryEmbedding(query: string): Promise<number[] | null> {
-  try {
-    const apiKey = Deno.env.get("LOVABLE_API_KEY");
-    if (!apiKey) {
-      console.error("LOVABLE_API_KEY not configured");
-      return null;
-    }
-
-    const response = await fetch("https://ai.gateway.lovable.dev/embed", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        input: query,
-        model: "text-embedding-3-small",
-      }),
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error("Embedding API error:", response.status, errorText);
-      return null;
-    }
-
-    const data = await response.json();
-    return data.data?.[0]?.embedding || null;
-  } catch (error) {
-    console.error("Query embedding error:", error);
-    return null;
-  }
-}
-
-// Generate RAG response using AI
+// Generate RAG response using Perplexity API
 async function generateRAGResponse(
   query: string,
   chunks: ChunkSource[],
-  model = "google/gemini-2.5-flash"
-): Promise<{ response: string; tokensInput: number; tokensOutput: number }> {
+): Promise<{ response: string }> {
+  const PERPLEXITY_API_KEY = Deno.env.get("PERPLEXITY_API_KEY");
+  
+  if (!PERPLEXITY_API_KEY) {
+    throw new Error("PERPLEXITY_API_KEY is not configured");
+  }
+
   // Format chunks with citation indices
   const formattedChunks = chunks
     .map((chunk, index) => {
@@ -92,14 +62,14 @@ ${chunks.map((_, i) => `- [${i + 1}] {Breve descrição da evidência}`).join("\
 ## Lacunas Identificadas
 [Liste o que falta informação ou precisa ser investigado mais a fundo. Se tudo foi respondido completamente, escreva "Nenhuma lacuna identificada para esta consulta."]`;
 
-  const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+  const response = await fetch("https://api.perplexity.ai/chat/completions", {
     method: "POST",
     headers: {
+      "Authorization": `Bearer ${PERPLEXITY_API_KEY}`,
       "Content-Type": "application/json",
-      "Authorization": `Bearer ${Deno.env.get("LOVABLE_API_KEY")}`,
     },
     body: JSON.stringify({
-      model,
+      model: "sonar",
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: userPrompt },
@@ -110,14 +80,21 @@ ${chunks.map((_, i) => `- [${i + 1}] {Breve descrição da evidência}`).join("\
   });
 
   if (!response.ok) {
-    throw new Error(`AI API error: ${await response.text()}`);
+    const errorText = await response.text();
+    console.error("Perplexity API error:", response.status, errorText);
+    
+    if (response.status === 429) {
+      throw new Error("Rate limit exceeded. Please try again later.");
+    }
+    if (response.status === 402) {
+      throw new Error("Perplexity API credits exhausted. Please add more credits.");
+    }
+    throw new Error(`Perplexity API error: ${response.status}`);
   }
 
   const data = await response.json();
   return {
     response: data.choices?.[0]?.message?.content || "Erro ao gerar resposta.",
-    tokensInput: data.usage?.prompt_tokens || 0,
-    tokensOutput: data.usage?.completion_tokens || 0,
   };
 }
 
@@ -154,7 +131,7 @@ serve(async (req) => {
       );
     }
 
-    const { query, chunk_ids, project_ids, model = "google/gemini-2.5-flash" } = await req.json();
+    const { query, chunk_ids, project_ids } = await req.json();
 
     if (!query || query.trim().length < 5) {
       return new Response(
@@ -213,83 +190,73 @@ serve(async (req) => {
         chunk_index: row.chunk_index,
       }));
     } else {
-      // Otherwise, search for relevant chunks
-      const queryEmbedding = await generateQueryEmbedding(query);
-      
+      // Search for relevant chunks using FTS and ILIKE
       const targetProjectIds = project_ids?.length > 0
         ? project_ids.filter((id: string) => allowedProjectIds.includes(id))
         : allowedProjectIds;
 
-      if (queryEmbedding) {
-        // Full hybrid search with embeddings
-        const { data, error } = await supabase.rpc("search_chunks_hybrid", {
-          p_query_text: query,
-          p_query_embedding: `[${queryEmbedding.join(",")}]`,
-          p_project_ids: targetProjectIds,
-          p_limit: 12,
-          p_semantic_weight: 0.65,
-          p_fts_weight: 0.35,
-        });
-
-        if (error) {
-          console.error("Hybrid search error:", error);
-          throw error;
-        }
-
-        chunks = (data || []).map((row: any) => ({
-          id: row.chunk_id,
-          source_type: row.source_type,
-          source_id: row.source_id,
-          source_title: row.source_title || "Sem título",
-          project_name: row.project_name || "Projeto",
-          chunk_text: row.chunk_text,
-          chunk_index: row.chunk_index || 0,
-        }));
-      } else {
-      // Fallback to FTS-only search when embeddings aren't available
-      console.warn("Embedding generation failed, using FTS only");
       console.log("Searching in projects:", targetProjectIds);
       console.log("Query:", query);
       
-      // Use plainto_tsquery via RPC for reliable FTS
-      // First try a simple ILIKE search as most reliable fallback
+      // Extract search terms for ILIKE matching
       const searchTerms = query.split(/\s+/).filter((w: string) => w.length > 2);
       console.log("Search terms:", searchTerms);
       
-      // Build ILIKE conditions for each term
-      let queryBuilder = supabase
-        .from("search_chunks")
-        .select(`
-          id,
-          project_id,
-          source_type,
-          source_id,
-          chunk_text,
-          chunk_index,
-          metadata,
-          projects!inner(name)
-        `)
-        .in("project_id", targetProjectIds);
-      
-      // Use OR matching for any term
-      if (searchTerms.length > 0) {
+      let searchResults: any[] = [];
+
+      // Try Full-Text Search first
+      try {
+        const { data: ftsData, error: ftsError } = await supabase
+          .from("search_chunks")
+          .select(`
+            id,
+            project_id,
+            source_type,
+            source_id,
+            chunk_text,
+            chunk_index,
+            metadata,
+            projects!inner(name)
+          `)
+          .in("project_id", targetProjectIds)
+          .textSearch("tsv", query, { type: "websearch", config: "portuguese" })
+          .limit(12);
+
+        if (!ftsError && ftsData && ftsData.length > 0) {
+          searchResults = ftsData;
+          console.log("FTS found:", ftsData.length, "results");
+        }
+      } catch (ftsError) {
+        console.warn("FTS search failed:", ftsError);
+      }
+
+      // Fallback to ILIKE if FTS returned no results
+      if (searchResults.length === 0 && searchTerms.length > 0) {
         const orConditions = searchTerms.map((term: string) => `chunk_text.ilike.%${term}%`).join(',');
-        queryBuilder = queryBuilder.or(orConditions);
-      }
-      
-      const { data, error } = await queryBuilder.limit(12);
+        
+        const { data: ilikeData, error: ilikeError } = await supabase
+          .from("search_chunks")
+          .select(`
+            id,
+            project_id,
+            source_type,
+            source_id,
+            chunk_text,
+            chunk_index,
+            metadata,
+            projects!inner(name)
+          `)
+          .in("project_id", targetProjectIds)
+          .or(orConditions)
+          .limit(12);
 
-      console.log("FTS results count:", data?.length || 0);
-      if (data && data.length > 0) {
-        console.log("First result project:", data[0].project_id);
-      }
-      
-      if (error) {
-        console.error("FTS search error:", error);
-        throw error;
+        if (!ilikeError && ilikeData) {
+          searchResults = ilikeData;
+          console.log("ILIKE found:", ilikeData.length, "results");
+        }
       }
 
-      chunks = (data || []).map((row: any) => ({
+      chunks = searchResults.map((row: any) => ({
         id: row.id,
         source_type: row.source_type,
         source_id: row.source_id,
@@ -298,7 +265,6 @@ serve(async (req) => {
         chunk_text: row.chunk_text,
         chunk_index: row.chunk_index || 0,
       }));
-    }
     }
 
     // Validate we have chunks
@@ -313,12 +279,8 @@ serve(async (req) => {
       );
     }
 
-    // Generate RAG response
-    const { response, tokensInput, tokensOutput } = await generateRAGResponse(
-      query,
-      chunks,
-      model
-    );
+    // Generate RAG response using Perplexity
+    const { response } = await generateRAGResponse(query, chunks);
 
     const latencyMs = Date.now() - startTime;
 
@@ -329,9 +291,7 @@ serve(async (req) => {
       chunks_used: chunks.map((c) => c.id),
       chunks_count: chunks.length,
       response_summary: response.substring(0, 500),
-      tokens_input: tokensInput,
-      tokens_output: tokensOutput,
-      model_used: model,
+      model_used: "perplexity/sonar",
       latency_ms: latencyMs,
     });
 
@@ -350,7 +310,7 @@ serve(async (req) => {
         response,
         sources,
         chunks_used: chunks.length,
-        model_used: model,
+        model_used: "perplexity/sonar",
         latency_ms: latencyMs,
       }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }

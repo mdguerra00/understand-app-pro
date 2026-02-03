@@ -78,42 +78,6 @@ function chunkText(
   return chunks;
 }
 
-// Generate embedding using Lovable AI Gateway
-async function generateEmbedding(text: string): Promise<number[] | null> {
-  const lovableApiKey = Deno.env.get("LOVABLE_API_KEY");
-  
-  if (!lovableApiKey) {
-    console.log("No LOVABLE_API_KEY configured, skipping embedding generation");
-    return null;
-  }
-  
-  try {
-    const response = await fetch("https://ai.gateway.lovable.dev/embed", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${lovableApiKey}`,
-      },
-      body: JSON.stringify({
-        input: text.slice(0, 8000), // Limit to 8000 chars for embedding
-        model: "text-embedding-3-small",
-      }),
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error("Lovable Embedding API error:", response.status, errorText);
-      return null;
-    }
-
-    const data = await response.json();
-    return data.data?.[0]?.embedding || null;
-  } catch (error) {
-    console.error("Embedding generation error:", error);
-    return null;
-  }
-}
-
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
@@ -277,14 +241,10 @@ serve(async (req) => {
       .eq("source_type", source_type === "reports" ? "report" : source_type === "tasks" ? "task" : source_type === "knowledge_items" ? "insight" : source_type)
       .eq("source_id", source_id);
 
-    // Insert new chunks with embeddings (or without if no API key)
+    // Insert new chunks (without embeddings - using FTS only)
     let chunksCreated = 0;
-    let embeddingsCreated = 0;
     
     for (const chunk of chunks) {
-      const embedding = await generateEmbedding(chunk.text);
-      
-      // Build insert object
       const insertData: Record<string, unknown> = {
         project_id,
         source_type: source_type === "reports" ? "report" : source_type === "tasks" ? "task" : source_type === "knowledge_items" ? "insight" : source_type,
@@ -294,12 +254,6 @@ serve(async (req) => {
         chunk_hash: chunk.hash,
         metadata: chunk.metadata,
       };
-      
-      // Only add embedding if generated
-      if (embedding) {
-        insertData.embedding = `[${embedding.join(",")}]`;
-        embeddingsCreated++;
-      }
 
       const { error: insertError } = await supabase
         .from("search_chunks")
@@ -327,13 +281,12 @@ serve(async (req) => {
         .eq("id", job_id);
     }
 
-    console.log(`Indexed ${chunksCreated} chunks, ${embeddingsCreated} with embeddings for ${source_type}:${source_id}`);
+    console.log(`Indexed ${chunksCreated} chunks for ${source_type}:${source_id}`);
 
     return new Response(
       JSON.stringify({
         success: true,
         chunks_created: chunksCreated,
-        embeddings_created: embeddingsCreated,
         source_type,
         source_id,
       }),
