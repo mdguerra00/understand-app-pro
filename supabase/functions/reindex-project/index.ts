@@ -70,12 +70,12 @@ serve(async (req) => {
       console.error("Delete chunks error:", deleteError);
     }
 
-    // Cancel any pending jobs for this project
+    // Delete any pending/error jobs for this project (clean slate)
     await supabase
       .from("indexing_jobs")
-      .update({ status: "error", error_message: "Cancelled by reindex" })
+      .delete()
       .eq("project_id", project_id)
-      .eq("status", "queued");
+      .in("status", ["queued", "error"]);
 
     // Get all reports
     const { data: reports } = await supabase
