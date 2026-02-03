@@ -280,7 +280,15 @@ serve(async (req) => {
     } else if (mimeType === "application/pdf") {
       // For PDFs, we'll send the base64 to the AI for analysis
       const arrayBuffer = await fileContent.arrayBuffer();
-      const base64 = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
+      // Use chunked base64 conversion to avoid stack overflow with large files
+      const uint8Array = new Uint8Array(arrayBuffer);
+      let binary = '';
+      const chunkSize = 8192;
+      for (let i = 0; i < uint8Array.length; i += chunkSize) {
+        const chunk = uint8Array.subarray(i, Math.min(i + chunkSize, uint8Array.length));
+        binary += String.fromCharCode.apply(null, Array.from(chunk));
+      }
+      const base64 = btoa(binary);
       textContent = `[PDF Document: ${fileData.name}]\n\nBase64 content available for analysis. Please extract R&D insights from this document.`;
       parsingQuality = "pdf_base64";
       
