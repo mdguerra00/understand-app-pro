@@ -23,11 +23,15 @@ import {
   X,
   FileText,
   Brain,
-  Layers
+  Layers,
+  CheckCircle2,
+  Clock,
+  CircleDashed
 } from 'lucide-react';
 import { KnowledgeCategory } from './KnowledgeCard';
 
 export type EntryTypeFilter = 'all' | 'documents' | 'insights';
+export type ValidationFilter = 'all' | 'pending' | 'validated';
 
 interface Project {
   id: string;
@@ -45,6 +49,8 @@ interface KnowledgeFiltersProps {
   onClearFilters: () => void;
   entryType: EntryTypeFilter;
   onEntryTypeChange: (type: EntryTypeFilter) => void;
+  validationFilter: ValidationFilter;
+  onValidationFilterChange: (filter: ValidationFilter) => void;
 }
 
 // Analytical categories (primary)
@@ -76,8 +82,10 @@ export function KnowledgeFilters({
   onClearFilters,
   entryType,
   onEntryTypeChange,
+  validationFilter,
+  onValidationFilterChange,
 }: KnowledgeFiltersProps) {
-  const hasActiveFilters = selectedProject || selectedCategories.length > 0 || minConfidence > 0 || entryType !== 'all';
+  const hasActiveFilters = selectedProject || selectedCategories.length > 0 || minConfidence > 0 || entryType !== 'all' || validationFilter !== 'all';
 
   return (
     <div className="space-y-4 p-4 bg-muted/30 rounded-lg border">
@@ -148,9 +156,45 @@ export function KnowledgeFilters({
         </Select>
       </div>
 
-      {/* Analytical Categories (Primary) - Only show when insights are visible */}
+      {/* Validation Filter - Only show when insights are visible */}
       {entryType !== 'documents' && (
         <>
+          <div className="space-y-2">
+            <Label className="text-xs text-muted-foreground">Status de Validação</Label>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                variant={validationFilter === 'all' ? 'default' : 'outline'}
+                size="sm"
+                className="text-xs"
+                onClick={() => onValidationFilterChange('all')}
+              >
+                <CircleDashed className="h-3 w-3 mr-1" />
+                Todos
+              </Button>
+              <Button
+                variant={validationFilter === 'pending' ? 'default' : 'outline'}
+                size="sm"
+                className="text-xs"
+                onClick={() => onValidationFilterChange('pending')}
+              >
+                <Clock className="h-3 w-3 mr-1" />
+                Pendentes
+              </Button>
+              <Button
+                variant={validationFilter === 'validated' ? 'default' : 'outline'}
+                size="sm"
+                className="text-xs"
+                onClick={() => onValidationFilterChange('validated')}
+              >
+                <CheckCircle2 className="h-3 w-3 mr-1" />
+                Validados
+              </Button>
+            </div>
+          </div>
+
+          <Separator />
+
+          {/* Analytical Categories (Primary) */}
           <div className="space-y-2">
             <Label className="text-xs text-muted-foreground">Análises</Label>
             <div className="flex flex-wrap gap-2">

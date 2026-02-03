@@ -10,7 +10,7 @@ import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/hooks/useAuth';
 import { KnowledgeCard, KnowledgeItem, KnowledgeCategory } from '@/components/knowledge/KnowledgeCard';
 import { DocumentCard, DocumentItem } from '@/components/knowledge/DocumentCard';
-import { KnowledgeFilters, EntryTypeFilter } from '@/components/knowledge/KnowledgeFilters';
+import { KnowledgeFilters, EntryTypeFilter, ValidationFilter } from '@/components/knowledge/KnowledgeFilters';
 import { KnowledgeDetailModal } from '@/components/knowledge/KnowledgeDetailModal';
 import { DocumentDetailModal } from '@/components/knowledge/DocumentDetailModal';
 import { ExtractionStatus } from '@/components/knowledge/ExtractionStatus';
@@ -41,6 +41,7 @@ export default function Knowledge() {
   const [documentDetailOpen, setDocumentDetailOpen] = useState(false);
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [entryType, setEntryType] = useState<EntryTypeFilter>('all');
+  const [validationFilter, setValidationFilter] = useState<ValidationFilter>('all');
 
   // Fetch user's projects
   const { data: projects } = useQuery({
@@ -170,6 +171,13 @@ export default function Knowledge() {
         if (item.confidence < minConfidence) {
           return;
         }
+        // Validation filter
+        if (validationFilter === 'pending' && item.validated_by) {
+          return;
+        }
+        if (validationFilter === 'validated' && !item.validated_by) {
+          return;
+        }
         entries.push({ entry_type: 'insight', data: item });
       });
     }
@@ -180,7 +188,7 @@ export default function Knowledge() {
       const dateB = b.entry_type === 'document' ? b.data.created_at : b.data.extracted_at;
       return new Date(dateB).getTime() - new Date(dateA).getTime();
     });
-  }, [documents, knowledgeItems, searchQuery, selectedProject, selectedCategories, minConfidence, entryType]);
+  }, [documents, knowledgeItems, searchQuery, selectedProject, selectedCategories, minConfidence, entryType, validationFilter]);
 
   const handleCategoryToggle = (category: KnowledgeCategory) => {
     setSelectedCategories((prev) =>
@@ -195,6 +203,7 @@ export default function Knowledge() {
     setSelectedCategories([]);
     setMinConfidence(0);
     setEntryType('all');
+    setValidationFilter('all');
   };
 
   const handleInsightClick = (item: KnowledgeItem) => {
@@ -226,7 +235,7 @@ export default function Knowledge() {
     return { totalDocuments, totalInsights, validated };
   }, [documents, knowledgeItems]);
 
-  const hasActiveFilters = selectedProject || selectedCategories.length > 0 || minConfidence > 0 || entryType !== 'all';
+  const hasActiveFilters = selectedProject || selectedCategories.length > 0 || minConfidence > 0 || entryType !== 'all' || validationFilter !== 'all';
 
   const filterProps = {
     projects: projects || [],
@@ -239,6 +248,8 @@ export default function Knowledge() {
     onClearFilters: handleClearFilters,
     entryType,
     onEntryTypeChange: setEntryType,
+    validationFilter,
+    onValidationFilterChange: setValidationFilter,
   };
 
   return (
