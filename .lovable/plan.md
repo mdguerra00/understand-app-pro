@@ -1,202 +1,226 @@
 
-# Plano: Assistente IA Contextualizado por Projeto
+# Plano: Exclusao de Projetos
 
 ## Visao Geral
 
-Adicionar uma aba "Assistente IA" na pagina de detalhe do projeto (`/projects/:id`) que busca e responde apenas com dados do projeto especifico. Isso complementa o Assistente global existente em `/assistant`.
+Implementar a funcionalidade de exclusao de projetos (soft delete), permitindo que apenas o proprietario do projeto possa excluir. O botao "Configuracoes" existente sera transformado em um menu/modal com opcoes de gerenciamento do projeto, incluindo a exclusao.
 
-## Problema de Segunda Ordem: Rastreabilidade de Origem
+## Infraestrutura Existente
 
-Conforme mencionado, o usuario precisa saber de qual projeto veio cada informacao. A boa noticia: **a infraestrutura ja existe!**
+| Elemento | Status | Detalhes |
+|----------|--------|----------|
+| Campos `deleted_at`/`deleted_by` | Existe | Tabela `projects` ja possui |
+| RLS para delete | Existe | `has_project_role(auth.uid(), id, 'owner')` |
+| Filtro soft delete | Existe | `Projects.tsx` ja filtra `.is('deleted_at', null)` |
+| Padrao de exclusao | Existe | `ReportsList.tsx` e `ProjectFilesList.tsx` usam mesmo padrao |
 
-| Elemento | Status | Onde |
-|----------|--------|------|
-| `project_id` nos chunks | Existe | `search_chunks.project_id` |
-| `project_name` nas fontes | Existe | Retornado pelo `rag-answer` |
-| Filtro por `project_ids` | Existe | Parametro aceito pela Edge Function |
-| Exibicao do projeto na fonte | Existe | `SourcesPanel` agrupa por projeto |
-
-## Arquitetura Proposta
-
-```text
-+---------------------+                    +---------------------+
-|   /assistant        |                    |  /projects/:id      |
-|   (Global)          |                    |  (Contextualizado)  |
-+---------------------+                    +---------------------+
-         |                                          |
-         | project_ids = []                         | project_ids = [id]
-         | (todos os projetos)                      | (apenas este projeto)
-         |                                          |
-         +------------------+   +-------------------+
-                            |   |
-                            v   v
-                    +------------------+
-                    |   rag-answer     |
-                    |  Edge Function   |
-                    +------------------+
-                            |
-                            v
-                    +------------------+
-                    |  search_chunks   |
-                    |  (filtrado por   |
-                    |   project_id)    |
-                    +------------------+
-```
-
-## Mudancas Necessarias
-
-### 1. Hook `useAssistantChat` - Aceitar `projectId` Opcional
-
-**Antes:** O hook nao aceita parametros, busca em todos os projetos.
-
-**Depois:** Aceita `projectId?: string` e passa como `project_ids: [projectId]` para a API.
-
-### 2. Componente `ProjectAssistant` - Chat Embutido no Projeto
-
-Criar componente que:
-- Recebe `projectId` e `projectName` como props
-- Usa o hook com filtro de projeto
-- Exibe mensagens contextualizadas ("Pergunte sobre o projeto X")
-- Layout compacto para caber na tab
-
-### 3. Pagina `ProjectDetail` - Nova Aba "IA"
-
-Adicionar quarta aba ao sistema de tabs existente:
-- Tarefas | Arquivos | Relatorios | **Assistente IA**
-
-### 4. Sugestoes Dinamicas por Projeto
-
-Em vez de perguntas genericas, gerar sugestoes baseadas no contexto:
-- "Quais insights foram extraidos neste projeto?"
-- "Resuma os principais resultados deste projeto"
-- "Quais arquivos foram analisados?"
-
-## Diagrama de Componentes
+## Arquitetura da Solucao
 
 ```text
 ProjectDetail.tsx
     |
-    +-- Tabs
+    +-- Button "Configuracoes" 
          |
-         +-- TabsContent value="tasks" -> Tarefas
-         +-- TabsContent value="files" -> Arquivos  
-         +-- TabsContent value="reports" -> Relatorios
-         +-- TabsContent value="assistant" -> ProjectAssistant (NOVO)
-                                                    |
-                                                    +-- useAssistantChat({ projectId })
-                                                    +-- ChatMessage (reutilizado)
-                                                    +-- SourcesPanel (reutilizado)
+         +-- onClick -> setIsSettingsOpen(true)
+                             |
+                             v
+                   ProjectSettingsModal (NOVO)
+                        |
+                        +-- Secao "Zona de Perigo"
+                        |       |
+                        |       +-- Botao "Excluir Projeto"
+                        |                |
+                        |                v
+                        |      AlertDialog (confirmacao)
+                        |                |
+                        |                +-- Input para digitar nome do projeto
+                        |                +-- Botao "Excluir Permanentemente"
+                        |
+                        +-- (Futuro: Edicao de nome, status, etc.)
 ```
+
+## Fluxo de Usuario
+
+1. Usuario clica em "Configuracoes" no cabecalho do projeto
+2. Modal abre com opcoes de configuracao
+3. Na "Zona de Perigo", usuario ve aviso sobre exclusao
+4. Usuario clica em "Excluir Projeto"
+5. Dialog de confirmacao pede que digite o nome do projeto
+6. Apos digitar corretamente, botao de exclusao e habilitado
+7. Usuario confirma, projeto e soft-deleted
+8. Usuario e redirecionado para `/projects` com toast de sucesso
+
+## Verificacao de Permissao
+
+Apenas o **owner** pode ver o botao de exclusao. Para isso, verificamos o papel do usuario no projeto:
+
+```typescript
+// Verificar se usuario e owner
+const { data: membership } = await supabase
+  .from('project_members')
+  .select('role_in_project')
+  .eq('project_id', id)
+  .eq('user_id', user.id)
+  .single();
+
+const isOwner = membership?.role_in_project === 'owner';
+```
+
+## Componentes a Criar/Modificar
+
+### 1. Novo: `ProjectSettingsModal.tsx`
+
+Modal com:
+- Titulo "Configuracoes do Projeto"
+- Secao futura para edicao (placeholders)
+- Separador
+- "Zona de Perigo" com botao de exclusao vermelho
+- AlertDialog aninhado para confirmacao
+
+### 2. Modificar: `ProjectDetail.tsx`
+
+- Adicionar estado `isSettingsOpen`
+- Adicionar estado `isOwner` baseado na verificacao de papel
+- Conectar botao "Configuracoes" ao modal
+- Passar `isOwner` para o modal controlar visibilidade da exclusao
 
 ## Secao Tecnica
 
-### Modificacao do Hook
+### ProjectSettingsModal Interface
 
 ```typescript
-// useAssistantChat.ts
-export function useAssistantChat(options?: { projectId?: string }) {
-  const sendMessage = useCallback(async (content: string) => {
-    // ... existing code ...
-    
-    const response = await fetch(
-      `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/rag-answer`,
-      {
-        method: 'POST',
-        headers: { /* ... */ },
-        body: JSON.stringify({ 
-          query: content.trim(),
-          // NOVO: Passar project_ids se especificado
-          project_ids: options?.projectId ? [options.projectId] : undefined,
-        }),
-      }
-    );
-  }, [isLoading, options?.projectId]);
-}
-```
-
-### Componente ProjectAssistant
-
-```typescript
-// src/components/projects/ProjectAssistant.tsx
-interface ProjectAssistantProps {
+interface ProjectSettingsModalProps {
   projectId: string;
   projectName: string;
-}
-
-export function ProjectAssistant({ projectId, projectName }: ProjectAssistantProps) {
-  const { messages, isLoading, sendMessage, clearMessages } = useAssistantChat({ projectId });
-  
-  const suggestedQuestions = [
-    `Quais insights foram extraidos do projeto ${projectName}?`,
-    'Resuma os principais resultados encontrados',
-    'Quais materiais foram testados neste projeto?',
-    'Quais lacunas de conhecimento foram identificadas?',
-  ];
-  
-  // ... render similar to Assistant.tsx but with project context
+  isOwner: boolean;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onDeleted: () => void;
 }
 ```
 
-### Integracao com ProjectDetail
+### Logica de Exclusao
 
 ```typescript
-// ProjectDetail.tsx - adicionar na area de tabs
-<TabsList>
-  <TabsTrigger value="tasks">Tarefas</TabsTrigger>
-  <TabsTrigger value="files">Arquivos</TabsTrigger>
-  <TabsTrigger value="reports">Relatorios</TabsTrigger>
-  <TabsTrigger value="assistant">Assistente IA</TabsTrigger> {/* NOVO */}
-</TabsList>
+const handleDelete = async () => {
+  if (confirmName !== projectName) return;
+  
+  setIsDeleting(true);
+  try {
+    const { error } = await supabase
+      .from('projects')
+      .update({
+        deleted_at: new Date().toISOString(),
+        deleted_by: user.id,
+      })
+      .eq('id', projectId);
 
-<TabsContent value="assistant">
-  <ProjectAssistant projectId={id!} projectName={project.name} />
-</TabsContent>
+    if (error) throw error;
+
+    toast({
+      title: 'Projeto excluido',
+      description: 'O projeto foi movido para a lixeira',
+    });
+
+    onDeleted(); // Redireciona para /projects
+  } catch (error: any) {
+    toast({
+      title: 'Erro ao excluir',
+      description: error.message,
+      variant: 'destructive',
+    });
+  } finally {
+    setIsDeleting(false);
+  }
+};
 ```
 
-## Indicador Visual de Contexto
-
-Para deixar claro ao usuario que esta em modo "projeto especifico":
+### Verificacao de Papel no ProjectDetail
 
 ```typescript
-// No header do ProjectAssistant
-<Badge variant="outline" className="bg-primary/10">
-  <FolderOpen className="h-3 w-3 mr-1" />
-  Contexto: {projectName}
-</Badge>
+// Dentro de fetchProject(), apos buscar o projeto:
+const { data: membership } = await supabase
+  .from('project_members')
+  .select('role_in_project')
+  .eq('project_id', id)
+  .eq('user_id', user?.id)
+  .single();
+
+setUserRole(membership?.role_in_project || null);
 ```
 
-E nas fontes, destacar que todas vem do mesmo projeto (ou alertar se vierem de outro, o que nao deveria acontecer):
+## Layout do Modal
 
-```typescript
-// SourcesPanel - quando projectId esta definido
-{source.project !== projectName && (
-  <Badge variant="destructive" className="text-xs">
-    Fonte externa
-  </Badge>
-)}
+```text
++------------------------------------------+
+|  Configuracoes do Projeto          [X]   |
++------------------------------------------+
+|                                          |
+|  Informacoes do Projeto                  |
+|  (Proxima versao: edicao de nome, etc.)  |
+|                                          |
+|  ----------------------------------------|
+|                                          |
+|  Zona de Perigo                          |
+|  [!] Esta acao nao pode ser desfeita     |
+|                                          |
+|  [ Excluir Projeto ]  (vermelho)         |
+|                                          |
++------------------------------------------+
+```
+
+## Dialog de Confirmacao
+
+```text
++------------------------------------------+
+|  Excluir Projeto?                        |
++------------------------------------------+
+|                                          |
+|  Tem certeza que deseja excluir          |
+|  "Nome do Projeto"?                      |
+|                                          |
+|  Esta acao movera o projeto para a       |
+|  lixeira. Todos os arquivos, tarefas     |
+|  e relatorios serao arquivados.          |
+|                                          |
+|  Digite o nome do projeto para confirmar:|
+|  [ _________________________________ ]   |
+|                                          |
+|  [Cancelar]     [Excluir Permanentemente]|
+|                 (desabilitado ate match) |
++------------------------------------------+
 ```
 
 ## Arquivos a Modificar
 
 | Arquivo | Acao | Descricao |
 |---------|------|-----------|
-| `src/hooks/useAssistantChat.ts` | Modificar | Adicionar parametro `projectId` |
-| `src/components/projects/ProjectAssistant.tsx` | Criar | Componente de chat do projeto |
-| `src/pages/ProjectDetail.tsx` | Modificar | Adicionar tab "Assistente IA" |
-| `src/components/assistant/SourcesPanel.tsx` | Modificar | Indicador de contexto de projeto |
-
-## Beneficios
-
-1. **Foco contextualizado** - Respostas apenas sobre o projeto atual
-2. **Menos ruido** - Nao mistura informacoes de outros projetos
-3. **UX intuitiva** - Acesso direto na pagina do projeto
-4. **Reutilizacao** - Mesmos componentes do Assistente global
-5. **Rastreabilidade** - Fontes mostram claramente a origem
+| `src/components/projects/ProjectSettingsModal.tsx` | Criar | Modal de configuracoes com exclusao |
+| `src/pages/ProjectDetail.tsx` | Modificar | Integrar modal e verificar papel |
 
 ## Ordem de Implementacao
 
-1. Modificar `useAssistantChat` para aceitar `projectId`
-2. Criar `ProjectAssistant` componente
-3. Adicionar tab em `ProjectDetail`
-4. Atualizar `SourcesPanel` com indicador de contexto
-5. Testar no projeto existente
+1. Criar `ProjectSettingsModal.tsx` com:
+   - UI do modal
+   - Zona de perigo com botao de exclusao
+   - AlertDialog de confirmacao com input
+   - Logica de soft delete
+
+2. Modificar `ProjectDetail.tsx`:
+   - Adicionar estado para modal e papel do usuario
+   - Buscar papel do usuario ao carregar projeto
+   - Conectar botao "Configuracoes" ao modal
+   - Implementar redirecionamento apos exclusao
+
+## Consideracoes de Seguranca
+
+- RLS ja existe para permitir apenas owners a fazer UPDATE em `deleted_at`
+- Verificacao client-side serve apenas para UX (esconder botao)
+- Servidor valida permissao via RLS antes de executar
+
+## Beneficios
+
+1. **Seguranca** - Dupla confirmacao (modal + digitar nome)
+2. **Recuperavel** - Soft delete permite restauracao futura
+3. **Consistente** - Segue padrao ja usado em Reports e Files
+4. **Extensivel** - Modal pronto para receber mais opcoes de configuracao
