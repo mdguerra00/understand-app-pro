@@ -280,15 +280,21 @@ serve(async (req) => {
     } else if (mimeType === "application/pdf") {
       // For PDFs, we'll send the base64 to the AI for analysis
       const arrayBuffer = await fileContent.arrayBuffer();
-      // Use chunked base64 conversion to avoid stack overflow with large files
+      // Use Deno's native base64 encoding to avoid stack overflow
       const uint8Array = new Uint8Array(arrayBuffer);
-      let binary = '';
-      const chunkSize = 8192;
-      for (let i = 0; i < uint8Array.length; i += chunkSize) {
-        const chunk = uint8Array.subarray(i, Math.min(i + chunkSize, uint8Array.length));
-        binary += String.fromCharCode.apply(null, Array.from(chunk));
+      // Convert to base64 using TextDecoder approach that works in Deno
+      const base64Chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+      let base64 = '';
+      const len = uint8Array.length;
+      for (let i = 0; i < len; i += 3) {
+        const b1 = uint8Array[i];
+        const b2 = i + 1 < len ? uint8Array[i + 1] : 0;
+        const b3 = i + 2 < len ? uint8Array[i + 2] : 0;
+        base64 += base64Chars[b1 >> 2];
+        base64 += base64Chars[((b1 & 3) << 4) | (b2 >> 4)];
+        base64 += i + 1 < len ? base64Chars[((b2 & 15) << 2) | (b3 >> 6)] : '=';
+        base64 += i + 2 < len ? base64Chars[b3 & 63] : '=';
       }
-      const base64 = btoa(binary);
       textContent = `[PDF Document: ${fileData.name}]\n\nBase64 content available for analysis. Please extract R&D insights from this document.`;
       parsingQuality = "pdf_base64";
       
