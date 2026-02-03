@@ -1,6 +1,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import * as XLSX from "https://esm.sh/xlsx@0.18.5?target=deno";
+import { encode as base64Encode } from "https://deno.land/std@0.168.0/encoding/base64.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -278,25 +279,19 @@ serve(async (req) => {
       parsingQuality = textContent.length > 100 ? "good" : "partial";
       
     } else if (mimeType === "application/pdf") {
-      // For PDFs, we'll send the base64 to the AI for analysis
+      // For PDFs, use Deno's native base64 encoding from std library
+      console.log(`Processing PDF: ${fileData.name}`);
       const arrayBuffer = await fileContent.arrayBuffer();
-      // Use Deno's native base64 encoding to avoid stack overflow
       const uint8Array = new Uint8Array(arrayBuffer);
-      // Convert to base64 using TextDecoder approach that works in Deno
-      const base64Chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
-      let base64 = '';
-      const len = uint8Array.length;
-      for (let i = 0; i < len; i += 3) {
-        const b1 = uint8Array[i];
-        const b2 = i + 1 < len ? uint8Array[i + 1] : 0;
-        const b3 = i + 2 < len ? uint8Array[i + 2] : 0;
-        base64 += base64Chars[b1 >> 2];
-        base64 += base64Chars[((b1 & 3) << 4) | (b2 >> 4)];
-        base64 += i + 1 < len ? base64Chars[((b2 & 15) << 2) | (b3 >> 6)] : '=';
-        base64 += i + 2 < len ? base64Chars[b3 & 63] : '=';
-      }
-      textContent = `[PDF Document: ${fileData.name}]\n\nBase64 content available for analysis. Please extract R&D insights from this document.`;
-      parsingQuality = "pdf_base64";
+      
+      // Use Deno's standard library for base64 encoding (safe for large files)
+      const base64 = base64Encode(arrayBuffer);
+      
+      console.log(`PDF encoded to base64. Size: ${uint8Array.length} bytes, base64 length: ${base64.length}`);
+      
+      // Store base64 for multimodal analysis (will be sent as inline data)
+      textContent = `[PDF_BASE64_DATA:${base64}]`;
+      parsingQuality = "pdf_multimodal";
       
     } else {
       // For other file types, try to extract text
@@ -430,7 +425,40 @@ Projeto: ${fileData.projects?.name || "Desconhecido"}
 Arquivo: ${fileData.name}
 Qualidade do parsing: ${parsingQuality}`;
 
-    const userPrompt = `Analise o documento abaixo e extraia APENAS descobertas que você pode COMPROVAR com evidências do texto.
+    // Build user message - handle PDF multimodal separately
+    let userMessage: any;
+    
+    if (parsingQuality === "pdf_multimodal" && textContent.startsWith("[PDF_BASE64_DATA:")) {
+      // Extract base64 data from the marker
+      const base64Data = textContent.replace("[PDF_BASE64_DATA:", "").replace("]", "");
+      
+      console.log(`Sending PDF as multimodal content. Base64 length: ${base64Data.length}`);
+      
+      // For PDFs, send as multimodal with inline document
+      userMessage = {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: `Analise este documento PDF e extraia APENAS descobertas que você pode COMPROVAR com evidências do texto.
+
+LEMBRE-SE: O campo "evidence" deve ser uma CÓPIA EXATA do documento. Nunca invente valores.
+
+Arquivo: ${fileData.name}
+
+Se o documento não puder ser lido corretamente, retorne apenas um insight de "observation" explicando o problema.`
+          },
+          {
+            type: "image_url",
+            image_url: {
+              url: `data:application/pdf;base64,${base64Data}`
+            }
+          }
+        ]
+      };
+    } else {
+      // For text content, use regular message
+      const userPrompt = `Analise o documento abaixo e extraia APENAS descobertas que você pode COMPROVAR com evidências do texto.
 
 LEMBRE-SE: O campo "evidence" deve ser uma CÓPIA EXATA do documento. Nunca invente valores.
 
@@ -440,6 +468,9 @@ ${textContent}
 ---
 
 Se o conteúdo acima parecer ilegível ou corrompido, retorne apenas um insight de "observation" explicando o problema.`;
+      
+      userMessage = { role: "user", content: userPrompt };
+    }
 
     // Call Lovable AI Gateway with tool calling
     const aiResponse = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
@@ -452,7 +483,7 @@ Se o conteúdo acima parecer ilegível ou corrompido, retorne apenas um insight 
         model: "google/gemini-3-flash-preview",
         messages: [
           { role: "system", content: systemPrompt },
-          { role: "user", content: userPrompt },
+          userMessage,
         ],
         tools: [
           {
