@@ -246,48 +246,59 @@ serve(async (req) => {
           chunk_index: row.chunk_index || 0,
         }));
       } else {
-        // Fallback to FTS-only search when embeddings aren't available
-        console.warn("Embedding generation failed, using FTS only");
-        console.log("Searching in projects:", targetProjectIds);
-        console.log("Query:", query);
-        
-        // Use plain text search instead of websearch for better compatibility
-        const searchQuery = query.split(/\s+/).filter((w: string) => w.length > 2).join(' | ');
-        console.log("FTS query:", searchQuery);
-        
-        const { data, error } = await supabase
-          .from("search_chunks")
-          .select(`
-            id,
-            project_id,
-            source_type,
-            source_id,
-            chunk_text,
-            chunk_index,
-            metadata,
-            projects!inner(name)
-          `)
-          .in("project_id", targetProjectIds)
-          .textSearch("tsv", searchQuery, { type: "plain", config: "portuguese" })
-          .limit(12);
-
-        console.log("FTS results count:", data?.length || 0);
-        
-        if (error) {
-          console.error("FTS search error:", error);
-          throw error;
-        }
-
-        chunks = (data || []).map((row: any) => ({
-          id: row.id,
-          source_type: row.source_type,
-          source_id: row.source_id,
-          source_title: row.metadata?.title || "Sem título",
-          project_name: row.projects?.name || "Projeto",
-          chunk_text: row.chunk_text,
-          chunk_index: row.chunk_index || 0,
-        }));
+      // Fallback to FTS-only search when embeddings aren't available
+      console.warn("Embedding generation failed, using FTS only");
+      console.log("Searching in projects:", targetProjectIds);
+      console.log("Query:", query);
+      
+      // Use plainto_tsquery via RPC for reliable FTS
+      // First try a simple ILIKE search as most reliable fallback
+      const searchTerms = query.split(/\s+/).filter((w: string) => w.length > 2);
+      console.log("Search terms:", searchTerms);
+      
+      // Build ILIKE conditions for each term
+      let queryBuilder = supabase
+        .from("search_chunks")
+        .select(`
+          id,
+          project_id,
+          source_type,
+          source_id,
+          chunk_text,
+          chunk_index,
+          metadata,
+          projects!inner(name)
+        `)
+        .in("project_id", targetProjectIds);
+      
+      // Use OR matching for any term
+      if (searchTerms.length > 0) {
+        const orConditions = searchTerms.map((term: string) => `chunk_text.ilike.%${term}%`).join(',');
+        queryBuilder = queryBuilder.or(orConditions);
       }
+      
+      const { data, error } = await queryBuilder.limit(12);
+
+      console.log("FTS results count:", data?.length || 0);
+      if (data && data.length > 0) {
+        console.log("First result project:", data[0].project_id);
+      }
+      
+      if (error) {
+        console.error("FTS search error:", error);
+        throw error;
+      }
+
+      chunks = (data || []).map((row: any) => ({
+        id: row.id,
+        source_type: row.source_type,
+        source_id: row.source_id,
+        source_title: row.metadata?.title || "Sem título",
+        project_name: row.projects?.name || "Projeto",
+        chunk_text: row.chunk_text,
+        chunk_index: row.chunk_index || 0,
+      }));
+    }
     }
 
     // Validate we have chunks
