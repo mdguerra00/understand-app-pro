@@ -198,9 +198,20 @@ serve(async (req) => {
       console.log("Searching in projects:", targetProjectIds);
       console.log("Query:", query);
       
-      // Extract search terms for ILIKE matching
-      const searchTerms = query.split(/\s+/).filter((w: string) => w.length > 2);
-      console.log("Search terms:", searchTerms);
+      // Normalize and extract search terms - remove punctuation, lowercase, deduplicate
+      const normalizedQuery = query
+        .toLowerCase()
+        .replace(/[^\w\sáàâãéèêíìîóòôõúùûç]/gi, ' ') // Replace punctuation with space
+        .replace(/\s+/g, ' ')
+        .trim();
+
+      const searchTerms = normalizedQuery
+        .split(' ')
+        .filter((w: string) => w.length > 2) // Min 3 chars
+        .filter((w: string, i: number, arr: string[]) => arr.indexOf(w) === i) // Unique only
+        .slice(0, 10); // Max 10 terms for performance
+
+      console.log("Normalized search terms:", searchTerms);
       
       let searchResults: any[] = [];
 
@@ -232,27 +243,40 @@ serve(async (req) => {
 
       // Fallback to ILIKE if FTS returned no results
       if (searchResults.length === 0 && searchTerms.length > 0) {
-        const orConditions = searchTerms.map((term: string) => `chunk_text.ilike.%${term}%`).join(',');
-        
-        const { data: ilikeData, error: ilikeError } = await supabase
-          .from("search_chunks")
-          .select(`
-            id,
-            project_id,
-            source_type,
-            source_id,
-            chunk_text,
-            chunk_index,
-            metadata,
-            projects!inner(name)
-          `)
-          .in("project_id", targetProjectIds)
-          .or(orConditions)
-          .limit(12);
+        try {
+          const orConditions = searchTerms
+            .map((term: string) => `chunk_text.ilike.%${term}%`)
+            .join(',');
+          
+          console.log("ILIKE query conditions:", orConditions);
+          
+          const { data: ilikeData, error: ilikeError } = await supabase
+            .from("search_chunks")
+            .select(`
+              id,
+              project_id,
+              source_type,
+              source_id,
+              chunk_text,
+              chunk_index,
+              metadata,
+              projects!inner(name)
+            `)
+            .in("project_id", targetProjectIds)
+            .or(orConditions)
+            .limit(12);
 
-        if (!ilikeError && ilikeData) {
-          searchResults = ilikeData;
-          console.log("ILIKE found:", ilikeData.length, "results");
+          if (ilikeError) {
+            console.error("ILIKE search error:", ilikeError.message);
+            console.error("OR conditions:", orConditions);
+          } else if (ilikeData) {
+            searchResults = ilikeData;
+            console.log("ILIKE found:", ilikeData.length, "results");
+          } else {
+            console.log("ILIKE returned no data");
+          }
+        } catch (err) {
+          console.error("ILIKE search exception:", err);
         }
       }
 
