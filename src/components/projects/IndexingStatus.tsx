@@ -23,18 +23,27 @@ export function IndexingStatus({ projectId }: IndexingStatusProps) {
   useEffect(() => {
     const fetchStatus = async () => {
       try {
-        // Fetch job counts by status
+        // Fetch job counts by status (exclude expected errors)
         const { data: jobs } = await supabase
           .from('indexing_jobs')
-          .select('status')
+          .select('status, error_message')
           .eq('project_id', projectId);
 
         if (jobs) {
+          // Filter out expected errors (cancelled, not found, deleted)
+          const realErrors = jobs.filter(j => 
+            j.status === 'error' && 
+            j.error_message &&
+            !j.error_message.includes('Cancelled') &&
+            !j.error_message.includes('not found') &&
+            !j.error_message.includes('deleted')
+          );
+          
           const counts: StatusCounts = {
             queued: jobs.filter(j => j.status === 'queued').length,
             running: jobs.filter(j => j.status === 'running').length,
             done: jobs.filter(j => j.status === 'done').length,
-            error: jobs.filter(j => j.status === 'error').length,
+            error: realErrors.length,
           };
           setStatus(counts);
         }
