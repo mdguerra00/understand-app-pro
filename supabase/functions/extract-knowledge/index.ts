@@ -336,8 +336,8 @@ serve(async (req) => {
       );
     }
 
-    // Limit content size to avoid token limits (increased from 30k to 60k)
-    const maxChars = 60000;
+    // Limit content size to avoid token limits (increased to 120k for large multi-sheet spreadsheets)
+    const maxChars = 120000;
     if (textContent.length > maxChars) {
       contentTruncated = true;
       textContent = textContent.substring(0, maxChars) + 
