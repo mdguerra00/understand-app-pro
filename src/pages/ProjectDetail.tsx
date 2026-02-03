@@ -15,6 +15,7 @@ import {
   FolderOpen,
   Settings,
   Plus,
+  Bot,
 } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { Tables } from '@/integrations/supabase/types';
@@ -25,6 +26,7 @@ import { ProjectFilesList } from '@/components/files/ProjectFilesList';
 import { ReportsList } from '@/components/reports/ReportsList';
 import { ReindexProjectButton } from '@/components/projects/ReindexProjectButton';
 import { IndexingStatus } from '@/components/projects/IndexingStatus';
+import { ProjectAssistant } from '@/components/projects/ProjectAssistant';
 
 type Project = Tables<'projects'>;
 type Task = Tables<'tasks'>;
@@ -385,6 +387,10 @@ export default function ProjectDetail() {
             <FileText className="h-4 w-4" />
             Relatórios
           </TabsTrigger>
+          <TabsTrigger value="assistant" className="gap-2">
+            <Bot className="h-4 w-4" />
+            Assistente IA
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="tasks" className="space-y-4">
@@ -448,6 +454,10 @@ export default function ProjectDetail() {
 
         <TabsContent value="reports">
           <ReportsList projectId={id!} />
+        </TabsContent>
+
+        <TabsContent value="assistant">
+          <ProjectAssistant projectId={id!} projectName={project.name} />
         </TabsContent>
       </Tabs>
 

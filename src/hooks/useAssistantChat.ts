@@ -19,7 +19,11 @@ export interface ChatMessage {
   isError?: boolean;
 }
 
-export function useAssistantChat() {
+export interface UseAssistantChatOptions {
+  projectId?: string;
+}
+
+export function useAssistantChat(options?: UseAssistantChatOptions) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -60,7 +64,8 @@ export function useAssistantChat() {
           },
           body: JSON.stringify({ 
             query: content.trim(),
-            // Not passing project_ids = search across all user's projects
+            // Pass project_ids if filtering by specific project
+            project_ids: options?.projectId ? [options.projectId] : undefined,
           }),
           signal: abortControllerRef.current.signal,
         }
@@ -104,7 +109,7 @@ export function useAssistantChat() {
       setIsLoading(false);
       abortControllerRef.current = null;
     }
-  }, [isLoading]);
+  }, [isLoading, options?.projectId]);
 
   const cancelRequest = useCallback(() => {
     if (abortControllerRef.current) {

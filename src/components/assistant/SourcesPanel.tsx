@@ -24,6 +24,7 @@ interface SourcesPanelProps {
   highlightedCitation?: string;
   onClose?: () => void;
   className?: string;
+  projectContext?: string; // When set, indicates we're in a project-specific context
 }
 
 const sourceTypeConfig: Record<string, { icon: typeof FileText; label: string; color: string }> = {
@@ -40,7 +41,8 @@ export function SourcesPanel({
   sources, 
   highlightedCitation, 
   onClose,
-  className 
+  className,
+  projectContext,
 }: SourcesPanelProps) {
   const [expandedSources, setExpandedSources] = useState<Set<string>>(new Set());
 
@@ -146,10 +148,15 @@ export function SourcesPanel({
                     </CollapsibleTrigger>
                     <CollapsibleContent>
                       <div className="ml-6 pl-4 border-l-2 border-muted py-2 space-y-2">
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
                           <Badge variant="secondary" className="text-xs">
                             {config.label}
                           </Badge>
+                          {projectContext && source.project !== projectContext && (
+                            <Badge variant="destructive" className="text-xs">
+                              Fonte externa
+                            </Badge>
+                          )}
                         </div>
                         {source.excerpt && (
                           <p className="text-xs text-muted-foreground line-clamp-4">
