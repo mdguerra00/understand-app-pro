@@ -1,17 +1,20 @@
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/hooks/useAuth';
 import { Card, CardContent } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
 import { Badge } from '@/components/ui/badge';
-import { Loader2, CheckCircle2, XCircle, Clock, AlertTriangle, FileSpreadsheet } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Loader2, CheckCircle2, XCircle, Clock, AlertTriangle, FileSpreadsheet, X, RotateCcw } from 'lucide-react';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { toast } from 'sonner';
 
 interface ExtractionJob {
   id: string;
   status: string;
   items_extracted: number | null;
   created_at: string;
+  started_at: string | null;
   sheets_found: number | null;
   content_truncated: boolean | null;
   project_files: { name: string } | null;
@@ -19,13 +22,14 @@ interface ExtractionJob {
 
 export function ExtractionStatus() {
   const { user } = useAuth();
+  const queryClient = useQueryClient();
 
   const { data: pendingJobs } = useQuery({
     queryKey: ['pending-extractions', user?.id],
     queryFn: async () => {
       const { data, error } = await supabase
         .from('extraction_jobs')
-        .select('id, status, items_extracted, created_at, sheets_found, content_truncated, project_files(name)')
+        .select('id, status, items_extracted, created_at, started_at, sheets_found, content_truncated, project_files(name)')
         .in('status', ['pending', 'processing'])
         .order('created_at', { ascending: false })
         .limit(5);
@@ -36,6 +40,38 @@ export function ExtractionStatus() {
     enabled: !!user,
     refetchInterval: 5000, // Poll every 5 seconds for status updates
   });
+
+  const cancelMutation = useMutation({
+    mutationFn: async (jobId: string) => {
+      const { error } = await supabase
+        .from('extraction_jobs')
+        .update({ 
+          status: 'failed', 
+          error_message: 'Cancelado pelo usuário',
+          completed_at: new Date().toISOString()
+        })
+        .eq('id', jobId);
+      
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['pending-extractions'] });
+      queryClient.invalidateQueries({ queryKey: ['knowledge-items'] });
+      toast.success('Extração cancelada');
+    },
+    onError: () => {
+      toast.error('Erro ao cancelar extração');
+    }
+  });
+
+  // Check for stuck jobs (processing for more than 5 minutes)
+  const isJobStuck = (job: ExtractionJob) => {
+    if (job.status !== 'processing' || !job.started_at) return false;
+    const startedAt = new Date(job.started_at);
+    const now = new Date();
+    const diffMinutes = (now.getTime() - startedAt.getTime()) / 1000 / 60;
+    return diffMinutes > 5;
+  };
 
   if (!pendingJobs || pendingJobs.length === 0) {
     return null;
@@ -53,22 +89,50 @@ export function ExtractionStatus() {
         </div>
         
         <div className="space-y-2">
-          {pendingJobs.map((job) => (
-            <div key={job.id} className="flex items-center gap-2 text-sm">
-              {job.status === 'pending' && (
-                <Clock className="h-3 w-3 text-muted-foreground" />
-              )}
-              {job.status === 'processing' && (
-                <Loader2 className="h-3 w-3 animate-spin text-primary" />
-              )}
-              <span className="truncate flex-1 text-muted-foreground">
-                {job.project_files?.name || 'Arquivo'}
-              </span>
-              <Badge variant="outline" className="text-xs">
-                {job.status === 'pending' ? 'Na fila' : 'Processando'}
-              </Badge>
-            </div>
-          ))}
+          {pendingJobs.map((job) => {
+            const stuck = isJobStuck(job);
+            return (
+              <div key={job.id} className="flex items-center gap-2 text-sm">
+                {job.status === 'pending' && (
+                  <Clock className="h-3 w-3 text-muted-foreground" />
+                )}
+                {job.status === 'processing' && !stuck && (
+                  <Loader2 className="h-3 w-3 animate-spin text-primary" />
+                )}
+                {stuck && (
+                  <AlertTriangle className="h-3 w-3 text-amber-500" />
+                )}
+                <span className="truncate flex-1 text-muted-foreground">
+                  {job.project_files?.name || 'Arquivo'}
+                </span>
+                {stuck ? (
+                  <Badge variant="outline" className="text-xs text-amber-500 border-amber-500">
+                    Travado
+                  </Badge>
+                ) : (
+                  <Badge variant="outline" className="text-xs">
+                    {job.status === 'pending' ? 'Na fila' : 'Processando'}
+                  </Badge>
+                )}
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-6 w-6"
+                        onClick={() => cancelMutation.mutate(job.id)}
+                        disabled={cancelMutation.isPending}
+                      >
+                        <X className="h-3 w-3" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>Cancelar extração</TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              </div>
+            );
+          })}
         </div>
       </CardContent>
     </Card>
