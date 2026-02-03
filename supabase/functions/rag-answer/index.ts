@@ -25,7 +25,7 @@ async function generateQueryEmbedding(query: string): Promise<number[] | null> {
       return null;
     }
 
-    const response = await fetch("https://ai-gateway.lovable.dev/embed", {
+    const response = await fetch("https://ai.gateway.lovable.dev/embed", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -92,7 +92,7 @@ ${chunks.map((_, i) => `- [${i + 1}] {Breve descrição da evidência}`).join("\
 ## Lacunas Identificadas
 [Liste o que falta informação ou precisa ser investigado mais a fundo. Se tudo foi respondido completamente, escreva "Nenhuma lacuna identificada para esta consulta."]`;
 
-  const response = await fetch("https://ai-gateway.lovable.dev/v1/chat/completions", {
+  const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
