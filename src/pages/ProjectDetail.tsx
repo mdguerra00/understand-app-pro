@@ -189,8 +189,10 @@ export default function ProjectDetail() {
   };
 
   useEffect(() => {
-    fetchProject();
-  }, [id]);
+    if (user) {
+      fetchProject();
+    }
+  }, [id, user]);
 
   const refreshTasks = async () => {
     if (!id) return;
