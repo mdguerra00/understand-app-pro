@@ -4,6 +4,7 @@ import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Input } from '@/components/ui/input';
 import { Checkbox } from '@/components/ui/checkbox';
+import { Button } from '@/components/ui/button';
 import {
   Select,
   SelectContent,
@@ -12,14 +13,35 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
+import {
   Search,
   CheckSquare,
   Calendar,
+  MoreHorizontal,
+  Pencil,
+  Trash2,
 } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { Tables } from '@/integrations/supabase/types';
 import { useAuth } from '@/hooks/useAuth';
+import { useToast } from '@/hooks/use-toast';
 import { TaskDetailModal } from '@/components/tasks/TaskDetailModal';
+import { TaskEditModal } from '@/components/tasks/TaskEditModal';
 
 type Task = Tables<'tasks'> & {
   projects: { name: string } | null;
@@ -48,6 +70,7 @@ const priorityColors: Record<string, string> = {
 
 export default function Tasks() {
   const { user } = useAuth();
+  const { toast } = useToast();
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -55,6 +78,11 @@ export default function Tasks() {
   const [showOnlyMine, setShowOnlyMine] = useState(false);
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
+  const [editTask, setEditTask] = useState<Task | null>(null);
+  const [editOpen, setEditOpen] = useState(false);
+  const [deleteTask, setDeleteTask] = useState<Task | null>(null);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   const fetchTasks = async () => {
     try {
@@ -84,6 +112,49 @@ export default function Tasks() {
 
   const handleTaskUpdate = () => {
     fetchTasks();
+  };
+
+  const handleEditClick = (e: React.MouseEvent, task: Task) => {
+    e.stopPropagation();
+    setEditTask(task);
+    setEditOpen(true);
+  };
+
+  const handleDeleteClick = (e: React.MouseEvent, task: Task) => {
+    e.stopPropagation();
+    setDeleteTask(task);
+    setDeleteOpen(true);
+  };
+
+  const handleDeleteConfirm = async () => {
+    if (!deleteTask || !user) return;
+
+    setDeleting(true);
+    try {
+      const { error } = await supabase
+        .from('tasks')
+        .update({ deleted_at: new Date().toISOString(), deleted_by: user.id })
+        .eq('id', deleteTask.id);
+
+      if (error) throw error;
+
+      toast({
+        title: 'Tarefa excluída',
+        description: 'A tarefa foi removida com sucesso.',
+      });
+
+      fetchTasks();
+    } catch (error: any) {
+      toast({
+        variant: 'destructive',
+        title: 'Erro ao excluir',
+        description: error.message || 'Tente novamente.',
+      });
+    } finally {
+      setDeleting(false);
+      setDeleteOpen(false);
+      setDeleteTask(null);
+    }
   };
 
   const filteredTasks = tasks.filter((task) => {
@@ -195,9 +266,31 @@ export default function Tasks() {
                     </div>
                   </div>
                 </div>
-                <Badge className={statusColors[task.status]} variant="secondary">
-                  {statusLabels[task.status]}
-                </Badge>
+                <div className="flex items-center gap-2">
+                  <Badge className={statusColors[task.status]} variant="secondary">
+                    {statusLabels[task.status]}
+                  </Badge>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
+                      <Button variant="ghost" size="icon" className="h-8 w-8">
+                        <MoreHorizontal className="h-4 w-4" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem onClick={(e) => handleEditClick(e, task)}>
+                        <Pencil className="mr-2 h-4 w-4" />
+                        Editar
+                      </DropdownMenuItem>
+                      <DropdownMenuItem 
+                        onClick={(e) => handleDeleteClick(e, task)}
+                        className="text-destructive focus:text-destructive"
+                      >
+                        <Trash2 className="mr-2 h-4 w-4" />
+                        Excluir
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
               </CardContent>
             </Card>
           ))}
@@ -214,6 +307,40 @@ export default function Tasks() {
           onUpdate={handleTaskUpdate}
         />
       )}
+
+      {/* Task Edit Modal */}
+      {editTask && (
+        <TaskEditModal
+          task={editTask}
+          projectId={editTask.project_id}
+          open={editOpen}
+          onOpenChange={setEditOpen}
+          onSuccess={handleTaskUpdate}
+        />
+      )}
+
+      {/* Delete Confirmation Dialog */}
+      <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Excluir tarefa</AlertDialogTitle>
+            <AlertDialogDescription>
+              Tem certeza que deseja excluir a tarefa "{deleteTask?.title}"? 
+              Esta ação não pode ser desfeita.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleting}>Cancelar</AlertDialogCancel>
+            <AlertDialogAction 
+              onClick={handleDeleteConfirm}
+              disabled={deleting}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {deleting ? 'Excluindo...' : 'Excluir'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
