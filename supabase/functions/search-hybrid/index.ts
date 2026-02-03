@@ -24,7 +24,7 @@ interface SearchResult {
 // Generate embedding for query
 async function generateQueryEmbedding(query: string): Promise<number[] | null> {
   try {
-    const response = await fetch("https://ai-gateway.lovable.dev/embed", {
+    const response = await fetch("https://ai.gateway.lovable.dev/embed", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

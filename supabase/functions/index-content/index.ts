@@ -78,22 +78,21 @@ function chunkText(
   return chunks;
 }
 
-// Generate embedding using OpenAI API
+// Generate embedding using Lovable AI Gateway
 async function generateEmbedding(text: string): Promise<number[] | null> {
-  const openaiKey = Deno.env.get("OPENAI_API_KEY");
+  const lovableApiKey = Deno.env.get("LOVABLE_API_KEY");
   
-  // If no OpenAI key, skip embedding generation (FTS will still work)
-  if (!openaiKey) {
-    console.log("No OPENAI_API_KEY configured, skipping embedding generation");
+  if (!lovableApiKey) {
+    console.log("No LOVABLE_API_KEY configured, skipping embedding generation");
     return null;
   }
   
   try {
-    const response = await fetch("https://api.openai.com/v1/embeddings", {
+    const response = await fetch("https://ai.gateway.lovable.dev/embed", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "Authorization": `Bearer ${openaiKey}`,
+        "Authorization": `Bearer ${lovableApiKey}`,
       },
       body: JSON.stringify({
         input: text.slice(0, 8000), // Limit to 8000 chars for embedding
@@ -103,7 +102,7 @@ async function generateEmbedding(text: string): Promise<number[] | null> {
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.error("OpenAI Embedding API error:", errorText);
+      console.error("Lovable Embedding API error:", response.status, errorText);
       return null;
     }
 
