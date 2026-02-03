@@ -1,226 +1,190 @@
 
-# Plano: Exclusao de Projetos
+# Plano: Corrigir Sistema RAG - Busca AI Retornando Sem Resultados
 
-## Visao Geral
+## Diagnostico do Problema
 
-Implementar a funcionalidade de exclusao de projetos (soft delete), permitindo que apenas o proprietario do projeto possa excluir. O botao "Configuracoes" existente sera transformado em um menu/modal com opcoes de gerenciamento do projeto, incluindo a exclusao.
+A investigacao revelou que:
 
-## Infraestrutura Existente
+1. **Os chunks existem**: 32 chunks indexados no projeto, incluindo dados sobre BISEMA, TEG, UDMA
+2. **A edge function funciona**: Teste direto retornou 12 chunks e resposta completa
+3. **A busca do usuario falhou**: Nenhum log "ILIKE found" ou "FTS found" para a query do usuario
 
-| Elemento | Status | Detalhes |
-|----------|--------|----------|
-| Campos `deleted_at`/`deleted_by` | Existe | Tabela `projects` ja possui |
-| RLS para delete | Existe | `has_project_role(auth.uid(), id, 'owner')` |
-| Filtro soft delete | Existe | `Projects.tsx` ja filtra `.is('deleted_at', null)` |
-| Padrao de exclusao | Existe | `ReportsList.tsx` e `ProjectFilesList.tsx` usam mesmo padrao |
+### Causa Raiz Identificada
+
+O problema esta na limpeza dos termos de busca e no tratamento de erros:
+
+| Problema | Impacto |
+|----------|---------|
+| Pontuacao nos termos (`TEG.`, `Paulo,`, `promissora.`) | ILIKE pode falhar silenciosamente |
+| Sem log de erro na busca ILIKE | Impossivel diagnosticar falhas |
+| Query muito longa (35 termos) | Pode exceder limites ou timeout |
+| Termos duplicados (`com`, `quando`, `que`) | Desperdicio de processamento |
+
+### Evidencia do Problema
+
+Query do usuario:
+```
+Search terms: ["aba", "Paulo,", "Bisgma", "mostrou", "bons", "resultados", "quando", "diluido", "TEG.", ...]
+```
+
+Note: `TEG.` com ponto, `Paulo,` com virgula - esses caracteres especiais nao deveriam estar nos termos de busca.
 
 ## Arquitetura da Solucao
 
 ```text
-ProjectDetail.tsx
-    |
-    +-- Button "Configuracoes" 
-         |
-         +-- onClick -> setIsSettingsOpen(true)
-                             |
-                             v
-                   ProjectSettingsModal (NOVO)
-                        |
-                        +-- Secao "Zona de Perigo"
-                        |       |
-                        |       +-- Botao "Excluir Projeto"
-                        |                |
-                        |                v
-                        |      AlertDialog (confirmacao)
-                        |                |
-                        |                +-- Input para digitar nome do projeto
-                        |                +-- Botao "Excluir Permanentemente"
-                        |
-                        +-- (Futuro: Edicao de nome, status, etc.)
+Query do Usuario
+      |
+      v
++---------------------+
+| Normalizacao        |
+| - Remove pontuacao  |
+| - Lowercase         |
+| - Remove duplicatas |
+| - Limita termos (10)|
++---------------------+
+      |
+      v
++---------------------+
+| Busca Hibrida       |
+| 1. Try FTS primeiro |
+| 2. Fallback ILIKE   |
+| 3. Log de erros     |
++---------------------+
+      |
+      v
+Resposta com chunks
 ```
 
-## Fluxo de Usuario
+## Mudancas Propostas
 
-1. Usuario clica em "Configuracoes" no cabecalho do projeto
-2. Modal abre com opcoes de configuracao
-3. Na "Zona de Perigo", usuario ve aviso sobre exclusao
-4. Usuario clica em "Excluir Projeto"
-5. Dialog de confirmacao pede que digite o nome do projeto
-6. Apos digitar corretamente, botao de exclusao e habilitado
-7. Usuario confirma, projeto e soft-deleted
-8. Usuario e redirecionado para `/projects` com toast de sucesso
+### 1. Normalizar Termos de Busca (Correcao Principal)
 
-## Verificacao de Permissao
-
-Apenas o **owner** pode ver o botao de exclusao. Para isso, verificamos o papel do usuario no projeto:
-
+**Antes:**
 ```typescript
-// Verificar se usuario e owner
-const { data: membership } = await supabase
-  .from('project_members')
-  .select('role_in_project')
-  .eq('project_id', id)
-  .eq('user_id', user.id)
-  .single();
-
-const isOwner = membership?.role_in_project === 'owner';
+const searchTerms = query.split(/\s+/).filter((w: string) => w.length > 2);
 ```
 
-## Componentes a Criar/Modificar
+**Depois:**
+```typescript
+const searchTerms = query
+  .toLowerCase()
+  .replace(/[^\w\sáàâãéèêíìîóòôõúùûç]/gi, '') // Remove pontuacao
+  .split(/\s+/)
+  .filter((w: string) => w.length > 2)
+  .filter((w, i, arr) => arr.indexOf(w) === i) // Remove duplicatas
+  .slice(0, 10); // Limita a 10 termos
+```
 
-### 1. Novo: `ProjectSettingsModal.tsx`
-
-Modal com:
-- Titulo "Configuracoes do Projeto"
-- Secao futura para edicao (placeholders)
-- Separador
-- "Zona de Perigo" com botao de exclusao vermelho
-- AlertDialog aninhado para confirmacao
-
-### 2. Modificar: `ProjectDetail.tsx`
-
-- Adicionar estado `isSettingsOpen`
-- Adicionar estado `isOwner` baseado na verificacao de papel
-- Conectar botao "Configuracoes" ao modal
-- Passar `isOwner` para o modal controlar visibilidade da exclusao
-
-## Secao Tecnica
-
-### ProjectSettingsModal Interface
+### 2. Adicionar Logs de Erro para Debug
 
 ```typescript
-interface ProjectSettingsModalProps {
-  projectId: string;
-  projectName: string;
-  isOwner: boolean;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  onDeleted: () => void;
+if (ilikeError) {
+  console.error("ILIKE search error:", ilikeError.message);
+  console.error("OR conditions:", orConditions);
 }
 ```
 
-### Logica de Exclusao
+### 3. Melhorar Query FTS
+
+Usar `plainto_tsquery` em vez de `websearch` para queries muito longas que podem falhar:
 
 ```typescript
-const handleDelete = async () => {
-  if (confirmName !== projectName) return;
-  
-  setIsDeleting(true);
+// Tentar FTS com query simplificada
+const ftsQuery = searchTerms.slice(0, 5).join(' | ');
+```
+
+## Arquivo a Modificar
+
+| Arquivo | Acao | Mudancas |
+|---------|------|----------|
+| `supabase/functions/rag-answer/index.ts` | Modificar | Normalizar termos, adicionar logs de erro, melhorar fallback |
+
+## Codigo Detalhado da Correcao
+
+### Secao de Normalizacao (linhas ~200-205)
+
+```typescript
+// Normalize and extract search terms
+const normalizedQuery = query
+  .toLowerCase()
+  .replace(/[^\w\sáàâãéèêíìîóòôõúùûç]/gi, ' ') // Replace punctuation with space
+  .replace(/\s+/g, ' ')
+  .trim();
+
+const searchTerms = normalizedQuery
+  .split(' ')
+  .filter((w: string) => w.length > 2) // Min 3 chars
+  .filter((w, i, arr) => arr.indexOf(w) === i) // Unique only
+  .slice(0, 10); // Max 10 terms for performance
+
+console.log("Normalized search terms:", searchTerms);
+```
+
+### Secao de Busca ILIKE (linhas ~233-257)
+
+```typescript
+// Fallback to ILIKE if FTS returned no results
+if (searchResults.length === 0 && searchTerms.length > 0) {
   try {
-    const { error } = await supabase
-      .from('projects')
-      .update({
-        deleted_at: new Date().toISOString(),
-        deleted_by: user.id,
-      })
-      .eq('id', projectId);
+    const orConditions = searchTerms
+      .map((term: string) => `chunk_text.ilike.%${term}%`)
+      .join(',');
+    
+    console.log("ILIKE query conditions:", orConditions);
+    
+    const { data: ilikeData, error: ilikeError } = await supabase
+      .from("search_chunks")
+      .select(`
+        id,
+        project_id,
+        source_type,
+        source_id,
+        chunk_text,
+        chunk_index,
+        metadata,
+        projects!inner(name)
+      `)
+      .in("project_id", targetProjectIds)
+      .or(orConditions)
+      .limit(12);
 
-    if (error) throw error;
-
-    toast({
-      title: 'Projeto excluido',
-      description: 'O projeto foi movido para a lixeira',
-    });
-
-    onDeleted(); // Redireciona para /projects
-  } catch (error: any) {
-    toast({
-      title: 'Erro ao excluir',
-      description: error.message,
-      variant: 'destructive',
-    });
-  } finally {
-    setIsDeleting(false);
+    if (ilikeError) {
+      console.error("ILIKE search error:", ilikeError.message);
+    } else if (ilikeData) {
+      searchResults = ilikeData;
+      console.log("ILIKE found:", ilikeData.length, "results");
+    } else {
+      console.log("ILIKE returned no data");
+    }
+  } catch (err) {
+    console.error("ILIKE search exception:", err);
   }
-};
+}
 ```
-
-### Verificacao de Papel no ProjectDetail
-
-```typescript
-// Dentro de fetchProject(), apos buscar o projeto:
-const { data: membership } = await supabase
-  .from('project_members')
-  .select('role_in_project')
-  .eq('project_id', id)
-  .eq('user_id', user?.id)
-  .single();
-
-setUserRole(membership?.role_in_project || null);
-```
-
-## Layout do Modal
-
-```text
-+------------------------------------------+
-|  Configuracoes do Projeto          [X]   |
-+------------------------------------------+
-|                                          |
-|  Informacoes do Projeto                  |
-|  (Proxima versao: edicao de nome, etc.)  |
-|                                          |
-|  ----------------------------------------|
-|                                          |
-|  Zona de Perigo                          |
-|  [!] Esta acao nao pode ser desfeita     |
-|                                          |
-|  [ Excluir Projeto ]  (vermelho)         |
-|                                          |
-+------------------------------------------+
-```
-
-## Dialog de Confirmacao
-
-```text
-+------------------------------------------+
-|  Excluir Projeto?                        |
-+------------------------------------------+
-|                                          |
-|  Tem certeza que deseja excluir          |
-|  "Nome do Projeto"?                      |
-|                                          |
-|  Esta acao movera o projeto para a       |
-|  lixeira. Todos os arquivos, tarefas     |
-|  e relatorios serao arquivados.          |
-|                                          |
-|  Digite o nome do projeto para confirmar:|
-|  [ _________________________________ ]   |
-|                                          |
-|  [Cancelar]     [Excluir Permanentemente]|
-|                 (desabilitado ate match) |
-+------------------------------------------+
-```
-
-## Arquivos a Modificar
-
-| Arquivo | Acao | Descricao |
-|---------|------|-----------|
-| `src/components/projects/ProjectSettingsModal.tsx` | Criar | Modal de configuracoes com exclusao |
-| `src/pages/ProjectDetail.tsx` | Modificar | Integrar modal e verificar papel |
 
 ## Ordem de Implementacao
 
-1. Criar `ProjectSettingsModal.tsx` com:
-   - UI do modal
-   - Zona de perigo com botao de exclusao
-   - AlertDialog de confirmacao com input
-   - Logica de soft delete
+1. Atualizar funcao `rag-answer` com normalizacao de termos
+2. Adicionar logs de erro detalhados
+3. Fazer deploy da edge function
+4. Testar com a mesma query que falhou anteriormente
 
-2. Modificar `ProjectDetail.tsx`:
-   - Adicionar estado para modal e papel do usuario
-   - Buscar papel do usuario ao carregar projeto
-   - Conectar botao "Configuracoes" ao modal
-   - Implementar redirecionamento apos exclusao
+## Resultado Esperado
 
-## Consideracoes de Seguranca
+Apos a correcao:
 
-- RLS ja existe para permitir apenas owners a fazer UPDATE em `deleted_at`
-- Verificacao client-side serve apenas para UX (esconder botao)
-- Servidor valida permissao via RLS antes de executar
+| Query Original | Termos Normalizados |
+|----------------|---------------------|
+| `"TEG."` | `"teg"` |
+| `"Paulo,"` | `"paulo"` |
+| `"promissora."` | `"promissora"` |
+| 35 termos duplicados | ~10 termos unicos |
+
+Isso deve permitir que a busca ILIKE encontre os 31+ chunks relevantes e retorne respostas uteis ao inves de "Nao encontrei informacoes".
 
 ## Beneficios
 
-1. **Seguranca** - Dupla confirmacao (modal + digitar nome)
-2. **Recuperavel** - Soft delete permite restauracao futura
-3. **Consistente** - Segue padrao ja usado em Reports e Files
-4. **Extensivel** - Modal pronto para receber mais opcoes de configuracao
+1. **Robustez** - Queries com pontuacao nao quebram a busca
+2. **Performance** - Menos termos = queries mais rapidas
+3. **Debug** - Logs de erro facilitam diagnostico futuro
+4. **Qualidade** - Termos normalizados melhoram precisao da busca
