@@ -80,12 +80,11 @@ serve(async (req) => {
       );
     }
 
-    // Get ALL chunks for this file
+    // Get chunks for this file (try multiple source types)
     const { data: chunks, error: chunksError } = await supabase
       .from("search_chunks")
       .select("id, chunk_text, chunk_index, metadata")
       .eq("source_id", file_id)
-      .eq("source_type", "project_files")
       .order("chunk_index", { ascending: true });
 
     if (chunksError) throw chunksError;
@@ -93,24 +92,33 @@ serve(async (req) => {
     // Also get existing knowledge items for this file
     const { data: existingInsights } = await supabase
       .from("knowledge_items")
-      .select("title, content, category, confidence")
+      .select("title, content, category, confidence, evidence")
       .eq("source_file_id", file_id)
       .is("deleted_at", null)
       .order("category");
 
-    if (!chunks || chunks.length === 0) {
+    // Build document content from whatever sources are available
+    let fullContent = "";
+    
+    if (chunks && chunks.length > 0) {
+      fullContent = chunks.map((c) => c.chunk_text).join("\n\n");
+    }
+
+    // If no chunks, build content from knowledge items
+    if (!fullContent && existingInsights && existingInsights.length > 0) {
+      fullContent = existingInsights
+        .map((i) => `## ${i.title}\nCategoria: ${i.category} | Confiança: ${i.confidence}\n${i.content}\n${i.evidence ? `Evidência: ${i.evidence}` : ""}`)
+        .join("\n\n---\n\n");
+    }
+
+    if (!fullContent) {
       return new Response(
         JSON.stringify({
-          error: "Este arquivo ainda não foi indexado. Reindexe o projeto primeiro.",
+          error: "Este arquivo ainda não foi processado. Extraia o conhecimento ou reindexe o projeto primeiro.",
         }),
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
-
-    // Build full document content from chunks
-    const fullContent = chunks
-      .map((c) => c.chunk_text)
-      .join("\n\n");
 
     // Build existing insights summary
     const insightsSummary = existingInsights && existingInsights.length > 0
@@ -198,22 +206,31 @@ Faça uma análise profunda e completa deste documento seguindo EXATAMENTE este 
     const data = await response.json();
     const analysis = data.choices?.[0]?.message?.content || "Erro ao gerar análise.";
 
-    // Build sources from chunks
-    const sources = chunks.slice(0, 15).map((chunk, index) => ({
-      citation: `[${index + 1}]`,
-      type: "project_files",
-      id: file_id,
-      title: file.name,
-      project: "",
-      excerpt: chunk.chunk_text.substring(0, 200) + "...",
-    }));
+    // Build sources from chunks or insights
+    const sources = chunks && chunks.length > 0
+      ? chunks.slice(0, 15).map((chunk, index) => ({
+          citation: `[${index + 1}]`,
+          type: "project_files",
+          id: file_id,
+          title: file.name,
+          project: "",
+          excerpt: chunk.chunk_text.substring(0, 200) + "...",
+        }))
+      : (existingInsights || []).slice(0, 15).map((insight, index) => ({
+          citation: `[${index + 1}]`,
+          type: "knowledge_item",
+          id: file_id,
+          title: insight.title,
+          project: "",
+          excerpt: insight.content.substring(0, 200) + "...",
+        }));
 
     return new Response(
       JSON.stringify({
         response: analysis,
         sources,
         file_name: file.name,
-        chunks_analyzed: chunks.length,
+        chunks_analyzed: chunks?.length || 0,
         existing_insights: existingInsights?.length || 0,
       }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
