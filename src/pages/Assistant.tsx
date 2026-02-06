@@ -10,13 +10,15 @@ import {
   Bot,
   Sparkles,
   MessageSquare,
-  Trash2,
   PanelRightOpen,
   PanelRightClose,
+  PanelLeftOpen,
+  PanelLeftClose,
 } from 'lucide-react';
 import { useAssistantChat } from '@/hooks/useAssistantChat';
 import { ChatMessage } from '@/components/assistant/ChatMessage';
 import { SourcesPanel } from '@/components/assistant/SourcesPanel';
+import { ConversationList } from '@/components/assistant/ConversationList';
 import { cn } from '@/lib/utils';
 
 const suggestedQuestions = [
@@ -27,22 +29,33 @@ const suggestedQuestions = [
 ];
 
 export default function Assistant() {
-  const { messages, isLoading, sendMessage, clearMessages } = useAssistantChat();
+  const {
+    messages,
+    isLoading,
+    sendMessage,
+    startNewConversation,
+    conversationId,
+    conversations,
+    loadingConversations,
+    loadConversation,
+    renameConversation,
+    deleteConversation,
+  } = useAssistantChat();
+
   const [input, setInput] = useState('');
   const [showSources, setShowSources] = useState(true);
+  const [showConversations, setShowConversations] = useState(true);
   const [highlightedCitation, setHighlightedCitation] = useState<string>();
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Collect all sources from all messages
   const allSources = messages
     .filter(m => m.role === 'assistant' && m.sources)
     .flatMap(m => m.sources || [])
-    .filter((source, index, self) => 
+    .filter((source, index, self) =>
       index === self.findIndex(s => s.citation === source.citation)
     );
 
-  // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
@@ -64,41 +77,67 @@ export default function Assistant() {
   const handleSourceClick = (citation: string) => {
     setHighlightedCitation(citation);
     setShowSources(true);
-    // Clear highlight after 2 seconds
     setTimeout(() => setHighlightedCitation(undefined), 2000);
   };
 
+  // Find preceding user question for each assistant message
+  const getUserQuestionBefore = (index: number): string | undefined => {
+    for (let i = index - 1; i >= 0; i--) {
+      if (messages[i].role === 'user') return messages[i].content;
+    }
+    return undefined;
+  };
+
   const hasMessages = messages.length > 0;
+  const currentConversation = conversations.find(c => c.id === conversationId);
 
   return (
     <div className="flex h-[calc(100vh-4rem)] overflow-hidden">
+      {/* Conversation Sidebar */}
+      {showConversations && (
+        <div className="w-64 border-r hidden md:block">
+          <ConversationList
+            conversations={conversations}
+            activeConversationId={conversationId}
+            loading={loadingConversations}
+            onSelect={loadConversation}
+            onNew={startNewConversation}
+            onRename={renameConversation}
+            onDelete={deleteConversation}
+          />
+        </div>
+      )}
+
       {/* Main Chat Area */}
       <div className="flex-1 flex flex-col min-w-0">
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
           <div className="flex items-center gap-3">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="hidden md:inline-flex h-8 w-8"
+              onClick={() => setShowConversations(!showConversations)}
+            >
+              {showConversations ? (
+                <PanelLeftClose className="h-4 w-4" />
+              ) : (
+                <PanelLeftOpen className="h-4 w-4" />
+              )}
+            </Button>
             <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary">
               <Bot className="h-5 w-5 text-primary-foreground" />
             </div>
             <div>
-              <h1 className="text-lg font-semibold">Assistente IA</h1>
+              <h1 className="text-lg font-semibold">
+                {currentConversation?.title || 'Assistente IA'}
+              </h1>
               <p className="text-xs text-muted-foreground">
                 Pergunte sobre seus documentos e projetos
               </p>
             </div>
           </div>
           <div className="flex items-center gap-2">
-            {hasMessages && (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={clearMessages}
-                className="gap-2"
-              >
-                <Trash2 className="h-4 w-4" />
-                Limpar
-              </Button>
-            )}
             <Button
               variant="outline"
               size="sm"
@@ -119,7 +158,6 @@ export default function Assistant() {
         <ScrollArea className="flex-1" ref={scrollRef}>
           <div className="max-w-3xl mx-auto p-4 space-y-4">
             {!hasMessages ? (
-              // Empty State
               <div className="flex flex-col items-center justify-center py-16 px-4">
                 <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-primary/10 mb-6">
                   <Sparkles className="h-8 w-8 text-primary" />
@@ -151,13 +189,17 @@ export default function Assistant() {
                 </div>
               </div>
             ) : (
-              // Messages List
               <>
-                {messages.map((message) => (
+                {messages.map((message, index) => (
                   <ChatMessage
                     key={message.id}
                     message={message}
                     onSourceClick={handleSourceClick}
+                    userQuestion={
+                      message.role === 'assistant'
+                        ? getUserQuestionBefore(index)
+                        : undefined
+                    }
                   />
                 ))}
                 {isLoading && (

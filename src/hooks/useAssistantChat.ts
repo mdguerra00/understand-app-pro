@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { supabase } from '@/integrations/supabase/client';
+import { useAuth } from '@/hooks/useAuth';
 
 export interface ChatSource {
   citation: string;
@@ -19,21 +20,136 @@ export interface ChatMessage {
   isError?: boolean;
 }
 
+export interface Conversation {
+  id: string;
+  title: string;
+  project_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface UseAssistantChatOptions {
   projectId?: string;
 }
 
 export function useAssistantChat(options?: UseAssistantChatOptions) {
+  const { user } = useAuth();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [conversationId, setConversationId] = useState<string | null>(null);
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [loadingConversations, setLoadingConversations] = useState(true);
   const abortControllerRef = useRef<AbortController | null>(null);
+
+  // Load conversation list
+  const loadConversations = useCallback(async () => {
+    if (!user) return;
+    setLoadingConversations(true);
+    const { data } = await supabase
+      .from('assistant_conversations')
+      .select('*')
+      .order('updated_at', { ascending: false })
+      .limit(50);
+    setConversations((data as Conversation[]) || []);
+    setLoadingConversations(false);
+  }, [user]);
+
+  // Load messages for a conversation
+  const loadConversation = useCallback(async (id: string) => {
+    const { data } = await supabase
+      .from('assistant_messages')
+      .select('*')
+      .eq('conversation_id', id)
+      .order('created_at', { ascending: true });
+
+    if (data) {
+      setMessages(data.map((m: any) => ({
+        id: m.id,
+        role: m.role as 'user' | 'assistant',
+        content: m.content,
+        sources: m.sources as ChatSource[] | undefined,
+        timestamp: new Date(m.created_at),
+        isError: m.is_error,
+      })));
+    }
+    setConversationId(id);
+  }, []);
+
+  // Create a new conversation
+  const createNewConversation = useCallback(async (title?: string) => {
+    if (!user) return null;
+    const { data, error } = await supabase
+      .from('assistant_conversations')
+      .insert({
+        user_id: user.id,
+        title: title || 'Nova conversa',
+        project_id: options?.projectId || null,
+      })
+      .select()
+      .single();
+
+    if (data) {
+      const conv = data as Conversation;
+      setConversationId(conv.id);
+      setMessages([]);
+      setConversations(prev => [conv, ...prev]);
+      return conv.id;
+    }
+    return null;
+  }, [user, options?.projectId]);
+
+  // Persist a message to the DB
+  const persistMessage = useCallback(async (convId: string, message: ChatMessage) => {
+    await supabase.from('assistant_messages').insert({
+      conversation_id: convId,
+      role: message.role,
+      content: message.content,
+      sources: message.sources ? (message.sources as any) : null,
+      is_error: message.isError || false,
+    });
+  }, []);
+
+  // Update conversation title & timestamp
+  const updateConversationTitle = useCallback(async (convId: string, title: string) => {
+    await supabase
+      .from('assistant_conversations')
+      .update({ title })
+      .eq('id', convId);
+    setConversations(prev =>
+      prev.map(c => c.id === convId ? { ...c, title } : c)
+    );
+  }, []);
+
+  // Rename conversation
+  const renameConversation = useCallback(async (convId: string, newTitle: string) => {
+    await updateConversationTitle(convId, newTitle);
+  }, [updateConversationTitle]);
+
+  // Delete conversation
+  const deleteConversation = useCallback(async (convId: string) => {
+    await supabase.from('assistant_conversations').delete().eq('id', convId);
+    setConversations(prev => prev.filter(c => c.id !== convId));
+    if (conversationId === convId) {
+      setConversationId(null);
+      setMessages([]);
+    }
+  }, [conversationId]);
 
   const sendMessage = useCallback(async (content: string) => {
     if (!content.trim() || isLoading) return;
 
     setError(null);
-    
+
+    // Ensure we have a conversation
+    let activeConvId = conversationId;
+    if (!activeConvId) {
+      // Generate title from first message (first 50 chars)
+      const title = content.trim().substring(0, 50) + (content.trim().length > 50 ? '...' : '');
+      activeConvId = await createNewConversation(title);
+      if (!activeConvId) return;
+    }
+
     // Add user message
     const userMessage: ChatMessage = {
       id: crypto.randomUUID(),
@@ -42,6 +158,7 @@ export function useAssistantChat(options?: UseAssistantChatOptions) {
       timestamp: new Date(),
     };
     setMessages(prev => [...prev, userMessage]);
+    await persistMessage(activeConvId, userMessage);
 
     // Start loading
     setIsLoading(true);
@@ -49,10 +166,17 @@ export function useAssistantChat(options?: UseAssistantChatOptions) {
 
     try {
       const { data: { session } } = await supabase.auth.getSession();
-      
+
       if (!session?.access_token) {
         throw new Error('Você precisa estar autenticado para usar o assistente.');
       }
+
+      // Build conversation history for context
+      const currentMessages = [...messages, userMessage];
+      const historyMessages = currentMessages.slice(-10).map(m => ({
+        role: m.role,
+        content: m.content,
+      }));
 
       const response = await fetch(
         `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/rag-answer`,
@@ -62,10 +186,10 @@ export function useAssistantChat(options?: UseAssistantChatOptions) {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${session.access_token}`,
           },
-          body: JSON.stringify({ 
+          body: JSON.stringify({
             query: content.trim(),
-            // Pass project_ids if filtering by specific project
             project_ids: options?.projectId ? [options.projectId] : undefined,
+            conversation_history: historyMessages,
           }),
           signal: abortControllerRef.current.signal,
         }
@@ -77,8 +201,7 @@ export function useAssistantChat(options?: UseAssistantChatOptions) {
       }
 
       const data = await response.json();
-      
-      // Add assistant message
+
       const assistantMessage: ChatMessage = {
         id: crypto.randomUUID(),
         role: 'assistant',
@@ -87,16 +210,20 @@ export function useAssistantChat(options?: UseAssistantChatOptions) {
         timestamp: new Date(),
       };
       setMessages(prev => [...prev, assistantMessage]);
+      await persistMessage(activeConvId, assistantMessage);
+
+      // Update conversation timestamp
+      await supabase
+        .from('assistant_conversations')
+        .update({ updated_at: new Date().toISOString() })
+        .eq('id', activeConvId);
 
     } catch (err) {
-      if (err instanceof Error && err.name === 'AbortError') {
-        return; // Request was cancelled
-      }
-      
+      if (err instanceof Error && err.name === 'AbortError') return;
+
       const errorMessage = err instanceof Error ? err.message : 'Erro desconhecido';
       setError(errorMessage);
-      
-      // Add error message to chat
+
       const errorChatMessage: ChatMessage = {
         id: crypto.randomUUID(),
         role: 'assistant',
@@ -105,11 +232,12 @@ export function useAssistantChat(options?: UseAssistantChatOptions) {
         isError: true,
       };
       setMessages(prev => [...prev, errorChatMessage]);
+      await persistMessage(activeConvId, errorChatMessage);
     } finally {
       setIsLoading(false);
       abortControllerRef.current = null;
     }
-  }, [isLoading, options?.projectId]);
+  }, [isLoading, options?.projectId, conversationId, createNewConversation, persistMessage, messages]);
 
   const cancelRequest = useCallback(() => {
     if (abortControllerRef.current) {
@@ -120,8 +248,28 @@ export function useAssistantChat(options?: UseAssistantChatOptions) {
 
   const clearMessages = useCallback(() => {
     setMessages([]);
+    setConversationId(null);
     setError(null);
   }, []);
+
+  // Start a fresh conversation (new button)
+  const startNewConversation = useCallback(() => {
+    setMessages([]);
+    setConversationId(null);
+    setError(null);
+  }, []);
+
+  // Load conversations on mount
+  useEffect(() => {
+    loadConversations();
+  }, [loadConversations]);
+
+  // Load most recent conversation on mount
+  useEffect(() => {
+    if (conversations.length > 0 && !conversationId && messages.length === 0) {
+      loadConversation(conversations[0].id);
+    }
+  }, [conversations, conversationId, messages.length, loadConversation]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -136,8 +284,16 @@ export function useAssistantChat(options?: UseAssistantChatOptions) {
     messages,
     isLoading,
     error,
+    conversationId,
+    conversations,
+    loadingConversations,
     sendMessage,
     cancelRequest,
     clearMessages,
+    startNewConversation,
+    loadConversation,
+    renameConversation,
+    deleteConversation,
+    loadConversations,
   };
 }
