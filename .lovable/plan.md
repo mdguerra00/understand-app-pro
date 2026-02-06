@@ -1,73 +1,61 @@
 
 
-# Plano: Corrigir Extração de Conhecimento para PDFs
+# Plano: Adicionar Edição Completa de Campos
 
-## Diagnóstico do Problema
+## Resumo
 
-A função `extract-knowledge` está falhando com dois erros críticos ao processar PDFs:
+Implementar edição inline e via modal para campos que atualmente nao podem ser editados: informacoes do projeto e comentarios de tarefas.
 
-1. **`Maximum call stack size exceeded`** - O loop de conversão base64 para PDFs grandes cria strings enormes
-2. **`Deno.core.runMicrotasks() is not supported`** - Erro de incompatibilidade com o ambiente Deno Edge
+## Mudancas Planejadas
 
-### Problema Identificado no Código
+### 1. Editar Informacoes do Projeto (ProjectSettingsModal)
 
-Na linha 298, após gerar o base64, o código **NÃO usa** a variável `base64`:
+**Arquivo:** `src/components/projects/ProjectSettingsModal.tsx`
 
-```typescript
-// Linha 298 - base64 gerado mas não utilizado!
-textContent = `[PDF Document: ${fileData.name}]\n\nBase64 content available...`;
-```
+Substituir o placeholder "estara disponivel em breve" por um formulario completo com:
+- Nome do projeto (input text, obrigatorio)
+- Descricao (textarea)
+- Objetivos (textarea)
+- Categoria (input text)
+- Status (select: planning, in_progress, review, completed, archived)
+- Data de inicio (input date)
+- Data de termino (input date)
 
-O PDF nunca é realmente enviado para análise - apenas uma mensagem placeholder é enviada.
+O formulario usara react-hook-form + zod para validacao e chamara `supabase.from('projects').update(...)`. Apos salvar, disparara callback `onUpdated` para atualizar a pagina.
 
-## Solução Proposta
+**Props adicionais necessarias:** adicionar `onUpdated` callback e passar os dados do projeto completo (ou buscar dentro do modal).
 
-Usar a biblioteca `pdf-parse` compatível com Deno para extrair texto do PDF de forma nativa, sem necessidade de conversão base64.
+**Arquivo:** `src/pages/ProjectDetail.tsx`
+- Passar dados do projeto para o modal de configuracoes
+- Adicionar callback `onUpdated` que re-busca os dados do projeto
 
-### Mudanças Técnicas
+### 2. Editar Comentarios de Tarefas
 
-| Arquivo | Mudança |
-|---------|---------|
-| `supabase/functions/extract-knowledge/index.ts` | Importar e usar biblioteca de parsing de PDF |
+**Arquivo:** `src/components/tasks/TaskComments.tsx`
 
-### Implementação
+Adicionar funcionalidade de edicao inline nos comentarios do usuario:
+- Ao clicar no icone de editar (visivel no hover, ao lado do botao de excluir), o texto do comentario sera substituido por um textarea editavel
+- Botoes "Salvar" e "Cancelar" aparecerao abaixo
+- Chamara `supabase.from('task_comments').update({ content }).eq('id', commentId)` 
+- RLS ja permite: "Authors can update own comments" existe na tabela task_comments
 
-1. **Adicionar import de pdf-parse compatível com Deno**:
-```typescript
-import pdf from "https://esm.sh/pdf-parse@1.1.1";
-```
+### Detalhes Tecnicos
 
-2. **Substituir lógica de PDF (linhas 280-299)**:
-```typescript
-} else if (mimeType === "application/pdf") {
-  try {
-    const arrayBuffer = await fileContent.arrayBuffer();
-    const buffer = new Uint8Array(arrayBuffer);
-    const pdfData = await pdf(buffer);
-    textContent = `[PDF Document: ${fileData.name}]\n\n${pdfData.text}`;
-    parsingQuality = pdfData.text.length > 100 ? "good" : "partial";
-  } catch (pdfError) {
-    console.error("PDF parsing error:", pdfError);
-    textContent = `[AVISO: Erro ao processar PDF: ${fileData.name}]`;
-    parsingQuality = "failed";
-  }
-}
-```
+| Arquivo | Tipo de Mudanca |
+|---------|----------------|
+| `src/components/projects/ProjectSettingsModal.tsx` | Adicionar formulario de edicao completo |
+| `src/pages/ProjectDetail.tsx` | Passar props do projeto e callback onUpdated |
+| `src/components/tasks/TaskComments.tsx` | Adicionar edicao inline de comentarios |
 
-3. **Remover código de base64 que causa stack overflow**
+### Seguranca
 
-## Alternativa: Usar API de Visão (Multimodal)
+- Projetos: RLS "Owners and managers can update projects" ja cobre a atualizacao
+- Comentarios: RLS "Authors can update own comments" ja cobre a atualizacao
+- Validacao client-side com zod para limites de caracteres
 
-Se a biblioteca `pdf-parse` não funcionar bem no Deno Edge, podemos usar o Gemini com capacidade multimodal para ler PDFs diretamente como imagens. Isso envolveria:
+### Nao necessario (ja funciona)
 
-1. Converter cada página do PDF para imagem
-2. Enviar as imagens para a API Gemini com análise visual
-
-Esta é uma alternativa mais complexa, mas mais robusta para PDFs com formatação complexa.
-
-## Resultado Esperado
-
-- PDFs de 20+ páginas serão processados sem erro de stack overflow
-- Texto será extraído e enviado para análise da IA
-- Insights serão gerados corretamente
+- Edicao de tarefas (TaskEditModal ja cobre todos os campos)
+- Edicao de relatorios (ReportEditorModal ja cobre titulo, resumo, conteudo, status)
+- Edicao de datas de tarefas (ja no TaskEditModal)
 
