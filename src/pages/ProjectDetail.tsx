@@ -499,10 +499,12 @@ export default function ProjectDetail() {
         <ProjectSettingsModal
           projectId={id!}
           projectName={project.name}
+          project={project}
           isOwner={isOwner}
           open={isSettingsOpen}
           onOpenChange={setIsSettingsOpen}
           onDeleted={() => navigate('/projects')}
+          onUpdated={fetchProject}
         />
       )}
     </div>
