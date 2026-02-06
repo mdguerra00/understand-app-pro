@@ -23,7 +23,7 @@ interface ProjectFile {
 interface AnalyzeFilePickerProps {
   open: boolean;
   onClose: () => void;
-  onSelect: (fileId: string, fileName: string) => void;
+  onSelect: (fileId: string, fileName: string, projectId: string) => void;
   projectId?: string;
 }
 
@@ -73,7 +73,7 @@ export function AnalyzeFilePicker({ open, onClose, onSelect, projectId }: Analyz
     : files;
 
   const handleSelect = (file: ProjectFile) => {
-    onSelect(file.id, file.name);
+    onSelect(file.id, file.name, file.project_id);
     onClose();
   };
 

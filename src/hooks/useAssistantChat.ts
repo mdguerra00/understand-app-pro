@@ -18,6 +18,8 @@ export interface ChatMessage {
   sources?: ChatSource[];
   timestamp: Date;
   isError?: boolean;
+  analysisFileId?: string;
+  analysisProjectId?: string;
 }
 
 export interface Conversation {
@@ -285,7 +287,7 @@ export function useAssistantChat(options?: UseAssistantChatOptions) {
     };
   }, []);
 
-  const analyzeDocument = useCallback(async (fileId: string, fileName: string) => {
+  const analyzeDocument = useCallback(async (fileId: string, fileName: string, fileProjectId?: string) => {
     if (isLoading) return;
 
     setError(null);
@@ -344,6 +346,8 @@ export function useAssistantChat(options?: UseAssistantChatOptions) {
         content: data.response || 'Erro ao gerar análise.',
         sources: data.sources || [],
         timestamp: new Date(),
+        analysisFileId: fileId,
+        analysisProjectId: fileProjectId || options?.projectId,
       };
       setMessages(prev => [...prev, assistantMessage]);
       await persistMessage(activeConvId, assistantMessage);

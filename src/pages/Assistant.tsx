@@ -283,7 +283,7 @@ export default function Assistant() {
       <AnalyzeFilePicker
         open={showFilePicker}
         onClose={() => setShowFilePicker(false)}
-        onSelect={(fileId, fileName) => analyzeDocument(fileId, fileName)}
+        onSelect={(fileId, fileName, projectId) => analyzeDocument(fileId, fileName, projectId)}
       />
     </div>
   );
