@@ -20,6 +20,7 @@ import Settings from "./pages/Settings";
 import AcceptInvite from "./pages/AcceptInvite";
 import NotFound from "./pages/NotFound";
 import Assistant from "./pages/Assistant";
+import Admin from "./pages/Admin";
 
 const queryClient = new QueryClient();
 
@@ -112,6 +113,14 @@ const App = () => (
               element={
                 <AppLayout>
                   <Settings />
+                </AppLayout>
+              }
+            />
+            <Route
+              path="/admin"
+              element={
+                <AppLayout>
+                  <Admin />
                 </AppLayout>
               }
             />

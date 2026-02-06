@@ -34,8 +34,10 @@ import {
   ChevronUp,
   User,
   MessageCircle,
+  Shield,
 } from 'lucide-react';
 import { useAuth } from '@/hooks/useAuth';
+import { useAdminRole } from '@/hooks/useAdminRole';
 
 const mainNavItems = [
   { title: 'Dashboard', url: '/', icon: LayoutDashboard },
@@ -52,6 +54,7 @@ const secondaryNavItems = [
 
 export function AppSidebar() {
   const { user, signOut } = useAuth();
+  const { isAdmin } = useAdminRole();
   const location = useLocation();
 
   const getInitials = (name?: string | null, email?: string) => {
@@ -124,6 +127,28 @@ export function AppSidebar() {
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
+
+        {isAdmin && (
+          <SidebarGroup>
+            <SidebarGroupLabel>Administração</SidebarGroupLabel>
+            <SidebarGroupContent>
+              <SidebarMenu>
+                <SidebarMenuItem>
+                  <SidebarMenuButton
+                    asChild
+                    isActive={location.pathname === '/admin'}
+                    tooltip="Administração"
+                  >
+                    <NavLink to="/admin">
+                      <Shield className="h-4 w-4" />
+                      <span>Administração</span>
+                    </NavLink>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
+        )}
       </SidebarContent>
 
       <SidebarFooter className="border-t border-sidebar-border p-2">
