@@ -14,11 +14,13 @@ import {
   PanelRightClose,
   PanelLeftOpen,
   PanelLeftClose,
+  FileSearch,
 } from 'lucide-react';
 import { useAssistantChat } from '@/hooks/useAssistantChat';
 import { ChatMessage } from '@/components/assistant/ChatMessage';
 import { SourcesPanel } from '@/components/assistant/SourcesPanel';
 import { ConversationList } from '@/components/assistant/ConversationList';
+import { AnalyzeFilePicker } from '@/components/assistant/AnalyzeFilePicker';
 import { cn } from '@/lib/utils';
 
 const suggestedQuestions = [
@@ -40,11 +42,13 @@ export default function Assistant() {
     loadConversation,
     renameConversation,
     deleteConversation,
+    analyzeDocument,
   } = useAssistantChat();
 
   const [input, setInput] = useState('');
   const [showSources, setShowSources] = useState(true);
   const [showConversations, setShowConversations] = useState(true);
+  const [showFilePicker, setShowFilePicker] = useState(false);
   const [highlightedCitation, setHighlightedCitation] = useState<string>();
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -138,6 +142,16 @@ export default function Assistant() {
             </div>
           </div>
           <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setShowFilePicker(true)}
+              className="gap-2"
+              disabled={isLoading}
+            >
+              <FileSearch className="h-4 w-4" />
+              Analisar Documento
+            </Button>
             <Button
               variant="outline"
               size="sm"
@@ -264,6 +278,13 @@ export default function Assistant() {
           />
         </div>
       )}
+
+      {/* Analyze File Picker */}
+      <AnalyzeFilePicker
+        open={showFilePicker}
+        onClose={() => setShowFilePicker(false)}
+        onSelect={(fileId, fileName) => analyzeDocument(fileId, fileName)}
+      />
     </div>
   );
 }

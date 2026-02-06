@@ -285,6 +285,94 @@ export function useAssistantChat(options?: UseAssistantChatOptions) {
     };
   }, []);
 
+  const analyzeDocument = useCallback(async (fileId: string, fileName: string) => {
+    if (isLoading) return;
+
+    setError(null);
+
+    // Ensure we have a conversation
+    let activeConvId = conversationId;
+    if (!activeConvId) {
+      const title = `Análise: ${fileName.substring(0, 40)}`;
+      isNewConversationRef.current = false;
+      activeConvId = await createNewConversation(title);
+      if (!activeConvId) return;
+    }
+
+    // Add user message
+    const userMessage: ChatMessage = {
+      id: crypto.randomUUID(),
+      role: 'user',
+      content: `📄 Analise profundamente o documento: **${fileName}**`,
+      timestamp: new Date(),
+    };
+    setMessages(prev => [...prev, userMessage]);
+    await persistMessage(activeConvId, userMessage);
+
+    setIsLoading(true);
+    abortControllerRef.current = new AbortController();
+
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) {
+        throw new Error('Você precisa estar autenticado.');
+      }
+
+      const response = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/analyze-document`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${session.access_token}`,
+          },
+          body: JSON.stringify({ file_id: fileId }),
+          signal: abortControllerRef.current.signal,
+        }
+      );
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || `Erro ao analisar documento (${response.status})`);
+      }
+
+      const data = await response.json();
+
+      const assistantMessage: ChatMessage = {
+        id: crypto.randomUUID(),
+        role: 'assistant',
+        content: data.response || 'Erro ao gerar análise.',
+        sources: data.sources || [],
+        timestamp: new Date(),
+      };
+      setMessages(prev => [...prev, assistantMessage]);
+      await persistMessage(activeConvId, assistantMessage);
+
+      await supabase
+        .from('assistant_conversations')
+        .update({ updated_at: new Date().toISOString() })
+        .eq('id', activeConvId);
+
+    } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') return;
+      const errorMessage = err instanceof Error ? err.message : 'Erro desconhecido';
+      setError(errorMessage);
+
+      const errorChatMessage: ChatMessage = {
+        id: crypto.randomUUID(),
+        role: 'assistant',
+        content: `Desculpe, ocorreu um erro: ${errorMessage}`,
+        timestamp: new Date(),
+        isError: true,
+      };
+      setMessages(prev => [...prev, errorChatMessage]);
+      await persistMessage(activeConvId, errorChatMessage);
+    } finally {
+      setIsLoading(false);
+      abortControllerRef.current = null;
+    }
+  }, [isLoading, conversationId, createNewConversation, persistMessage]);
+
   return {
     messages,
     isLoading,
@@ -300,5 +388,6 @@ export function useAssistantChat(options?: UseAssistantChatOptions) {
     renameConversation,
     deleteConversation,
     loadConversations,
+    analyzeDocument,
   };
 }
