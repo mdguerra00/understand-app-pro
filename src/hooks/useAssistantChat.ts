@@ -146,6 +146,7 @@ export function useAssistantChat(options?: UseAssistantChatOptions) {
     if (!activeConvId) {
       // Generate title from first message (first 50 chars)
       const title = content.trim().substring(0, 50) + (content.trim().length > 50 ? '...' : '');
+      isNewConversationRef.current = false;
       activeConvId = await createNewConversation(title);
       if (!activeConvId) return;
     }
@@ -252,8 +253,12 @@ export function useAssistantChat(options?: UseAssistantChatOptions) {
     setError(null);
   }, []);
 
+  // Track if user explicitly started a new conversation
+  const isNewConversationRef = useRef(false);
+
   // Start a fresh conversation (new button)
   const startNewConversation = useCallback(() => {
+    isNewConversationRef.current = true;
     setMessages([]);
     setConversationId(null);
     setError(null);
@@ -264,9 +269,9 @@ export function useAssistantChat(options?: UseAssistantChatOptions) {
     loadConversations();
   }, [loadConversations]);
 
-  // Load most recent conversation on mount
+  // Load most recent conversation on mount (but not if user clicked "new")
   useEffect(() => {
-    if (conversations.length > 0 && !conversationId && messages.length === 0) {
+    if (conversations.length > 0 && !conversationId && messages.length === 0 && !isNewConversationRef.current) {
       loadConversation(conversations[0].id);
     }
   }, [conversations, conversationId, messages.length, loadConversation]);
