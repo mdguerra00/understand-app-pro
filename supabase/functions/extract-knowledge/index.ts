@@ -3,6 +3,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import * as XLSX from "https://esm.sh/xlsx@0.18.5?target=deno";
 // @ts-ignore - pdfjs-serverless types
 import { getDocument } from "https://esm.sh/pdfjs-serverless";
+import mammoth from "https://esm.sh/mammoth@1.8.0";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -320,6 +321,34 @@ serve(async (req) => {
         const errorMessage = pdfError instanceof Error ? pdfError.message : String(pdfError);
         console.error("PDF parsing error:", pdfError);
         textContent = `[PDF Document: ${fileData.name}]\n[ERRO: Falha ao processar PDF - ${errorMessage}]`;
+        parsingQuality = "failed";
+      }
+      
+    } else if (
+      mimeType === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
+      fileName.endsWith(".docx")
+    ) {
+      // Handle DOCX files
+      console.log(`Parsing DOCX file: ${fileName}`);
+      try {
+        const arrayBuffer = await fileContent.arrayBuffer();
+        const result = await mammoth.extractRawText({ arrayBuffer });
+        textContent = result.value || "";
+        
+        if (textContent.length > 500) {
+          parsingQuality = "good";
+        } else if (textContent.length > 50) {
+          parsingQuality = "partial";
+        } else {
+          parsingQuality = "poor";
+        }
+        
+        textContent = `[Documento Word: ${fileName}]\n\n${textContent}`;
+        console.log(`DOCX parsed. Text length: ${textContent.length}, quality: ${parsingQuality}`);
+      } catch (docxError: unknown) {
+        const errorMessage = docxError instanceof Error ? docxError.message : String(docxError);
+        console.error("DOCX parsing error:", docxError);
+        textContent = `[Documento Word: ${fileName}]\n[ERRO: Falha ao processar DOCX - ${errorMessage}]`;
         parsingQuality = "failed";
       }
       
