@@ -72,7 +72,7 @@ export function TaskEditModal({ task, projectId, open, onOpenChange, onSuccess }
       description: task.description || '',
       priority: task.priority,
       status: task.status,
-      assigned_to: task.assigned_to || '',
+      assigned_to: task.assigned_to || '__none__',
       due_date: task.due_date || '',
     },
   });
@@ -84,7 +84,7 @@ export function TaskEditModal({ task, projectId, open, onOpenChange, onSuccess }
         description: task.description || '',
         priority: task.priority,
         status: task.status,
-        assigned_to: task.assigned_to || '',
+        assigned_to: task.assigned_to || '__none__',
         due_date: task.due_date || '',
       });
     }
@@ -125,7 +125,7 @@ export function TaskEditModal({ task, projectId, open, onOpenChange, onSuccess }
           description: data.description || null,
           priority: data.priority,
           status: data.status,
-          assigned_to: data.assigned_to || null,
+          assigned_to: data.assigned_to === '__none__' ? null : data.assigned_to || null,
           due_date: data.due_date || null,
         })
         .eq('id', task.id);
@@ -258,7 +258,7 @@ export function TaskEditModal({ task, projectId, open, onOpenChange, onSuccess }
                       </SelectTrigger>
                     </FormControl>
                     <SelectContent>
-                      <SelectItem value="">Não atribuído</SelectItem>
+                      <SelectItem value="__none__">Não atribuído</SelectItem>
                       {members.map((member) => (
                         <SelectItem key={member.user_id} value={member.user_id}>
                           {member.full_name || member.email}
