@@ -250,7 +250,7 @@ export function ProjectAssistant({ projectId, projectName }: ProjectAssistantPro
       <AnalyzeFilePicker
         open={showFilePicker}
         onClose={() => setShowFilePicker(false)}
-        onSelect={(fileId, fileName) => analyzeDocument(fileId, fileName)}
+        onSelect={(fileId, fileName, fileProjectId) => analyzeDocument(fileId, fileName, fileProjectId)}
         projectId={projectId}
       />
     </div>

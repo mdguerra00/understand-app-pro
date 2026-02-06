@@ -8,10 +8,12 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip';
-import { Bot, User, AlertCircle, Lightbulb } from 'lucide-react';
+import { Bot, User, AlertCircle, Lightbulb, DatabaseZap, Loader2, Check } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { ChatMessage as ChatMessageType } from '@/hooks/useAssistantChat';
 import { SaveInsightModal } from './SaveInsightModal';
+import { supabase } from '@/integrations/supabase/client';
+import { toast } from '@/hooks/use-toast';
 
 interface ChatMessageProps {
   message: ChatMessageType;
@@ -21,8 +23,53 @@ interface ChatMessageProps {
 
 export function ChatMessage({ message, onSourceClick, userQuestion }: ChatMessageProps) {
   const [showSaveModal, setShowSaveModal] = useState(false);
+  const [savingInsights, setSavingInsights] = useState(false);
+  const [insightsSaved, setInsightsSaved] = useState<number | null>(null);
   const isUser = message.role === 'user';
   const isError = message.isError;
+  const isAnalysis = !!message.analysisFileId;
+
+  const handleSaveAnalysisInsights = async () => {
+    if (!message.analysisFileId || !message.analysisProjectId) return;
+    setSavingInsights(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) throw new Error('Não autenticado');
+
+      const response = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/save-analysis-insights`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${session.access_token}`,
+          },
+          body: JSON.stringify({
+            analysis_text: message.content,
+            file_id: message.analysisFileId,
+            project_id: message.analysisProjectId,
+          }),
+        }
+      );
+
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Erro ao salvar insights');
+
+      setInsightsSaved(data.insights_saved || 0);
+      toast({
+        title: `${data.insights_saved} insights salvos!`,
+        description: 'Os conhecimentos foram adicionados à Base de Conhecimento.',
+      });
+    } catch (err: any) {
+      toast({
+        title: 'Erro ao salvar insights',
+        description: err.message,
+        variant: 'destructive',
+      });
+    } finally {
+      setSavingInsights(false);
+    }
+  };
 
   return (
     <>
@@ -163,6 +210,33 @@ export function ChatMessage({ message, onSourceClick, userQuestion }: ChatMessag
                   [{source.citation}] {source.title}
                 </Badge>
               ))}
+            </div>
+          )}
+
+          {/* Inject insights button for analysis messages */}
+          {isAnalysis && !isError && (
+            <div className="pt-3 border-t border-border/50">
+              {insightsSaved !== null ? (
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <Check className="h-4 w-4 text-green-500" />
+                  <span>{insightsSaved} insights salvos na Base de Conhecimento</span>
+                </div>
+              ) : (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="gap-2"
+                  onClick={handleSaveAnalysisInsights}
+                  disabled={savingInsights}
+                >
+                  {savingInsights ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <DatabaseZap className="h-4 w-4" />
+                  )}
+                  {savingInsights ? 'Extraindo e salvando...' : 'Injetar na Base de Conhecimento'}
+                </Button>
+              )}
             </div>
           )}
         </div>
