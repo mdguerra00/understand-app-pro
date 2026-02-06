@@ -16,11 +16,32 @@ import {
   Settings,
   Plus,
   Bot,
+  MoreHorizontal,
+  Pencil,
+  Trash2,
 } from 'lucide-react';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import { supabase } from '@/integrations/supabase/client';
 import { Tables } from '@/integrations/supabase/types';
 import { TaskFormModal } from '@/components/tasks/TaskFormModal';
 import { TaskDetailModal } from '@/components/tasks/TaskDetailModal';
+import { TaskEditModal } from '@/components/tasks/TaskEditModal';
+import { useToast } from '@/hooks/use-toast';
 import { InviteMemberModal } from '@/components/projects/InviteMemberModal';
 import { ProjectFilesList } from '@/components/files/ProjectFilesList';
 import { ReportsList } from '@/components/reports/ReportsList';
@@ -88,6 +109,12 @@ export default function ProjectDetail() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [isTaskDetailOpen, setIsTaskDetailOpen] = useState(false);
+  const [editTask, setEditTask] = useState<Task | null>(null);
+  const [isEditOpen, setIsEditOpen] = useState(false);
+  const [deleteTask, setDeleteTask] = useState<Task | null>(null);
+  const [isDeleteOpen, setIsDeleteOpen] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const { toast } = useToast();
   
   // Tab control for URL navigation
   const [activeTab, setActiveTab] = useState('tasks');
@@ -450,7 +477,37 @@ export default function ProjectDetail() {
                         )}
                       </div>
                     </div>
-                    <Badge variant="outline">{taskStatusLabels[task.status]}</Badge>
+                    <div className="flex items-center gap-2">
+                      <Badge variant="outline">{taskStatusLabels[task.status]}</Badge>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
+                          <Button variant="ghost" size="icon" className="h-8 w-8">
+                            <MoreHorizontal className="h-4 w-4" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem onClick={(e) => {
+                            e.stopPropagation();
+                            setEditTask(task);
+                            setIsEditOpen(true);
+                          }}>
+                            <Pencil className="mr-2 h-4 w-4" />
+                            Editar
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            className="text-destructive focus:text-destructive"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setDeleteTask(task);
+                              setIsDeleteOpen(true);
+                            }}
+                          >
+                            <Trash2 className="mr-2 h-4 w-4" />
+                            Excluir
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </div>
                   </CardContent>
                 </Card>
               ))}
@@ -495,6 +552,53 @@ export default function ProjectDetail() {
         onOpenChange={setIsInviteModalOpen}
         onSuccess={refreshMembers}
       />
+      {editTask && (
+        <TaskEditModal
+          task={editTask}
+          projectId={id!}
+          open={isEditOpen}
+          onOpenChange={setIsEditOpen}
+          onSuccess={refreshTasks}
+        />
+      )}
+      <AlertDialog open={isDeleteOpen} onOpenChange={setIsDeleteOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Excluir tarefa</AlertDialogTitle>
+            <AlertDialogDescription>
+              Tem certeza que deseja excluir a tarefa "{deleteTask?.title}"? Esta ação pode ser revertida por um administrador.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isDeleting}>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={isDeleting}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={async () => {
+                if (!deleteTask || !user) return;
+                setIsDeleting(true);
+                try {
+                  const { error } = await supabase
+                    .from('tasks')
+                    .update({ deleted_at: new Date().toISOString(), deleted_by: user.id })
+                    .eq('id', deleteTask.id);
+                  if (error) throw error;
+                  toast({ title: 'Tarefa excluída', description: 'A tarefa foi removida com sucesso.' });
+                  refreshTasks();
+                } catch (error: any) {
+                  toast({ variant: 'destructive', title: 'Erro ao excluir', description: error.message });
+                } finally {
+                  setIsDeleting(false);
+                  setIsDeleteOpen(false);
+                  setDeleteTask(null);
+                }
+              }}
+            >
+              {isDeleting ? 'Excluindo...' : 'Excluir'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       {project && (
         <ProjectSettingsModal
           projectId={id!}
