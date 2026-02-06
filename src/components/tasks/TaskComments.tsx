@@ -3,7 +3,7 @@ import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Send, Trash2 } from 'lucide-react';
+import { Send, Trash2, Pencil, X, Check } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/hooks/useAuth';
 import { useToast } from '@/hooks/use-toast';
@@ -15,6 +15,7 @@ interface Comment {
   content: string;
   created_at: string;
   created_by: string;
+  updated_at: string;
   author?: {
     full_name: string | null;
     email: string;
@@ -33,6 +34,8 @@ export function TaskComments({ taskId }: TaskCommentsProps) {
   const [loading, setLoading] = useState(true);
   const [newComment, setNewComment] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editContent, setEditContent] = useState('');
 
   const fetchComments = async () => {
     try {
@@ -137,6 +140,47 @@ export function TaskComments({ taskId }: TaskCommentsProps) {
     }
   };
 
+  const startEditing = (comment: Comment) => {
+    setEditingId(comment.id);
+    setEditContent(comment.content);
+  };
+
+  const cancelEditing = () => {
+    setEditingId(null);
+    setEditContent('');
+  };
+
+  const handleSaveEdit = async (commentId: string) => {
+    if (!editContent.trim()) return;
+
+    try {
+      const { error } = await supabase
+        .from('task_comments')
+        .update({ content: editContent.trim() })
+        .eq('id', commentId);
+
+      if (error) throw error;
+
+      setComments(comments.map((c) =>
+        c.id === commentId ? { ...c, content: editContent.trim(), updated_at: new Date().toISOString() } : c
+      ));
+      setEditingId(null);
+      setEditContent('');
+
+      toast({
+        title: 'Comentário atualizado',
+        description: 'Seu comentário foi editado com sucesso.',
+      });
+    } catch (error) {
+      console.error('Error updating comment:', error);
+      toast({
+        title: 'Erro',
+        description: 'Não foi possível editar o comentário.',
+        variant: 'destructive',
+      });
+    }
+  };
+
   const getInitials = (name?: string | null, email?: string) => {
     if (name) {
       return name
@@ -148,6 +192,8 @@ export function TaskComments({ taskId }: TaskCommentsProps) {
     }
     return email?.charAt(0).toUpperCase() ?? '?';
   };
+
+  const wasEdited = (comment: Comment) => comment.updated_at !== comment.created_at;
 
   if (loading) {
     return (
@@ -193,20 +239,63 @@ export function TaskComments({ taskId }: TaskCommentsProps) {
                       locale: ptBR,
                     })}
                   </span>
-                  {comment.created_by === user?.id && (
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity"
-                      onClick={() => handleDelete(comment.id)}
-                    >
-                      <Trash2 className="h-3 w-3 text-destructive" />
-                    </Button>
+                  {wasEdited(comment) && (
+                    <span className="text-xs text-muted-foreground italic">(editado)</span>
+                  )}
+                  {comment.created_by === user?.id && editingId !== comment.id && (
+                    <>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity"
+                        onClick={() => startEditing(comment)}
+                      >
+                        <Pencil className="h-3 w-3 text-muted-foreground" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity"
+                        onClick={() => handleDelete(comment.id)}
+                      >
+                        <Trash2 className="h-3 w-3 text-destructive" />
+                      </Button>
+                    </>
                   )}
                 </div>
-                <p className="text-sm text-foreground mt-1 whitespace-pre-wrap">
-                  {comment.content}
-                </p>
+
+                {editingId === comment.id ? (
+                  <div className="mt-1 space-y-2">
+                    <Textarea
+                      value={editContent}
+                      onChange={(e) => setEditContent(e.target.value)}
+                      className="min-h-[60px] resize-none"
+                      autoFocus
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                          handleSaveEdit(comment.id);
+                        }
+                        if (e.key === 'Escape') {
+                          cancelEditing();
+                        }
+                      }}
+                    />
+                    <div className="flex gap-2">
+                      <Button size="sm" variant="default" onClick={() => handleSaveEdit(comment.id)} disabled={!editContent.trim()}>
+                        <Check className="mr-1 h-3 w-3" />
+                        Salvar
+                      </Button>
+                      <Button size="sm" variant="ghost" onClick={cancelEditing}>
+                        <X className="mr-1 h-3 w-3" />
+                        Cancelar
+                      </Button>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-sm text-foreground mt-1 whitespace-pre-wrap">
+                    {comment.content}
+                  </p>
+                )}
               </div>
             </div>
           ))
