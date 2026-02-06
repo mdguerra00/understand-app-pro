@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Loader2, CheckCircle2, XCircle, Clock, AlertTriangle, FileSpreadsheet, X, RotateCcw } from 'lucide-react';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { toast } from 'sonner';
+import { useReprocessFile } from '@/hooks/useReprocessFile';
 
 interface ExtractionJob {
   id: string;
@@ -141,6 +142,7 @@ export function ExtractionStatus() {
 
 interface ExtractionBadgeProps {
   fileId: string;
+  projectId?: string;
 }
 
 interface ExtendedJob {
@@ -151,7 +153,9 @@ interface ExtendedJob {
   content_truncated: boolean | null;
 }
 
-export function ExtractionBadge({ fileId }: ExtractionBadgeProps) {
+export function ExtractionBadge({ fileId, projectId }: ExtractionBadgeProps) {
+  const reprocessMutation = useReprocessFile();
+
   const { data: job } = useQuery({
     queryKey: ['file-extraction', fileId],
     queryFn: async () => {
@@ -167,7 +171,6 @@ export function ExtractionBadge({ fileId }: ExtractionBadgeProps) {
       return data as ExtendedJob | null;
     },
     refetchInterval: (query) => {
-      // Only poll if job is pending or processing
       const data = query.state.data;
       if (data?.status === 'pending' || data?.status === 'processing') {
         return 3000;
@@ -175,6 +178,12 @@ export function ExtractionBadge({ fileId }: ExtractionBadgeProps) {
       return false;
     },
   });
+
+  const handleReprocess = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!projectId) return;
+    reprocessMutation.mutate({ fileId, projectId });
+  };
 
   if (!job) return null;
 
@@ -238,12 +247,40 @@ export function ExtractionBadge({ fileId }: ExtractionBadgeProps) {
     return badgeContent;
   }
 
-  if (job.status === 'failed') {
+  // Failed or completed with 0 insights — show reprocess button
+  if (job.status === 'failed' || (job.status === 'completed' && (!job.items_extracted || job.items_extracted === 0))) {
     return (
-      <Badge variant="destructive" className="text-xs gap-1">
-        <XCircle className="h-3 w-3" />
-        Erro
-      </Badge>
+      <div className="flex items-center gap-1">
+        <Badge variant={job.status === 'failed' ? 'destructive' : 'outline'} className="text-xs gap-1">
+          {job.status === 'failed' ? (
+            <><XCircle className="h-3 w-3" /> Erro</>
+          ) : (
+            <><AlertTriangle className="h-3 w-3" /> 0 insights</>
+          )}
+        </Badge>
+        {projectId && (
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-6 w-6"
+                  onClick={handleReprocess}
+                  disabled={reprocessMutation.isPending}
+                >
+                  {reprocessMutation.isPending ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : (
+                    <RotateCcw className="h-3 w-3" />
+                  )}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Reprocessar arquivo</TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        )}
+      </div>
     );
   }
 

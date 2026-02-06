@@ -30,10 +30,12 @@ import {
   Trash2,
   Upload,
   History,
+  RotateCcw,
 } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/hooks/useAuth';
+import { useReprocessFile } from '@/hooks/useReprocessFile';
 import { FileUploadModal } from './FileUploadModal';
 import { FileDetailModal } from './FileDetailModal';
 import { format } from 'date-fns';
@@ -62,6 +64,7 @@ interface ProjectFilesListProps {
 export function ProjectFilesList({ projectId, initialFileId, onFileOpened }: ProjectFilesListProps) {
   const { toast } = useToast();
   const { user } = useAuth();
+  const reprocessMutation = useReprocessFile();
   const [files, setFiles] = useState<ProjectFile[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -320,6 +323,16 @@ export function ProjectFilesList({ projectId, initialFileId, onFileOpened }: Pro
                         >
                           <History className="mr-2 h-4 w-4" />
                           Ver Histórico
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            reprocessMutation.mutate({ fileId: file.id, projectId });
+                          }}
+                          disabled={reprocessMutation.isPending}
+                        >
+                          <RotateCcw className="mr-2 h-4 w-4" />
+                          Reprocessar IA
                         </DropdownMenuItem>
                         <DropdownMenuSeparator />
                         <DropdownMenuItem
