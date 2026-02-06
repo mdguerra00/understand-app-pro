@@ -6,10 +6,12 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
-import { Loader2, Shield, ShieldAlert, Users, ScrollText } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Loader2, Shield, ShieldAlert, Users, ScrollText, UserPlus } from 'lucide-react';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
+import { CreateUserModal } from '@/components/admin/CreateUserModal';
 
 interface UserWithRole {
   id: string;
@@ -37,6 +39,7 @@ export default function Admin() {
   const [loadingUsers, setLoadingUsers] = useState(true);
   const [loadingAudit, setLoadingAudit] = useState(true);
   const [updatingRole, setUpdatingRole] = useState<string | null>(null);
+  const [createUserOpen, setCreateUserOpen] = useState(false);
 
   useEffect(() => {
     if (isAdmin) {
@@ -178,6 +181,12 @@ export default function Admin() {
         </TabsList>
 
         <TabsContent value="users">
+          <div className="mb-4 flex justify-end">
+            <Button onClick={() => setCreateUserOpen(true)} className="gap-2">
+              <UserPlus className="h-4 w-4" />
+              Novo Usuário
+            </Button>
+          </div>
           {loadingUsers ? (
             <div className="flex justify-center py-12">
               <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
@@ -269,6 +278,12 @@ export default function Admin() {
           )}
         </TabsContent>
       </Tabs>
+
+      <CreateUserModal
+        open={createUserOpen}
+        onOpenChange={setCreateUserOpen}
+        onUserCreated={fetchUsers}
+      />
     </div>
   );
 }
