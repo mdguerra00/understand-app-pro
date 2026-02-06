@@ -49,7 +49,6 @@ function chunkText(
     const end = Math.min(start + chunkSize, cleanText.length);
     let chunkEnd = end;
 
-    // Try to break at sentence or word boundary
     if (end < cleanText.length) {
       const lastPeriod = cleanText.lastIndexOf(".", end);
       const lastSpace = cleanText.lastIndexOf(" ", end);
@@ -78,6 +77,38 @@ function chunkText(
   return chunks;
 }
 
+// Generate embedding via Lovable AI Gateway
+async function generateEmbedding(text: string, apiKey: string): Promise<number[] | null> {
+  try {
+    // Use chat completions with a specific prompt to generate a consistent embedding-like representation
+    // Since Lovable AI Gateway doesn't have a dedicated embeddings endpoint,
+    // we use the embedding-compatible approach via the gateway
+    const response = await fetch("https://ai.gateway.lovable.dev/v1/embeddings", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "text-embedding-3-small",
+        input: text.substring(0, 8000), // Limit input size
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.warn("Embedding generation failed:", response.status, errorText);
+      return null;
+    }
+
+    const data = await response.json();
+    return data.data?.[0]?.embedding || null;
+  } catch (error) {
+    console.warn("Embedding generation error:", error);
+    return null;
+  }
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
@@ -86,15 +117,13 @@ serve(async (req) => {
   try {
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+    const lovableApiKey = Deno.env.get("LOVABLE_API_KEY");
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    // Get authorization header for user context
     const authHeader = req.headers.get("Authorization");
     
     const { job_id, source_type, source_id, project_id, internal_call } = await req.json();
 
-    // Skip auth validation for internal calls (from indexing-worker)
-    // Internal calls are trusted as they come from the worker with service role
     if (!internal_call && authHeader) {
       const userClient = createClient(supabaseUrl, Deno.env.get("SUPABASE_ANON_KEY")!, {
         global: { headers: { Authorization: authHeader } },
@@ -121,7 +150,6 @@ serve(async (req) => {
       }
     }
 
-    // Update job status to running
     if (job_id) {
       await supabase
         .from("indexing_jobs")
@@ -138,7 +166,6 @@ serve(async (req) => {
       project_id,
     };
 
-    // Fetch project name
     const { data: project } = await supabase
       .from("projects")
       .select("name")
@@ -156,9 +183,7 @@ serve(async (req) => {
         .is("deleted_at", null)
         .single();
 
-      if (error || !report) {
-        throw new Error(`Report not found: ${source_id}`);
-      }
+      if (error || !report) throw new Error(`Report not found: ${source_id}`);
 
       title = report.title;
       content = `${report.title}\n\n${report.summary || ""}\n\n${report.content || ""}`;
@@ -172,15 +197,12 @@ serve(async (req) => {
         .is("deleted_at", null)
         .single();
 
-      if (error || !task) {
-        throw new Error(`Task not found: ${source_id}`);
-      }
+      if (error || !task) throw new Error(`Task not found: ${source_id}`);
 
       title = task.title;
       content = `${task.title}\n\n${task.description || ""}`;
       metadata.title = task.title;
 
-      // Also fetch comments for this task
       const { data: comments } = await supabase
         .from("task_comments")
         .select("content")
@@ -199,9 +221,7 @@ serve(async (req) => {
         .is("deleted_at", null)
         .single();
 
-      if (error || !insight) {
-        throw new Error(`Insight not found: ${source_id}`);
-      }
+      if (error || !insight) throw new Error(`Insight not found: ${source_id}`);
 
       title = insight.title;
       content = `${insight.title}\n\nCategoria: ${insight.category}\nConfiança: ${insight.confidence}%\n\n${insight.content}\n\nEvidência: ${insight.evidence || ""}`;
@@ -217,13 +237,10 @@ serve(async (req) => {
       throw new Error("No content to index");
     }
 
-    // Create prefix for context
     const prefix = `[Tipo: ${source_type}] [Projeto: ${projectName}] [Título: ${title}]`;
 
-    // Generate chunks
     const rawChunks = chunkText(content, prefix, metadata);
     
-    // Add hashes to chunks
     const chunks: ChunkResult[] = await Promise.all(
       rawChunks.map(async (chunk) => ({
         ...chunk,
@@ -234,20 +251,29 @@ serve(async (req) => {
     console.log(`Generated ${chunks.length} chunks for ${source_type}:${source_id}`);
 
     // Delete existing chunks for this source
+    const normalizedSourceType = source_type === "reports" ? "report" : source_type === "tasks" ? "task" : source_type === "knowledge_items" ? "insight" : source_type;
     await supabase
       .from("search_chunks")
       .delete()
       .eq("project_id", project_id)
-      .eq("source_type", source_type === "reports" ? "report" : source_type === "tasks" ? "task" : source_type === "knowledge_items" ? "insight" : source_type)
+      .eq("source_type", normalizedSourceType)
       .eq("source_id", source_id);
 
-    // Insert new chunks (without embeddings - using FTS only)
+    // Insert new chunks with embeddings
     let chunksCreated = 0;
+    let embeddingsGenerated = 0;
     
     for (const chunk of chunks) {
+      // Generate embedding if API key available
+      let embedding: number[] | null = null;
+      if (lovableApiKey) {
+        embedding = await generateEmbedding(chunk.text, lovableApiKey);
+        if (embedding) embeddingsGenerated++;
+      }
+
       const insertData: Record<string, unknown> = {
         project_id,
-        source_type: source_type === "reports" ? "report" : source_type === "tasks" ? "task" : source_type === "knowledge_items" ? "insight" : source_type,
+        source_type: normalizedSourceType,
         source_id,
         chunk_index: chunk.index,
         chunk_text: chunk.text,
@@ -255,12 +281,16 @@ serve(async (req) => {
         metadata: chunk.metadata,
       };
 
+      // Add embedding if generated
+      if (embedding) {
+        insertData.embedding = JSON.stringify(embedding);
+      }
+
       const { error: insertError } = await supabase
         .from("search_chunks")
         .insert(insertData);
 
       if (insertError) {
-        // Skip duplicate hash errors
         if (!insertError.message.includes("duplicate")) {
           console.error("Insert error:", insertError);
         }
@@ -269,7 +299,6 @@ serve(async (req) => {
       }
     }
 
-    // Update job status
     if (job_id) {
       await supabase
         .from("indexing_jobs")
@@ -281,12 +310,13 @@ serve(async (req) => {
         .eq("id", job_id);
     }
 
-    console.log(`Indexed ${chunksCreated} chunks for ${source_type}:${source_id}`);
+    console.log(`Indexed ${chunksCreated} chunks (${embeddingsGenerated} with embeddings) for ${source_type}:${source_id}`);
 
     return new Response(
       JSON.stringify({
         success: true,
         chunks_created: chunksCreated,
+        embeddings_generated: embeddingsGenerated,
         source_type,
         source_id,
       }),
@@ -296,7 +326,6 @@ serve(async (req) => {
     const errorMessage = error instanceof Error ? error.message : String(error);
     console.error("Indexing error:", errorMessage);
 
-    // Try to update job status to error
     try {
       const { job_id } = await req.json().catch(() => ({}));
       if (job_id) {

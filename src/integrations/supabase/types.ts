@@ -266,6 +266,8 @@ export type Database = {
           extraction_job_id: string | null
           id: string
           project_id: string
+          related_items: string[] | null
+          relationship_type: string | null
           source_file_id: string | null
           title: string
           validated_at: string | null
@@ -285,6 +287,8 @@ export type Database = {
           extraction_job_id?: string | null
           id?: string
           project_id: string
+          related_items?: string[] | null
+          relationship_type?: string | null
           source_file_id?: string | null
           title: string
           validated_at?: string | null
@@ -304,6 +308,8 @@ export type Database = {
           extraction_job_id?: string | null
           id?: string
           project_id?: string
+          related_items?: string[] | null
+          relationship_type?: string | null
           source_file_id?: string | null
           title?: string
           validated_at?: string | null
@@ -1061,6 +1067,10 @@ export type Database = {
         | "anomaly"
         | "benchmark"
         | "recommendation"
+        | "cross_reference"
+        | "pattern"
+        | "contradiction"
+        | "gap"
       project_role: "owner" | "manager" | "researcher" | "viewer"
       project_status:
         | "planning"
@@ -1216,6 +1226,10 @@ export const Constants = {
         "anomaly",
         "benchmark",
         "recommendation",
+        "cross_reference",
+        "pattern",
+        "contradiction",
+        "gap",
       ],
       project_role: ["owner", "manager", "researcher", "viewer"],
       project_status: [

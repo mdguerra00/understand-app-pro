@@ -11,7 +11,7 @@ const corsHeaders = {
 };
 
 interface ExtractionInsight {
-  category: "compound" | "parameter" | "result" | "method" | "observation" | "finding" | "correlation" | "anomaly" | "benchmark" | "recommendation";
+  category: "compound" | "parameter" | "result" | "method" | "observation" | "finding" | "correlation" | "anomaly" | "benchmark" | "recommendation" | "cross_reference" | "pattern" | "contradiction" | "gap";
   title: string;
   content: string;
   evidence: string;
@@ -527,7 +527,7 @@ Se o conteúdo acima parecer ilegível ou corrompido, retorne apenas um insight 
                       properties: {
                         category: {
                           type: "string",
-                          enum: ["finding", "correlation", "anomaly", "benchmark", "recommendation", "compound", "parameter", "result", "method", "observation"],
+                          enum: ["finding", "correlation", "anomaly", "benchmark", "recommendation", "compound", "parameter", "result", "method", "observation", "cross_reference", "pattern", "contradiction", "gap"],
                         },
                         title: { type: "string", maxLength: 100 },
                         content: { type: "string", maxLength: 500 },
@@ -654,24 +654,164 @@ Se o conteúdo acima parecer ilegível ou corrompido, retorne apenas um insight 
       }
     }
 
+    // === CROSS-DOCUMENT ANALYSIS ===
+    // After extracting insights, analyze relationships with existing insights
+    let crossDocInsights = 0;
+    try {
+      if (validatedInsights.length > 0) {
+        // Fetch existing insights from the same project (excluding current file)
+        const { data: existingInsights } = await supabaseAdmin
+          .from("knowledge_items")
+          .select("id, title, content, category, confidence, evidence, source_file_id")
+          .eq("project_id", fileData.project_id)
+          .neq("source_file_id", file_id)
+          .is("deleted_at", null)
+          .limit(50);
+
+        if (existingInsights && existingInsights.length >= 2) {
+          console.log(`Cross-document analysis: ${validatedInsights.length} new insights vs ${existingInsights.length} existing`);
+
+          const newInsightsSummary = validatedInsights.map((i, idx) => 
+            `[NEW-${idx + 1}] ${i.category}: ${i.title} — ${i.content}`
+          ).join("\n");
+
+          const existingInsightsSummary = existingInsights.map((i, idx) => 
+            `[EX-${idx + 1}] (id:${i.id}) ${i.category}: ${i.title} — ${i.content}`
+          ).join("\n");
+
+          const crossDocPrompt = `Você é um cientista de P&D analisando a base de conhecimento de um projeto de pesquisa.
+
+NOVOS INSIGHTS (recém-extraídos do documento "${fileData.name}"):
+${newInsightsSummary}
+
+INSIGHTS EXISTENTES (de outros documentos do projeto):
+${existingInsightsSummary}
+
+Analise se existem RELAÇÕES SIGNIFICATIVAS entre os novos e os existentes. Identifique:
+- **cross_reference**: Quando o mesmo assunto/material/parâmetro aparece em documentos diferentes
+- **pattern**: Quando múltiplos documentos confirmam a mesma tendência ou resultado
+- **contradiction**: Quando há informações conflitantes entre documentos
+- **gap**: Lacunas de conhecimento evidenciadas pela análise cruzada
+
+REGRAS:
+1. Só identifique relações que sejam CLARAS e SIGNIFICATIVAS
+2. Cada relação deve referenciar pelo menos um insight novo [NEW-X] e um existente [EX-Y]
+3. Use os IDs dos insights existentes (campo "id") no campo related_items
+4. Se não houver relações significativas, retorne um array vazio
+5. Máximo de 5 relações`;
+
+          const crossDocResponse = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${lovableApiKey}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              model: "google/gemini-3-flash-preview",
+              messages: [
+                { role: "system", content: crossDocPrompt },
+                { role: "user", content: "Identifique relações cross-document entre os insights listados." },
+              ],
+              tools: [{
+                type: "function",
+                function: {
+                  name: "report_relationships",
+                  description: "Report cross-document relationships found between insights",
+                  parameters: {
+                    type: "object",
+                    properties: {
+                      relationships: {
+                        type: "array",
+                        items: {
+                          type: "object",
+                          properties: {
+                            category: { type: "string", enum: ["cross_reference", "pattern", "contradiction", "gap"] },
+                            title: { type: "string", maxLength: 100 },
+                            content: { type: "string", maxLength: 500 },
+                            evidence: { type: "string", maxLength: 300 },
+                            confidence: { type: "number", minimum: 0, maximum: 1 },
+                            related_existing_ids: { type: "array", items: { type: "string" } },
+                          },
+                          required: ["category", "title", "content", "confidence", "related_existing_ids"],
+                        },
+                      },
+                    },
+                    required: ["relationships"],
+                  },
+                },
+              }],
+              tool_choice: { type: "function", function: { name: "report_relationships" } },
+            }),
+          });
+
+          if (crossDocResponse.ok) {
+            const crossDocData = await crossDocResponse.json();
+            const crossDocToolCall = crossDocData.choices?.[0]?.message?.tool_calls?.[0];
+            
+            if (crossDocToolCall?.function?.arguments) {
+              try {
+                const args = JSON.parse(crossDocToolCall.function.arguments);
+                const relationships = args.relationships || [];
+
+                if (relationships.length > 0) {
+                  const crossDocItems = relationships.map((rel: any) => ({
+                    project_id: fileData.project_id,
+                    source_file_id: file_id,
+                    extraction_job_id: job_id,
+                    category: rel.category,
+                    title: rel.title.substring(0, 100),
+                    content: rel.content.substring(0, 500),
+                    evidence: rel.evidence?.substring(0, 300) || null,
+                    confidence: Math.min(1, Math.max(0, rel.confidence)),
+                    evidence_verified: false,
+                    extracted_by: user.id,
+                    related_items: rel.related_existing_ids || [],
+                    relationship_type: rel.category,
+                  }));
+
+                  const { error: crossInsertError } = await supabaseAdmin
+                    .from("knowledge_items")
+                    .insert(crossDocItems);
+
+                  if (crossInsertError) {
+                    console.error("Failed to insert cross-doc insights:", crossInsertError);
+                  } else {
+                    crossDocInsights = crossDocItems.length;
+                    console.log(`Created ${crossDocInsights} cross-document relationship insights`);
+                  }
+                }
+              } catch (parseErr) {
+                console.error("Failed to parse cross-doc response:", parseErr);
+              }
+            }
+          } else {
+            console.warn("Cross-doc analysis AI call failed:", crossDocResponse.status);
+          }
+        }
+      }
+    } catch (crossDocError) {
+      console.warn("Cross-document analysis failed (non-fatal):", crossDocError);
+    }
+
     // Update job as completed
     await supabaseAdmin
       .from("extraction_jobs")
       .update({
         status: "completed",
         completed_at: new Date().toISOString(),
-        items_extracted: validatedInsights.length,
+        items_extracted: validatedInsights.length + crossDocInsights,
         tokens_used: tokensUsed,
         parsing_quality: parsingQuality,
       })
       .eq("id", job_id);
 
-    console.log(`Extraction completed: ${validatedInsights.length} insights (${verifiedCount} verified)`);
+    console.log(`Extraction completed: ${validatedInsights.length} insights (${verifiedCount} verified) + ${crossDocInsights} cross-doc relationships`);
 
     return new Response(
       JSON.stringify({
         success: true,
         insights_count: validatedInsights.length,
+        cross_doc_insights: crossDocInsights,
         verified_count: verifiedCount,
         parsing_quality: parsingQuality,
         tokens_used: tokensUsed,

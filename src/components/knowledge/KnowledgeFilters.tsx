@@ -60,6 +60,10 @@ const analyticalCategories: { value: KnowledgeCategory; label: string; icon: typ
   { value: 'anomaly', label: 'Anomalia', icon: AlertTriangle },
   { value: 'benchmark', label: 'Benchmark', icon: Scale },
   { value: 'recommendation', label: 'Recomendação', icon: Zap },
+  { value: 'cross_reference', label: 'Ref. Cruzada', icon: Link2 },
+  { value: 'pattern', label: 'Padrão', icon: TrendingUp },
+  { value: 'contradiction', label: 'Contradição', icon: AlertTriangle },
+  { value: 'gap', label: 'Lacuna', icon: CircleDashed },
 ];
 
 // Legacy categories (secondary)
