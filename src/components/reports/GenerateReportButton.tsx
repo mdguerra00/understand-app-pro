@@ -64,7 +64,11 @@ const CATEGORY_LABELS: Record<KnowledgeCategory, string> = {
   correlation: 'Correlações',
   anomaly: 'Anomalias',
   benchmark: 'Benchmarks',
-  recommendation: 'Recomendações'
+  recommendation: 'Recomendações',
+  cross_reference: 'Referências Cruzadas',
+  pattern: 'Padrões',
+  contradiction: 'Contradições',
+  gap: 'Lacunas',
 };
 
 export function GenerateReportButton({ 

@@ -74,6 +74,10 @@ const categoryLabels: Record<KnowledgeCategory, string> = {
   result: 'Resultado',
   method: 'Metodologia',
   observation: 'Observação',
+  cross_reference: 'Ref. Cruzada',
+  pattern: 'Padrão',
+  contradiction: 'Contradição',
+  gap: 'Lacuna',
 };
 
 export function DocumentDetailModal({ item, open, onOpenChange }: DocumentDetailModalProps) {

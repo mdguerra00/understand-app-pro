@@ -32,7 +32,11 @@ export type KnowledgeCategory =
   | 'correlation'
   | 'anomaly'
   | 'benchmark'
-  | 'recommendation';
+  | 'recommendation'
+  | 'cross_reference'
+  | 'pattern'
+  | 'contradiction'
+  | 'gap';
 
 export interface KnowledgeItem {
   id: string;
@@ -124,6 +128,30 @@ export const categoryConfig: Record<KnowledgeCategory, {
     icon: Lightbulb,
     color: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200',
     description: 'Nota ou observação importante',
+  },
+  cross_reference: {
+    label: 'Ref. Cruzada',
+    icon: Link2,
+    color: 'bg-teal-100 text-teal-800 dark:bg-teal-900 dark:text-teal-200',
+    description: 'Relação identificada entre documentos diferentes',
+  },
+  pattern: {
+    label: 'Padrão',
+    icon: TrendingUp,
+    color: 'bg-violet-100 text-violet-800 dark:bg-violet-900 dark:text-violet-200',
+    description: 'Padrão recorrente identificado em múltiplos documentos',
+  },
+  contradiction: {
+    label: 'Contradição',
+    icon: AlertTriangle,
+    color: 'bg-rose-100 text-rose-800 dark:bg-rose-900 dark:text-rose-200',
+    description: 'Informações conflitantes entre documentos',
+  },
+  gap: {
+    label: 'Lacuna',
+    icon: Target,
+    color: 'bg-stone-100 text-stone-800 dark:bg-stone-900 dark:text-stone-200',
+    description: 'Área de conhecimento não coberta pelos documentos',
   },
 };
 
