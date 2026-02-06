@@ -153,6 +153,8 @@ Formato: [{"title": "...", "content": "...", "category": "...", "confidence": 0.
         confidence: Math.min(1, Math.max(0, Number(i.confidence) || 0.7)),
         evidence: i.evidence ? String(i.evidence).substring(0, 500) : null,
         extracted_by: user.id,
+        validated_by: user.id,
+        validated_at: new Date().toISOString(),
       }));
 
     if (validInsights.length === 0) {
