@@ -86,33 +86,21 @@ export function FileUploadModal({
     setProgress(0);
 
     try {
-      // Generate unique path: project_id/timestamp_filename
       const timestamp = Date.now();
       const sanitizedName = file.name.replace(/[^a-zA-Z0-9.-]/g, '_');
       const storagePath = `${projectId}/${timestamp}_${sanitizedName}`;
 
-      // Debug: Log file info
-      console.log('Upload debug:', {
-        fileName: file.name,
-        fileSize: file.size,
-        fileType: file.type,
-        storagePath,
-        isBlob: file instanceof Blob,
-      });
+      // Calculate SHA-256 fingerprint for idempotency
+      const fileArrayBuffer = await file.arrayBuffer();
+      const hashBuffer = await crypto.subtle.digest('SHA-256', fileArrayBuffer);
+      const hashArray = Array.from(new Uint8Array(hashBuffer));
+      const contentFingerprint = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
 
-      // Simulate progress for better UX
       const progressInterval = setInterval(() => {
         setProgress((prev) => Math.min(prev + 10, 90));
       }, 200);
 
-      // Read file as ArrayBuffer to ensure content is properly sent
-      const arrayBuffer = await file.arrayBuffer();
-      const fileBlob = new Blob([arrayBuffer], { type: file.type });
-
-      console.log('Blob created:', {
-        blobSize: fileBlob.size,
-        blobType: fileBlob.type,
-      });
+      const fileBlob = new Blob([fileArrayBuffer], { type: file.type });
 
       // Upload to storage
       const { error: storageError } = await supabase.storage
@@ -130,7 +118,6 @@ export function FileUploadModal({
 
       setProgress(95);
 
-      // Create metadata record
       const { data: fileRecord, error: dbError } = await supabase
         .from('project_files')
         .insert({
@@ -141,6 +128,7 @@ export function FileUploadModal({
           mime_type: file.type,
           size_bytes: file.size,
           uploaded_by: user.id,
+          content_fingerprint: contentFingerprint,
         })
         .select()
         .single();

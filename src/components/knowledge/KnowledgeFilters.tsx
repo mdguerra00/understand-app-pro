@@ -30,7 +30,7 @@ import {
 } from 'lucide-react';
 import { KnowledgeCategory } from './KnowledgeCard';
 
-export type EntryTypeFilter = 'all' | 'documents' | 'insights';
+export type EntryTypeFilter = 'all' | 'documents' | 'insights' | 'experiments';
 export type ValidationFilter = 'all' | 'pending' | 'validated';
 
 interface Project {
@@ -133,6 +133,15 @@ export function KnowledgeFilters({
           >
             <Brain className="h-3 w-3 mr-1" />
             Insights
+          </Button>
+          <Button
+            variant={entryType === 'experiments' ? 'default' : 'outline'}
+            size="sm"
+            className="text-xs"
+            onClick={() => onEntryTypeChange('experiments')}
+          >
+            <FlaskConical className="h-3 w-3 mr-1" />
+            Experimentos
           </Button>
         </div>
       </div>

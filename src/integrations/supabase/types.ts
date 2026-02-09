@@ -123,9 +123,177 @@ export type Database = {
         }
         Relationships: []
       }
+      experiment_citations: {
+        Row: {
+          cell_range: string | null
+          chunk_id: string | null
+          created_at: string
+          excerpt: string
+          experiment_id: string
+          file_id: string
+          id: string
+          measurement_id: string | null
+          page: number | null
+          sheet_name: string | null
+        }
+        Insert: {
+          cell_range?: string | null
+          chunk_id?: string | null
+          created_at?: string
+          excerpt: string
+          experiment_id: string
+          file_id: string
+          id?: string
+          measurement_id?: string | null
+          page?: number | null
+          sheet_name?: string | null
+        }
+        Update: {
+          cell_range?: string | null
+          chunk_id?: string | null
+          created_at?: string
+          excerpt?: string
+          experiment_id?: string
+          file_id?: string
+          id?: string
+          measurement_id?: string | null
+          page?: number | null
+          sheet_name?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "experiment_citations_chunk_id_fkey"
+            columns: ["chunk_id"]
+            isOneToOne: false
+            referencedRelation: "search_chunks"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "experiment_citations_experiment_id_fkey"
+            columns: ["experiment_id"]
+            isOneToOne: false
+            referencedRelation: "experiments"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "experiment_citations_file_id_fkey"
+            columns: ["file_id"]
+            isOneToOne: false
+            referencedRelation: "project_files"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "experiment_citations_measurement_id_fkey"
+            columns: ["measurement_id"]
+            isOneToOne: false
+            referencedRelation: "measurements"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      experiment_conditions: {
+        Row: {
+          created_at: string
+          experiment_id: string
+          id: string
+          key: string
+          value: string
+        }
+        Insert: {
+          created_at?: string
+          experiment_id: string
+          id?: string
+          key: string
+          value: string
+        }
+        Update: {
+          created_at?: string
+          experiment_id?: string
+          id?: string
+          key?: string
+          value?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "experiment_conditions_experiment_id_fkey"
+            columns: ["experiment_id"]
+            isOneToOne: false
+            referencedRelation: "experiments"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      experiments: {
+        Row: {
+          created_at: string
+          deleted_at: string | null
+          extracted_by: string
+          extraction_job_id: string | null
+          id: string
+          is_qualitative: boolean
+          objective: string | null
+          project_id: string
+          source_file_id: string
+          source_type: string
+          summary: string | null
+          title: string
+        }
+        Insert: {
+          created_at?: string
+          deleted_at?: string | null
+          extracted_by: string
+          extraction_job_id?: string | null
+          id?: string
+          is_qualitative?: boolean
+          objective?: string | null
+          project_id: string
+          source_file_id: string
+          source_type?: string
+          summary?: string | null
+          title: string
+        }
+        Update: {
+          created_at?: string
+          deleted_at?: string | null
+          extracted_by?: string
+          extraction_job_id?: string | null
+          id?: string
+          is_qualitative?: boolean
+          objective?: string | null
+          project_id?: string
+          source_file_id?: string
+          source_type?: string
+          summary?: string | null
+          title?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "experiments_extraction_job_id_fkey"
+            columns: ["extraction_job_id"]
+            isOneToOne: false
+            referencedRelation: "extraction_jobs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "experiments_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "experiments_source_file_id_fkey"
+            columns: ["source_file_id"]
+            isOneToOne: false
+            referencedRelation: "project_files"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       extraction_jobs: {
         Row: {
           completed_at: string | null
+          content_fingerprint: string | null
           content_truncated: boolean | null
           created_at: string
           created_by: string
@@ -143,6 +311,7 @@ export type Database = {
         }
         Insert: {
           completed_at?: string | null
+          content_fingerprint?: string | null
           content_truncated?: boolean | null
           created_at?: string
           created_by: string
@@ -160,6 +329,7 @@ export type Database = {
         }
         Update: {
           completed_at?: string | null
+          content_fingerprint?: string | null
           content_truncated?: boolean | null
           created_at?: string
           created_by?: string
@@ -339,6 +509,83 @@ export type Database = {
           },
         ]
       }
+      measurements: {
+        Row: {
+          confidence: string | null
+          created_at: string
+          experiment_id: string
+          id: string
+          method: string | null
+          metric: string
+          notes: string | null
+          source_excerpt: string
+          unit: string
+          value: number
+        }
+        Insert: {
+          confidence?: string | null
+          created_at?: string
+          experiment_id: string
+          id?: string
+          method?: string | null
+          metric: string
+          notes?: string | null
+          source_excerpt: string
+          unit: string
+          value: number
+        }
+        Update: {
+          confidence?: string | null
+          created_at?: string
+          experiment_id?: string
+          id?: string
+          method?: string | null
+          metric?: string
+          notes?: string | null
+          source_excerpt?: string
+          unit?: string
+          value?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "measurements_experiment_id_fkey"
+            columns: ["experiment_id"]
+            isOneToOne: false
+            referencedRelation: "experiments"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      metrics_catalog: {
+        Row: {
+          aliases: string[]
+          canonical_name: string
+          category: string
+          created_at: string
+          display_name: string
+          id: string
+          unit: string
+        }
+        Insert: {
+          aliases?: string[]
+          canonical_name: string
+          category?: string
+          created_at?: string
+          display_name: string
+          id?: string
+          unit: string
+        }
+        Update: {
+          aliases?: string[]
+          canonical_name?: string
+          category?: string
+          created_at?: string
+          display_name?: string
+          id?: string
+          unit?: string
+        }
+        Relationships: []
+      }
       profiles: {
         Row: {
           avatar_url: string | null
@@ -418,6 +665,7 @@ export type Database = {
       }
       project_files: {
         Row: {
+          content_fingerprint: string | null
           created_at: string
           current_version: number
           deleted_at: string | null
@@ -433,6 +681,7 @@ export type Database = {
           uploaded_by: string
         }
         Insert: {
+          content_fingerprint?: string | null
           created_at?: string
           current_version?: number
           deleted_at?: string | null
@@ -448,6 +697,7 @@ export type Database = {
           uploaded_by: string
         }
         Update: {
+          content_fingerprint?: string | null
           created_at?: string
           current_version?: number
           deleted_at?: string | null
