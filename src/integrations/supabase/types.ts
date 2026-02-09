@@ -518,6 +518,7 @@ export type Database = {
           method: string | null
           metric: string
           notes: string | null
+          raw_metric_name: string | null
           source_excerpt: string
           unit: string
           value: number
@@ -530,6 +531,7 @@ export type Database = {
           method?: string | null
           metric: string
           notes?: string | null
+          raw_metric_name?: string | null
           source_excerpt: string
           unit: string
           value: number
@@ -542,6 +544,7 @@ export type Database = {
           method?: string | null
           metric?: string
           notes?: string | null
+          raw_metric_name?: string | null
           source_excerpt?: string
           unit?: string
           value?: number

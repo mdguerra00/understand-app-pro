@@ -404,6 +404,30 @@ async function normalizeMetric(supabase: any, metric: string): Promise<string> {
 // SAVE EXPERIMENTS TO DB
 // ==========================================
 
+async function softDeleteExistingExperiments(
+  supabase: any,
+  projectId: string,
+  fileId: string,
+): Promise<void> {
+  const { data: existing } = await supabase
+    .from('experiments')
+    .select('id')
+    .eq('project_id', projectId)
+    .eq('source_file_id', fileId)
+    .is('deleted_at', null);
+
+  if (!existing || existing.length === 0) return;
+
+  const ids = existing.map((e: any) => e.id);
+  console.log(`Force reprocess: soft-deleting ${ids.length} existing experiments for file ${fileId}`);
+
+  // Soft-delete experiments (measurements/conditions/citations remain for audit but are orphaned)
+  await supabase
+    .from('experiments')
+    .update({ deleted_at: new Date().toISOString() })
+    .in('id', ids);
+}
+
 async function saveExperiments(
   supabase: any,
   experiments: ExperimentExtraction[],
@@ -412,7 +436,13 @@ async function saveExperiments(
   jobId: string,
   userId: string,
   sourceType: string,
+  force: boolean = false,
 ): Promise<number> {
+  // If force reprocessing, soft-delete existing experiments first
+  if (force) {
+    await softDeleteExistingExperiments(supabase, projectId, fileId);
+  }
+
   let totalMeasurements = 0;
 
   for (const exp of experiments) {
@@ -445,20 +475,61 @@ async function saveExperiments(
       continue;
     }
 
-    // Save measurements (normalized)
-    for (const m of validMeasurements) {
+    // Save measurements (normalized) + create citation per measurement
+    for (let i = 0; i < validMeasurements.length; i++) {
+      const m = validMeasurements[i];
       const canonicalMetric = await normalizeMetric(supabase, m.metric);
-      await supabase.from('measurements').insert({
+
+      const { data: measRecord } = await supabase.from('measurements').insert({
         experiment_id: expRecord.id,
         metric: canonicalMetric,
+        raw_metric_name: m.metric, // preserve original name
         value: m.value,
         unit: m.unit,
         method: m.method || null,
         notes: m.notes || null,
         confidence: m.confidence || 'medium',
         source_excerpt: m.source_excerpt.substring(0, 500),
-      });
+      }).select('id').single();
+
       totalMeasurements++;
+
+      // Find matching citation for this measurement (by index or excerpt match)
+      const matchingCit = exp.citations[i] || exp.citations[0];
+      if (matchingCit && measRecord) {
+        await supabase.from('experiment_citations').insert({
+          experiment_id: expRecord.id,
+          measurement_id: measRecord.id,
+          file_id: fileId,
+          page: matchingCit.page || null,
+          sheet_name: matchingCit.sheet_name || null,
+          cell_range: matchingCit.cell_range || null,
+          excerpt: (matchingCit.excerpt || m.source_excerpt).substring(0, 500),
+        });
+      }
+    }
+
+    // Save experiment-level citations (not linked to specific measurement)
+    // Only save citations that weren't already linked to measurements
+    const remainingCitations = exp.citations.slice(validMeasurements.length);
+    for (const cit of remainingCitations) {
+      await supabase.from('experiment_citations').insert({
+        experiment_id: expRecord.id,
+        file_id: fileId,
+        page: cit.page || null,
+        sheet_name: cit.sheet_name || null,
+        cell_range: cit.cell_range || null,
+        excerpt: cit.excerpt.substring(0, 500),
+      });
+    }
+
+    // If no citations at all (qualitative with no measurements), add experiment-level citation
+    if (exp.citations.length === 0 && validMeasurements.length === 0) {
+      await supabase.from('experiment_citations').insert({
+        experiment_id: expRecord.id,
+        file_id: fileId,
+        excerpt: exp.summary || exp.title,
+      });
     }
 
     // Save conditions
@@ -467,18 +538,6 @@ async function saveExperiments(
         experiment_id: expRecord.id,
         key: c.key,
         value: c.value,
-      });
-    }
-
-    // Save citations
-    for (const cit of exp.citations) {
-      await supabase.from('experiment_citations').insert({
-        experiment_id: expRecord.id,
-        file_id: fileId,
-        page: cit.page || null,
-        sheet_name: cit.sheet_name || null,
-        cell_range: cit.cell_range || null,
-        excerpt: cit.excerpt.substring(0, 500),
       });
     }
   }
@@ -733,7 +792,7 @@ serve(async (req) => {
       };
 
       const sourceType = isExcel ? 'excel' : mimeType === 'application/pdf' ? 'pdf' : 'word';
-      await saveExperiments(supabaseAdmin, [fallbackExperiment], fileData.project_id, file_id, job_id, user.id, sourceType);
+      await saveExperiments(supabaseAdmin, [fallbackExperiment], fileData.project_id, file_id, job_id, user.id, sourceType, !!force);
 
       await supabaseAdmin.from("extraction_jobs").update({
         status: "completed",
@@ -777,7 +836,7 @@ serve(async (req) => {
       if (mapping) {
         const experiments = generateExcelExperiments(excelSheets, mapping, file_id);
         measurementsCount = await saveExperiments(
-          supabaseAdmin, experiments, fileData.project_id, file_id, job_id, user.id, 'excel'
+          supabaseAdmin, experiments, fileData.project_id, file_id, job_id, user.id, 'excel', !!force
         );
         experimentsCount = experiments.length;
         console.log(`Excel: created ${experimentsCount} experiments with ${measurementsCount} measurements`);
@@ -988,7 +1047,7 @@ Se ilegível, retorne apenas um insight de "observation".`;
         (mimeType?.includes('word') || fileName.endsWith('.docx')) ? 'word' : 'pdf';
       
       const expMeasurements = await saveExperiments(
-        supabaseAdmin, rawExperiments, fileData.project_id, file_id, job_id, user.id, sourceType
+        supabaseAdmin, rawExperiments, fileData.project_id, file_id, job_id, user.id, sourceType, !!force
       );
       experimentsCount += rawExperiments.length;
       measurementsCount += expMeasurements;
@@ -1010,7 +1069,7 @@ Se ilegível, retorne apenas um insight de "observation".`;
           page: 1,
         }],
       };
-      await saveExperiments(supabaseAdmin, [fallback], fileData.project_id, file_id, job_id, user.id, sourceType);
+      await saveExperiments(supabaseAdmin, [fallback], fileData.project_id, file_id, job_id, user.id, sourceType, !!force);
       experimentsCount += 1;
     }
 
