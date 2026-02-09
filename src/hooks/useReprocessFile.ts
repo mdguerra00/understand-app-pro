@@ -8,7 +8,7 @@ export function useReprocessFile() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async ({ fileId, projectId }: { fileId: string; projectId: string }) => {
+    mutationFn: async ({ fileId, projectId, force = false }: { fileId: string; projectId: string; force?: boolean }) => {
       if (!user) throw new Error('Não autenticado');
 
       // Get file info for hash
@@ -38,7 +38,7 @@ export function useReprocessFile() {
       // Call edge function
       const { data: { session } } = await supabase.auth.getSession();
       const response = await supabase.functions.invoke('extract-knowledge', {
-        body: { file_id: fileId, job_id: job.id },
+        body: { file_id: fileId, job_id: job.id, force },
       });
 
       if (response.error) {

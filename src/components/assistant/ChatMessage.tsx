@@ -186,6 +186,18 @@ export function ChatMessage({ message, onSourceClick, userQuestion }: ChatMessag
                 code: ({ children }) => (
                   <code className="bg-muted px-1 py-0.5 rounded text-sm">{children}</code>
                 ),
+                table: ({ children }) => (
+                  <div className="overflow-x-auto my-2">
+                    <table className="min-w-full text-xs border border-border rounded">
+                      {children}
+                    </table>
+                  </div>
+                ),
+                thead: ({ children }) => <thead className="bg-muted/50">{children}</thead>,
+                tbody: ({ children }) => <tbody>{children}</tbody>,
+                tr: ({ children }) => <tr className="border-b border-border">{children}</tr>,
+                th: ({ children }) => <th className="px-3 py-1.5 text-left font-medium text-foreground">{children}</th>,
+                td: ({ children }) => <td className="px-3 py-1.5 text-muted-foreground">{children}</td>,
                 blockquote: ({ children }) => (
                   <blockquote className="border-l-2 border-primary pl-4 italic text-muted-foreground">
                     {children}

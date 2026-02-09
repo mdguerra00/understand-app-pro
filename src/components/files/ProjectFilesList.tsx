@@ -37,6 +37,7 @@ import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/hooks/useAuth';
 import { useReprocessFile } from '@/hooks/useReprocessFile';
 import { FileUploadModal } from './FileUploadModal';
+import { FileExtractionBadge } from './FileExtractionBadge';
 import { FileDetailModal } from './FileDetailModal';
 import { format } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
@@ -290,6 +291,7 @@ export function ProjectFilesList({ projectId, initialFileId, onFileOpened }: Pro
                             v{file.current_version}
                           </Badge>
                         )}
+                        <FileExtractionBadge fileId={file.id} compact />
                       </div>
                       <p className="text-sm text-muted-foreground">
                         {formatFileSize(file.size_bytes)} •{' '}
