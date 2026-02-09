@@ -175,11 +175,171 @@ Formato: [{"title": "...", "content": "...", "category": "...", "confidence": 0.
       throw new Error(`Erro ao salvar insights: ${insertError.message}`);
     }
 
+    // ====== PHASE 2: Extract and save structured experiments ======
+    let experimentsSaved = 0;
+    let measurementsSaved = 0;
+
+    try {
+      const expResponse = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${lovableApiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "google/gemini-2.5-flash",
+          messages: [
+            {
+              role: "system",
+              content: `Você é um extrator de dados experimentais. Dada uma análise de documento científico, extraia TODOS os experimentos com medições quantitativas.
+
+REGRAS ANTI-ALUCINAÇÃO:
+1. Cada medição DEVE ter: metric (nome da métrica), value (número), unit (unidade), source_excerpt (trecho exato do texto que contém o valor).
+2. O source_excerpt DEVE conter o valor numérico extraído.
+3. NÃO invente valores que não estejam no texto.
+4. Se não houver dados quantitativos, retorne um array vazio [].
+5. Agrupe medições por experimento/teste.
+
+Responda APENAS com JSON válido, sem markdown:
+[{
+  "title": "Nome do experimento/teste",
+  "objective": "Objetivo (opcional)",
+  "summary": "Resumo breve",
+  "is_qualitative": false,
+  "measurements": [{"metric": "flexural_strength", "value": 131.5, "unit": "MPa", "method": "ISO 4049", "confidence": "high", "source_excerpt": "resistência flexural de 131.5 MPa"}],
+  "conditions": [{"key": "monômero", "value": "UDMA"}],
+  "citations": [{"page": 1, "excerpt": "trecho relevante"}]
+}]`
+            },
+            {
+              role: "user",
+              content: `Análise do documento "${file?.name || 'desconhecido'}":\n\n${analysis_text}`
+            }
+          ],
+          temperature: 0.1,
+          max_tokens: 8000,
+        }),
+      });
+
+      if (expResponse.ok) {
+        const expData = await expResponse.json();
+        let expRaw = expData.choices?.[0]?.message?.content || "[]";
+        expRaw = expRaw.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
+
+        let extractedExperiments: any[];
+        try {
+          extractedExperiments = JSON.parse(expRaw);
+        } catch {
+          extractedExperiments = [];
+        }
+
+        if (Array.isArray(extractedExperiments) && extractedExperiments.length > 0) {
+          // Soft-delete existing experiments for this file before saving new ones
+          const { data: existingExps } = await supabase
+            .from("experiments")
+            .select("id")
+            .eq("source_file_id", file_id)
+            .eq("project_id", project_id)
+            .is("deleted_at", null);
+
+          if (existingExps && existingExps.length > 0) {
+            await supabase
+              .from("experiments")
+              .update({ deleted_at: new Date().toISOString() })
+              .in("id", existingExps.map((e: any) => e.id));
+          }
+
+          // Save each experiment atomically
+          for (const exp of extractedExperiments) {
+            if (!exp.title) continue;
+
+            // Validate measurements
+            const validMeasurements = (exp.measurements || []).filter((m: any) => {
+              if (typeof m.value !== 'number' || isNaN(m.value)) return false;
+              if (!m.unit || String(m.unit).trim() === '') return false;
+              if (!m.source_excerpt || String(m.source_excerpt).trim() === '') return false;
+              const valueStr = String(m.value);
+              const excerpt = String(m.source_excerpt);
+              return excerpt.includes(valueStr) || excerpt.includes(valueStr.replace('.', ','));
+            });
+
+            const { data: expRecord, error: expError } = await supabase
+              .from("experiments")
+              .insert({
+                project_id,
+                source_file_id: file_id,
+                title: exp.title,
+                objective: exp.objective || null,
+                summary: exp.summary || null,
+                source_type: "analysis",
+                is_qualitative: exp.is_qualitative || validMeasurements.length === 0,
+                extracted_by: user.id,
+              })
+              .select("id")
+              .single();
+
+            if (expError || !expRecord) continue;
+            experimentsSaved++;
+
+            // Save measurements + normalize metrics
+            for (let i = 0; i < validMeasurements.length; i++) {
+              const m = validMeasurements[i];
+              // Simple metric normalization
+              const normalizedMetric = String(m.metric).toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '');
+
+              const { data: measRecord } = await supabase.from("measurements").insert({
+                experiment_id: expRecord.id,
+                metric: normalizedMetric,
+                raw_metric_name: m.metric,
+                value: m.value,
+                unit: m.unit,
+                method: m.method || null,
+                confidence: m.confidence || 'medium',
+                source_excerpt: String(m.source_excerpt).substring(0, 500),
+              }).select("id").single();
+
+              measurementsSaved++;
+
+              // Citation per measurement
+              const matchingCit = (exp.citations || [])[i] || (exp.citations || [])[0];
+              if (matchingCit && measRecord) {
+                await supabase.from("experiment_citations").insert({
+                  experiment_id: expRecord.id,
+                  measurement_id: measRecord.id,
+                  file_id,
+                  page: matchingCit.page || null,
+                  sheet_name: matchingCit.sheet_name || null,
+                  cell_range: matchingCit.cell_range || null,
+                  excerpt: (matchingCit.excerpt || m.source_excerpt).substring(0, 500),
+                });
+              }
+            }
+
+            // Save conditions
+            for (const c of (exp.conditions || [])) {
+              if (c.key && c.value) {
+                await supabase.from("experiment_conditions").insert({
+                  experiment_id: expRecord.id,
+                  key: c.key,
+                  value: c.value,
+                });
+              }
+            }
+          }
+        }
+      }
+    } catch (expError) {
+      console.error("Experiment extraction error (non-fatal):", expError);
+      // Non-fatal: insights were already saved successfully
+    }
+
     return new Response(
       JSON.stringify({
         insights_saved: savedInsights?.length || 0,
         total_extracted: insights.length,
         valid_insights: validInsights.length,
+        experiments_saved: experimentsSaved,
+        measurements_saved: measurementsSaved,
       }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
