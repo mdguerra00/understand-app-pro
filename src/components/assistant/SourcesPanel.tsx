@@ -13,6 +13,7 @@ import {
   Lightbulb,
   ClipboardList,
   FileCheck,
+  FlaskConical,
   ExternalLink,
   X,
 } from 'lucide-react';
@@ -35,6 +36,7 @@ const sourceTypeConfig: Record<string, { icon: typeof FileText; label: string; c
   tasks: { icon: ClipboardList, label: 'Tarefa', color: 'text-green-500' },
   report: { icon: FileCheck, label: 'Relatório', color: 'text-purple-500' },
   reports: { icon: FileCheck, label: 'Relatório', color: 'text-purple-500' },
+  experiment: { icon: FlaskConical, label: 'Experimento', color: 'text-cyan-500' },
 };
 
 export function SourcesPanel({ 

@@ -97,6 +97,45 @@ serve(async (req) => {
       .is("deleted_at", null)
       .order("category");
 
+    // ====== NEW: Fetch structured experiments/measurements/conditions ======
+    const { data: experiments } = await supabase
+      .from("experiments")
+      .select("id, title, objective, summary, is_qualitative, source_type")
+      .eq("source_file_id", file_id)
+      .is("deleted_at", null);
+
+    let structuredDataSection = "";
+    if (experiments && experiments.length > 0) {
+      const expIds = experiments.map((e: any) => e.id);
+      const [{ data: measurements }, { data: conditions }] = await Promise.all([
+        supabase.from("measurements")
+          .select("experiment_id, metric, raw_metric_name, value, unit, method, confidence, source_excerpt")
+          .in("experiment_id", expIds),
+        supabase.from("experiment_conditions")
+          .select("experiment_id, key, value")
+          .in("experiment_id", expIds),
+      ]);
+
+      structuredDataSection = "\n\n## Dados Estruturados Extraídos\n\n";
+      for (const exp of experiments) {
+        structuredDataSection += `### ${exp.title}\n`;
+        if (exp.objective) structuredDataSection += `Objetivo: ${exp.objective}\n`;
+        const expConds = (conditions || []).filter((c: any) => c.experiment_id === exp.id);
+        if (expConds.length > 0) {
+          structuredDataSection += `Condições: ${expConds.map((c: any) => `${c.key}=${c.value}`).join(", ")}\n`;
+        }
+        const expMeas = (measurements || []).filter((m: any) => m.experiment_id === exp.id);
+        if (expMeas.length > 0) {
+          structuredDataSection += "| Métrica | Valor | Unidade | Método | Confiança |\n";
+          structuredDataSection += "|---------|-------|---------|--------|----------|\n";
+          for (const m of expMeas) {
+            structuredDataSection += `| ${m.raw_metric_name || m.metric} | ${m.value} | ${m.unit} | ${m.method || '-'} | ${m.confidence || '-'} |\n`;
+          }
+        }
+        structuredDataSection += "\n";
+      }
+    }
+
     // Build document content from whatever sources are available
     let fullContent = "";
     
@@ -134,7 +173,8 @@ REGRAS:
 4. Destaque conclusões, recomendações e limitações do estudo.
 5. NÃO invente informações que não estejam no documento.
 6. Se houver tabelas ou dados estruturados, preserve a organização.
-7. Considere também os insights já extraídos automaticamente para complementar sua análise.`;
+7. Considere os insights já extraídos automaticamente para complementar sua análise.
+8. Se houver "Dados Estruturados Extraídos", PRIORIZE esses valores numéricos verificados. Corrija ou complemente se necessário.`;
 
     const userPrompt = `## Documento: "${file.name}"
 Tipo: ${file.mime_type || "desconhecido"}
@@ -142,7 +182,7 @@ Chunks indexados: ${chunks.length}
 
 ## Conteúdo Completo do Documento:
 ${fullContent}
-
+${structuredDataSection}
 ## Insights Já Extraídos (por IA anterior):
 ${insightsSummary}
 

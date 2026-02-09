@@ -37,13 +37,13 @@ async function fetchExperimentContext(
   supabase: any,
   projectIds: string[],
   query: string
-): Promise<{ contextText: string; evidenceTable: string }> {
+): Promise<{ contextText: string; evidenceTable: string; experimentSources: any[] }> {
   const searchTerms = query.toLowerCase().split(/\s+/).filter((w: string) => w.length > 2).slice(0, 5);
   
   const { data: experiments } = await supabase
     .from('experiments')
     .select(`
-      id, title, objective, summary, source_type, is_qualitative,
+      id, title, objective, summary, source_type, is_qualitative, source_file_id,
       project_files!inner(name),
       projects!inner(name)
     `)
@@ -51,7 +51,7 @@ async function fetchExperimentContext(
     .is('deleted_at', null)
     .limit(50);
 
-  if (!experiments || experiments.length === 0) return { contextText: '', evidenceTable: '' };
+  if (!experiments || experiments.length === 0) return { contextText: '', evidenceTable: '', experimentSources: [] };
 
   const expIds = experiments.map((e: any) => e.id);
   const { data: measurements } = await supabase
@@ -84,11 +84,14 @@ async function fetchExperimentContext(
     return searchTerms.some((term: string) => text.includes(term));
   });
 
-  if (relevant.length === 0) return { contextText: '', evidenceTable: '' };
+  if (relevant.length === 0) return { contextText: '', evidenceTable: '', experimentSources: [] };
 
   // Build context text for AI
   let contextText = '\n\n=== DADOS ESTRUTURADOS DE EXPERIMENTOS ===\n\n';
-  for (const exp of relevant.slice(0, 10)) {
+  const experimentSources: any[] = [];
+
+  for (let i = 0; i < Math.min(relevant.length, 10); i++) {
+    const exp = relevant[i];
     contextText += `📋 Experimento: ${exp.title}\n`;
     if (exp.objective) contextText += `   Objetivo: ${exp.objective}\n`;
     contextText += `   Fonte: ${exp.project_files?.name || 'N/A'} | Projeto: ${exp.projects?.name || 'N/A'}\n`;
@@ -103,6 +106,19 @@ async function fetchExperimentContext(
       }
     }
     contextText += '\n';
+
+    // Build experiment source entry
+    const measSummary = exp.measurements.slice(0, 3)
+      .map((m: any) => `${m.metric} ${m.value} ${m.unit}`)
+      .join(', ');
+    experimentSources.push({
+      citation: `E${i + 1}`,
+      type: 'experiment',
+      id: exp.id,
+      title: exp.title,
+      project: exp.projects?.name || 'Projeto',
+      excerpt: `${exp.measurements.length} medições: ${measSummary}${exp.measurements.length > 3 ? '...' : ''}`,
+    });
   }
 
   // Build evidence table directly from structured data (NOT from AI)
@@ -125,7 +141,7 @@ async function fetchExperimentContext(
     }
   }
 
-  return { contextText, evidenceTable };
+  return { contextText, evidenceTable, experimentSources };
 }
 
 async function generateRAGResponse(
@@ -275,7 +291,7 @@ serve(async (req) => {
     // ==========================================
     // FETCH STRUCTURED EXPERIMENT CONTEXT (priority)
     // ==========================================
-    const { contextText: experimentContextText, evidenceTable: preBuiltEvidenceTable } = await fetchExperimentContext(supabase, targetProjectIds, query);
+    const { contextText: experimentContextText, evidenceTable: preBuiltEvidenceTable, experimentSources } = await fetchExperimentContext(supabase, targetProjectIds, query);
 
     // ==========================================
     // CHUNK SEARCH (existing logic)
@@ -384,11 +400,14 @@ serve(async (req) => {
       latency_ms: latencyMs,
     });
 
-    const sources = chunks.map((chunk, index) => ({
-      citation: `[${index + 1}]`, type: chunk.source_type,
+    const chunkSources = chunks.map((chunk, index) => ({
+      citation: `${index + 1}`, type: chunk.source_type,
       id: chunk.source_id, title: chunk.source_title,
       project: chunk.project_name, excerpt: chunk.chunk_text.substring(0, 200) + "...",
     }));
+
+    // Merge chunk sources with experiment sources
+    const sources = [...chunkSources, ...experimentSources];
 
     return new Response(JSON.stringify({
       response, sources, chunks_used: chunks.length,
