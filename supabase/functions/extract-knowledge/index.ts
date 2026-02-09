@@ -119,26 +119,97 @@ function parseExcelStructured(arrayBuffer: ArrayBuffer, fileName: string): {
     for (const sheetName of workbook.SheetNames) {
       const sheet = workbook.Sheets[sheetName];
       
-      // Get structured JSON data
-      const jsonData = XLSX.utils.sheet_to_json<Record<string, any>>(sheet, { defval: "" });
+      // Get ALL raw rows first
+      const rawRows = XLSX.utils.sheet_to_json<any[]>(sheet, { header: 1, defval: "" });
       
-      // Get raw rows for header detection
-      const rawRows = XLSX.utils.sheet_to_json<string[]>(sheet, { header: 1, defval: "" });
-      const headerRows = rawRows.slice(0, 3).map(row => row.map(String));
-      const headers = headerRows[0] || [];
+      // Find the real header row using multiple heuristics:
+      // 1. Look for rows with known metric keywords (RF, MF, MPa, etc.)
+      // 2. Look for rows with short text labels that look like column headers
+      // 3. Fall back to first row with ≥3 meaningful cells
+      const metricKeywords = ['rf', 'mf', 'mpa', 'along', 'dureza', 'hardness', 'flexural', 'strength',
+        'valor', 'value', 'média', 'media', 'mean', 'amostra', 'sample', 'grupo', 'group',
+        'resistência', 'módulo', 'modulo', 'sorção', 'conversão', 'delta', 'desvio', 'std'];
       
-      // Also generate CSV for text content / insights extraction
+      let headerRowIdx = 0;
+      let bestScore = 0;
+      
+      for (let i = 0; i < Math.min(rawRows.length, 20); i++) {
+        const row = rawRows[i];
+        if (!row) continue;
+        const cells = row.map((c: any) => String(c).trim().toLowerCase());
+        const nonEmpty = cells.filter((s: string) => s.length > 0 && s.length < 80);
+        if (nonEmpty.length < 2) continue;
+        
+        // Score: count how many cells match metric keywords
+        let score = 0;
+        for (const cell of nonEmpty) {
+          for (const kw of metricKeywords) {
+            if (cell.includes(kw)) { score += 3; break; }
+          }
+          // Bonus for short text labels (likely headers, not data)
+          if (cell.length >= 2 && cell.length <= 30 && isNaN(Number(cell))) score += 1;
+        }
+        // Bonus for having many non-empty cells (looks like a header row)
+        score += Math.min(nonEmpty.length, 8);
+        
+        if (score > bestScore) {
+          bestScore = score;
+          headerRowIdx = i;
+        }
+      }
+      
+      // If best score is very low, try finding the row just before the first numeric-heavy row
+      if (bestScore < 5) {
+        for (let i = 1; i < Math.min(rawRows.length, 20); i++) {
+          const row = rawRows[i];
+          if (!row) continue;
+          const numericCount = row.filter((c: any) => {
+            const n = parseFloat(String(c).replace(',', '.'));
+            return !isNaN(n) && String(c).trim().length > 0;
+          }).length;
+          if (numericCount >= 3) {
+            // The previous row is likely the header
+            headerRowIdx = Math.max(0, i - 1);
+            break;
+          }
+        }
+      }
+
+      // Use detected header row
+      const headers = (rawRows[headerRowIdx] || []).map((h: any) => String(h).trim());
+      
+      // Build JSON using detected header row
+      const dataRows: Record<string, any>[] = [];
+      for (let i = headerRowIdx + 1; i < rawRows.length; i++) {
+        const row = rawRows[i];
+        if (!row || row.every((c: any) => String(c).trim() === '')) continue;
+        const obj: Record<string, any> = {};
+        for (let j = 0; j < headers.length; j++) {
+          const key = headers[j] || `col_${j}`;
+          obj[key] = row[j] !== undefined ? row[j] : '';
+        }
+        dataRows.push(obj);
+      }
+      
+      // Header rows for AI (the detected header + next 2 data rows as context)
+      const headerRows = [
+        headers,
+        ...(dataRows.slice(0, 2).map(r => headers.map(h => String(r[h] || ''))))
+      ];
+      
+      // CSV for text content
       const csv = XLSX.utils.sheet_to_csv(sheet, { blankrows: false });
-      const rows = csv.split('\n').filter((r: string) => r.trim());
-      for (const row of rows) {
+      const csvRows = csv.split('\n').filter((r: string) => r.trim());
+      for (const row of csvRows) {
         const cells = row.split(',');
         totalCells += cells.length;
         emptyCells += cells.filter((c: string) => !c.trim()).length;
       }
       
-      if (jsonData.length > 0) {
-        sheets.push({ sheetName, headers, rows: jsonData, headerRows });
+      if (dataRows.length > 0) {
+        sheets.push({ sheetName, headers, rows: dataRows, headerRows });
         textParts.push(`=== Planilha: ${sheetName} ===\n${csv}`);
+        console.log(`Sheet "${sheetName}": detected header at row ${headerRowIdx + 1}, headers: [${headers.filter(Boolean).join(', ')}], ${dataRows.length} data rows`);
       }
     }
 
@@ -256,11 +327,15 @@ REGRAS:
   const toolCall = data.choices?.[0]?.message?.tool_calls?.[0];
   if (toolCall?.function?.arguments) {
     try {
-      return JSON.parse(toolCall.function.arguments);
-    } catch {
+      const parsed = JSON.parse(toolCall.function.arguments);
+      console.log(`AI header mapping result: ${JSON.stringify(parsed).substring(0, 500)}`);
+      return parsed;
+    } catch (e) {
+      console.error("Failed to parse header mapping:", e);
       return null;
     }
   }
+  console.warn("No tool_calls in AI header mapping response. Message:", JSON.stringify(data.choices?.[0]?.message).substring(0, 300));
   return null;
 }
 
@@ -272,33 +347,84 @@ function generateExcelExperiments(
   mapping: any,
   fileId: string
 ): ExperimentExtraction[] {
-  if (!mapping?.sheet_mappings) return [];
+  if (!mapping?.sheet_mappings) {
+    console.warn("No sheet_mappings in AI response");
+    return [];
+  }
   const experiments: ExperimentExtraction[] = [];
 
   for (const sheetMapping of mapping.sheet_mappings) {
-    const sheet = sheets.find(s => s.sheetName === sheetMapping.sheet_name);
-    if (!sheet) continue;
+    // Fuzzy match sheet name (AI may return slightly different name)
+    let sheet = sheets.find(s => s.sheetName === sheetMapping.sheet_name);
+    if (!sheet) {
+      sheet = sheets.find(s => s.sheetName.toLowerCase().includes(sheetMapping.sheet_name.toLowerCase()) ||
+        sheetMapping.sheet_name.toLowerCase().includes(s.sheetName.toLowerCase()));
+    }
+    if (!sheet) {
+      // Fallback: if only 1 sheet and 1 mapping, use it
+      if (sheets.length === 1 && mapping.sheet_mappings.length === 1) {
+        sheet = sheets[0];
+      } else {
+        console.warn(`Sheet not found: "${sheetMapping.sheet_name}". Available: ${sheets.map(s => s.sheetName).join(', ')}`);
+        continue;
+      }
+    }
 
-    const metricColumns = (sheetMapping.columns || []).filter((c: any) => c.role === 'metric');
-    const conditionColumns = (sheetMapping.columns || []).filter((c: any) => c.role === 'condition');
-    const identifierColumns = (sheetMapping.columns || []).filter((c: any) => c.role === 'identifier');
+    const allColumns = sheetMapping.columns || [];
+    const metricColumns = allColumns.filter((c: any) => c.role === 'metric');
+    const conditionColumns = allColumns.filter((c: any) => c.role === 'condition');
+    const identifierColumns = allColumns.filter((c: any) => c.role === 'identifier');
 
-    // Extract conditions from first data row as defaults
+    // Get actual keys from first data row for fuzzy column matching
+    const actualKeys = sheet.rows.length > 0 ? Object.keys(sheet.rows[0]) : sheet.headers;
+    console.log(`Sheet "${sheet.sheetName}": ${sheet.rows.length} rows, keys: ${actualKeys.slice(0, 10).join(', ')}`);
+    console.log(`Mapping: ${metricColumns.length} metrics, ${conditionColumns.length} conditions, ${identifierColumns.length} identifiers`);
+
+    // Build a fuzzy column resolver: AI column_name -> actual key in row
+    const resolveColumn = (aiColName: string): string | null => {
+      if (!aiColName) return null;
+      // Exact match
+      if (actualKeys.includes(aiColName)) return aiColName;
+      // Case-insensitive
+      const lower = aiColName.toLowerCase().trim();
+      const found = actualKeys.find(k => k.toLowerCase().trim() === lower);
+      if (found) return found;
+      // Substring match
+      const partial = actualKeys.find(k => 
+        k.toLowerCase().includes(lower) || lower.includes(k.toLowerCase())
+      );
+      if (partial) return partial;
+      // Normalize: remove spaces, parens, special chars
+      const normalize = (s: string) => s.toLowerCase().replace(/[\s\-_()[\]\/\\.,;:]+/g, '');
+      const norm = normalize(aiColName);
+      const normMatch = actualKeys.find(k => normalize(k) === norm || normalize(k).includes(norm) || norm.includes(normalize(k)));
+      if (normMatch) return normMatch;
+      return null;
+    };
+
     const conditions: { key: string; value: string }[] = [];
-
-    // Build measurements from each data row
     const measurements: ExperimentExtraction['measurements'] = [];
     const citations: ExperimentExtraction['citations'] = [];
+
+    // Log column resolution
+    for (const mc of metricColumns) {
+      const resolved = resolveColumn(mc.column_name);
+      console.log(`  Metric col "${mc.column_name}" -> resolved: "${resolved || 'NOT FOUND'}"`);
+    }
 
     for (let rowIdx = 0; rowIdx < sheet.rows.length; rowIdx++) {
       const row = sheet.rows[rowIdx];
       
-      // Build row identifier for citations
-      const rowId = identifierColumns.map((c: any) => String(row[c.column_name] || '')).filter(Boolean).join(' | ');
+      // Build row identifier
+      const rowId = identifierColumns
+        .map((c: any) => { const k = resolveColumn(c.column_name); return k ? String(row[k] || '') : ''; })
+        .filter(Boolean).join(' | ');
 
-      // Extract conditions from this row
+      // Extract conditions
       for (const cc of conditionColumns) {
-        const val = String(row[cc.column_name] || '').trim();
+        const key = resolveColumn(cc.column_name);
+        if (!key) continue;
+        const val = String(row[key] || '').trim();
         if (val && !conditions.find(c => c.key === (cc.condition_key || cc.column_name) && c.value === val)) {
           conditions.push({ key: cc.condition_key || cc.column_name, value: val });
         }
@@ -306,11 +432,14 @@ function generateExcelExperiments(
 
       // Extract measurements
       for (const mc of metricColumns) {
-        const rawValue = row[mc.column_name];
+        const key = resolveColumn(mc.column_name);
+        if (!key) continue;
+        const rawValue = row[key];
+        if (rawValue === '' || rawValue === undefined || rawValue === null) continue;
         const numValue = parseFloat(String(rawValue).replace(',', '.'));
         if (isNaN(numValue)) continue;
 
-        const excerpt = `Sheet: ${sheet.sheetName}, Row: ${rowIdx + 2}, Col: ${mc.column_name}, Value: ${rawValue}${rowId ? `, Sample: ${rowId}` : ''}`;
+        const excerpt = `Sheet: ${sheet.sheetName}, Row: ${rowIdx + 2}, Col: ${key}, Value: ${rawValue}${rowId ? `, Sample: ${rowId}` : ''}`;
         
         measurements.push({
           metric: mc.canonical_metric || mc.column_name,
@@ -322,11 +451,13 @@ function generateExcelExperiments(
 
         citations.push({
           sheet_name: sheet.sheetName,
-          cell_range: `Row ${rowIdx + 2}, Col ${mc.column_name}`,
+          cell_range: `Row ${rowIdx + 2}, Col ${key}`,
           excerpt: excerpt.substring(0, 300),
         });
       }
     }
+
+    console.log(`Sheet "${sheet.sheetName}": generated ${measurements.length} measurements, ${conditions.length} conditions`);
 
     // Only create experiment if we have data
     if (measurements.length > 0 || conditions.length > 0) {
