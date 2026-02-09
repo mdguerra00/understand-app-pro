@@ -37,11 +37,9 @@ async function fetchExperimentContext(
   supabase: any,
   projectIds: string[],
   query: string
-): Promise<string> {
-  // Search experiments matching the query terms
+): Promise<{ contextText: string; evidenceTable: string }> {
   const searchTerms = query.toLowerCase().split(/\s+/).filter((w: string) => w.length > 2).slice(0, 5);
   
-  // Fetch experiments with measurements
   const { data: experiments } = await supabase
     .from('experiments')
     .select(`
@@ -53,80 +51,88 @@ async function fetchExperimentContext(
     .is('deleted_at', null)
     .limit(50);
 
-  if (!experiments || experiments.length === 0) return '';
+  if (!experiments || experiments.length === 0) return { contextText: '', evidenceTable: '' };
 
-  // Fetch measurements for these experiments
   const expIds = experiments.map((e: any) => e.id);
   const { data: measurements } = await supabase
     .from('measurements')
-    .select('experiment_id, metric, value, unit, method, confidence, source_excerpt')
+    .select('experiment_id, metric, raw_metric_name, value, unit, method, confidence, source_excerpt')
     .in('experiment_id', expIds);
 
-  // Fetch conditions
   const { data: conditions } = await supabase
     .from('experiment_conditions')
     .select('experiment_id, key, value')
     .in('experiment_id', expIds);
 
-  // Build context
+  // Build map
   const expMap = new Map<string, any>();
   for (const exp of experiments) {
-    expMap.set(exp.id, {
-      ...exp,
-      measurements: [],
-      conditions: [],
-    });
+    expMap.set(exp.id, { ...exp, measurements: [], conditions: [] });
   }
-
   for (const m of (measurements || [])) {
     const exp = expMap.get(m.experiment_id);
     if (exp) exp.measurements.push(m);
   }
-
   for (const c of (conditions || [])) {
     const exp = expMap.get(c.experiment_id);
     if (exp) exp.conditions.push(c);
   }
 
-  // Filter experiments relevant to query
+  // Filter relevant
   const relevant = Array.from(expMap.values()).filter((exp: any) => {
     const text = `${exp.title} ${exp.objective || ''} ${exp.summary || ''} ${exp.measurements.map((m: any) => m.metric).join(' ')} ${exp.conditions.map((c: any) => `${c.key} ${c.value}`).join(' ')}`.toLowerCase();
     return searchTerms.some((term: string) => text.includes(term));
   });
 
-  if (relevant.length === 0) return '';
+  if (relevant.length === 0) return { contextText: '', evidenceTable: '' };
 
-  // Format as structured context
-  let context = '\n\n=== DADOS ESTRUTURADOS DE EXPERIMENTOS ===\n\n';
-  
+  // Build context text for AI
+  let contextText = '\n\n=== DADOS ESTRUTURADOS DE EXPERIMENTOS ===\n\n';
   for (const exp of relevant.slice(0, 10)) {
-    context += `📋 Experimento: ${exp.title}\n`;
-    if (exp.objective) context += `   Objetivo: ${exp.objective}\n`;
-    context += `   Fonte: ${exp.project_files?.name || 'N/A'} | Projeto: ${exp.projects?.name || 'N/A'}\n`;
-    context += `   Tipo: ${exp.is_qualitative ? 'Qualitativo' : 'Quantitativo'}\n`;
-
+    contextText += `📋 Experimento: ${exp.title}\n`;
+    if (exp.objective) contextText += `   Objetivo: ${exp.objective}\n`;
+    contextText += `   Fonte: ${exp.project_files?.name || 'N/A'} | Projeto: ${exp.projects?.name || 'N/A'}\n`;
+    contextText += `   Tipo: ${exp.is_qualitative ? 'Qualitativo' : 'Quantitativo'}\n`;
     if (exp.conditions.length > 0) {
-      context += `   Condições: ${exp.conditions.map((c: any) => `${c.key}=${c.value}`).join(', ')}\n`;
+      contextText += `   Condições: ${exp.conditions.map((c: any) => `${c.key}=${c.value}`).join(', ')}\n`;
     }
-
     if (exp.measurements.length > 0) {
-      context += '   Medições:\n';
-      context += '   | Métrica | Valor | Unidade | Método | Confiança |\n';
-      context += '   |---------|-------|---------|--------|----------|\n';
+      contextText += '   Medições:\n';
       for (const m of exp.measurements) {
-        context += `   | ${m.metric} | ${m.value} | ${m.unit} | ${m.method || '-'} | ${m.confidence} |\n`;
+        contextText += `   - ${m.metric}: ${m.value} ${m.unit} (${m.method || '-'}, conf: ${m.confidence})\n`;
       }
     }
-    context += '\n';
+    contextText += '\n';
   }
 
-  return context;
+  // Build evidence table directly from structured data (NOT from AI)
+  let evidenceTable = '';
+  const measRows = relevant.flatMap((exp: any) => 
+    exp.measurements.map((m: any) => ({
+      experiment: exp.title,
+      condition: exp.conditions.map((c: any) => `${c.key}=${c.value}`).join('; ') || '-',
+      metric: m.raw_metric_name || m.metric,
+      result: `${m.value} ${m.unit}`,
+      source: exp.project_files?.name || 'N/A',
+    }))
+  );
+
+  if (measRows.length > 0) {
+    evidenceTable = '| Experimento | Condição-chave | Métrica | Resultado | Fonte |\n';
+    evidenceTable += '|-------------|---------------|---------|-----------|-------|\n';
+    for (const row of measRows) {
+      evidenceTable += `| ${row.experiment} | ${row.condition} | ${row.metric} | ${row.result} | ${row.source} |\n`;
+    }
+  }
+
+  return { contextText, evidenceTable };
 }
 
 async function generateRAGResponse(
   query: string,
   chunks: ChunkSource[],
-  experimentContext: string,
+  experimentContextText: string,
+  preBuiltEvidenceTable: string,
   apiKey: string,
   conversationHistory?: { role: string; content: string }[],
 ): Promise<{ response: string }> {
@@ -143,10 +149,15 @@ REGRAS ABSOLUTAS (NÃO NEGOCIÁVEIS):
 4. Se houver informações conflitantes, mencione ambas
 5. PRIORIZE dados estruturados (experimentos/medições) sobre texto livre
 6. Se não houver medições quantitativas: "Não encontrei medições quantitativas registradas sobre este tema."
+7. A TABELA DE EVIDÊNCIAS abaixo foi gerada diretamente dos dados estruturados — inclua-a na resposta SEM modificar os valores
 
 TRECHOS DISPONÍVEIS:
 ${formattedChunks}
-${experimentContext}`;
+${experimentContextText}`;
+
+  const evidenceSection = preBuiltEvidenceTable
+    ? `## 2. Evidências\n${preBuiltEvidenceTable}\n\n[Complementar com dados dos trechos se relevante]`
+    : `## 2. Evidências\n[Listar evidências dos trechos com citações]`;
 
   const userPrompt = `PERGUNTA: ${query}
 
@@ -155,10 +166,7 @@ FORMATO OBRIGATÓRIO DA RESPOSTA:
 ## 1. Síntese Técnica
 [Resumo factual do que foi observado, com citações]
 
-## 2. Evidências
-${experimentContext ? `| Experimento | Condição-chave | Métrica | Resultado | Fonte |
-|-------------|---------------|---------|-----------|-------|
-[Preencher com dados dos experimentos estruturados e/ou trechos]` : '[Listar evidências dos trechos com citações]'}
+${evidenceSection}
 
 ## 3. Heurísticas Derivadas
 [Regras observadas + nível de confiança (alto/médio/baixo). Se não há dados suficientes, omitir esta seção]
@@ -267,7 +275,7 @@ serve(async (req) => {
     // ==========================================
     // FETCH STRUCTURED EXPERIMENT CONTEXT (priority)
     // ==========================================
-    const experimentContext = await fetchExperimentContext(supabase, targetProjectIds, query);
+    const { contextText: experimentContextText, evidenceTable: preBuiltEvidenceTable } = await fetchExperimentContext(supabase, targetProjectIds, query);
 
     // ==========================================
     // CHUNK SEARCH (existing logic)
@@ -355,7 +363,7 @@ serve(async (req) => {
     }
 
     // If no chunks AND no experiment context, return empty
-    if (chunks.length === 0 && !experimentContext) {
+    if (chunks.length === 0 && !experimentContextText) {
       return new Response(JSON.stringify({
         response: "Não encontrei informações relevantes nos documentos disponíveis para responder sua pergunta. Tente reformular a busca ou verifique se o conteúdo já foi indexado.",
         sources: [], chunks_used: 0,
@@ -363,7 +371,7 @@ serve(async (req) => {
     }
 
     // Generate response with experiment context
-    const { response } = await generateRAGResponse(query, chunks, experimentContext, lovableApiKey, conversation_history);
+    const { response } = await generateRAGResponse(query, chunks, experimentContextText, preBuiltEvidenceTable, lovableApiKey, conversation_history);
 
     const latencyMs = Date.now() - startTime;
 
@@ -384,7 +392,7 @@ serve(async (req) => {
 
     return new Response(JSON.stringify({
       response, sources, chunks_used: chunks.length,
-      has_experiment_data: !!experimentContext,
+      has_experiment_data: !!experimentContextText,
       model_used: "lovable-ai/gemini-3-flash-preview", latency_ms: latencyMs,
     }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
