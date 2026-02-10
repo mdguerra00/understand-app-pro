@@ -141,6 +141,22 @@ Formato: [{"title": "...", "content": "...", "category": "...", "confidence": 0.
       );
     }
 
+    // Soft-delete existing insights for this file before inserting new ones
+    const { data: existingInsights } = await supabase
+      .from('knowledge_items')
+      .select('id')
+      .eq('source_file_id', file_id)
+      .eq('project_id', project_id)
+      .is('deleted_at', null);
+
+    if (existingInsights && existingInsights.length > 0) {
+      console.log(`Soft-deleting ${existingInsights.length} existing insights for file ${file_id}`);
+      await supabase
+        .from('knowledge_items')
+        .update({ deleted_at: new Date().toISOString(), deleted_by: user.id })
+        .in('id', existingInsights.map((i: any) => i.id));
+    }
+
     // Validate and prepare insights for insertion
     const validInsights = insights
       .filter((i) => i.title && i.content && validCategories.includes(i.category))

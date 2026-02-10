@@ -1152,6 +1152,22 @@ Se ilegível, retorne apenas um insight de "observation".`;
 
     // Save insights
     if (validatedInsights.length > 0) {
+      // Soft-delete existing insights for this file before inserting new ones
+      const { data: existingInsights } = await supabaseAdmin
+        .from('knowledge_items')
+        .select('id')
+        .eq('source_file_id', file_id)
+        .eq('project_id', fileData.project_id)
+        .is('deleted_at', null);
+
+      if (existingInsights && existingInsights.length > 0) {
+        console.log(`Soft-deleting ${existingInsights.length} existing insights for file ${file_id}`);
+        await supabaseAdmin
+          .from('knowledge_items')
+          .update({ deleted_at: new Date().toISOString(), deleted_by: user.id })
+          .in('id', existingInsights.map((i: any) => i.id));
+      }
+
       const insightsToInsert = validatedInsights.map((insight) => ({
         project_id: fileData.project_id,
         source_file_id: file_id,
@@ -1163,6 +1179,8 @@ Se ilegível, retorne apenas um insight de "observation".`;
         confidence: Math.min(1, Math.max(0, insight.confidence)),
         evidence_verified: insight.evidence_verified,
         extracted_by: user.id,
+        validated_by: user.id,
+        validated_at: new Date().toISOString(),
       }));
 
       const { error: insertError } = await supabaseAdmin.from("knowledge_items").insert(insightsToInsert);
