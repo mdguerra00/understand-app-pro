@@ -5,7 +5,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Brain, Search, Sparkles, Filter, LayoutGrid, List, FileText, FlaskConical } from 'lucide-react';
+import { Brain, Search, Sparkles, Filter, LayoutGrid, List, FileText, FlaskConical, Zap, Loader2 } from 'lucide-react';
+import { toast } from 'sonner';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/hooks/useAuth';
 import { KnowledgeCard, KnowledgeItem, KnowledgeCategory } from '@/components/knowledge/KnowledgeCard';
@@ -41,6 +42,47 @@ export default function Knowledge() {
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [entryType, setEntryType] = useState<EntryTypeFilter>('all');
   const [validationFilter, setValidationFilter] = useState<ValidationFilter>('all');
+  const [runningCorrelation, setRunningCorrelation] = useState(false);
+
+  const handleRunCorrelation = async () => {
+    if (!selectedProject && (!projects || projects.length === 0)) {
+      toast.error('Nenhum projeto disponível');
+      return;
+    }
+    const projectId = selectedProject || projects?.[0]?.id;
+    if (!projectId) return;
+
+    setRunningCorrelation(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) throw new Error('Não autenticado');
+
+      const response = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/correlate-metrics`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${session.access_token}`,
+          },
+          body: JSON.stringify({ project_id: projectId }),
+        }
+      );
+
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Erro');
+
+      toast.success(
+        `Análise concluída: ${data.patterns} padrões, ${data.contradictions} contradições, ${data.gaps} lacunas`,
+        { duration: 5000 }
+      );
+      refetchInsights();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Erro ao executar análise');
+    } finally {
+      setRunningCorrelation(false);
+    }
+  };
 
   const { data: projects } = useQuery({
     queryKey: ['user-projects', user?.id],
@@ -238,6 +280,15 @@ export default function Knowledge() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleRunCorrelation}
+            disabled={runningCorrelation}
+          >
+            {runningCorrelation ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Zap className="h-4 w-4 mr-2" />}
+            {runningCorrelation ? 'Analisando...' : 'Correlacionar Métricas'}
+          </Button>
           <Button variant={viewMode === 'grid' ? 'secondary' : 'ghost'} size="icon" onClick={() => setViewMode('grid')}>
             <LayoutGrid className="h-4 w-4" />
           </Button>

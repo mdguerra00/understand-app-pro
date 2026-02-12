@@ -495,23 +495,35 @@ function parseCSV(text: string): { content: string; quality: string } {
 }
 
 // ==========================================
-// METRICS CATALOG NORMALIZATION
+// METRICS CATALOG NORMALIZATION (with unit normalization)
 // ==========================================
 
-async function normalizeMetric(supabase: any, metric: string): Promise<string> {
+async function normalizeMetric(supabase: any, metric: string, unit?: string): Promise<{ canonicalMetric: string; canonicalUnit: string; conversionFactor: number }> {
   const normalized = metric.toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '');
   
   // Search catalog by canonical name or aliases
   const { data: catalog } = await supabase
     .from('metrics_catalog')
-    .select('canonical_name, aliases')
+    .select('canonical_name, aliases, canonical_unit, unit_aliases, conversion_factor, unit')
     .limit(100);
 
   if (catalog) {
     for (const entry of catalog) {
-      if (entry.canonical_name === normalized) return entry.canonical_name;
-      if (entry.aliases?.includes(normalized)) return entry.canonical_name;
-      if (entry.aliases?.includes(metric.toLowerCase())) return entry.canonical_name;
+      if (entry.canonical_name === normalized || entry.aliases?.includes(normalized) || entry.aliases?.includes(metric.toLowerCase())) {
+        // Check unit normalization
+        const canonicalUnit = entry.canonical_unit || entry.unit || unit || '';
+        let conversionFactor = 1.0;
+        
+        if (unit && entry.unit_aliases && entry.unit_aliases.length > 0) {
+          // Check if the provided unit is an alias
+          const unitLower = unit.toLowerCase().trim();
+          if (entry.unit_aliases.includes(unitLower) && entry.conversion_factor) {
+            conversionFactor = Number(entry.conversion_factor);
+          }
+        }
+        
+        return { canonicalMetric: entry.canonical_name, canonicalUnit, conversionFactor };
+      }
     }
   }
 
@@ -520,15 +532,17 @@ async function normalizeMetric(supabase: any, metric: string): Promise<string> {
     await supabase.from('metrics_catalog').insert({
       canonical_name: normalized,
       display_name: metric,
-      unit: '',
+      unit: unit || '',
+      canonical_unit: unit || '',
       aliases: [normalized, metric.toLowerCase()],
+      unit_aliases: [],
       category: 'other',
     });
   } catch {
     // Ignore duplicate
   }
 
-  return normalized;
+  return { canonicalMetric: normalized, canonicalUnit: unit || '', conversionFactor: 1.0 };
 }
 
 // ==========================================
@@ -609,7 +623,7 @@ async function saveExperiments(
     // Save measurements (normalized) + create citation per measurement
     for (let i = 0; i < validMeasurements.length; i++) {
       const m = validMeasurements[i];
-      const canonicalMetric = await normalizeMetric(supabase, m.metric);
+      const { canonicalMetric, canonicalUnit, conversionFactor } = await normalizeMetric(supabase, m.metric, m.unit);
 
       const { data: measRecord } = await supabase.from('measurements').insert({
         experiment_id: expRecord.id,
@@ -617,6 +631,8 @@ async function saveExperiments(
         raw_metric_name: m.metric, // preserve original name
         value: m.value,
         unit: m.unit,
+        value_canonical: m.value * conversionFactor,
+        unit_canonical: canonicalUnit,
         method: m.method || null,
         notes: m.notes || null,
         confidence: m.confidence || 'medium',
@@ -1168,20 +1184,34 @@ Se ilegível, retorne apenas um insight de "observation".`;
           .in('id', existingInsights.map((i: any) => i.id));
       }
 
-      const insightsToInsert = validatedInsights.map((insight) => ({
-        project_id: fileData.project_id,
-        source_file_id: file_id,
-        extraction_job_id: job_id,
-        category: insight.category,
-        title: insight.title.substring(0, 100),
-        content: insight.content.substring(0, 500),
-        evidence: insight.evidence?.substring(0, 300) || null,
-        confidence: Math.min(1, Math.max(0, insight.confidence)),
-        evidence_verified: insight.evidence_verified,
-        extracted_by: user.id,
-        validated_by: user.id,
-        validated_at: new Date().toISOString(),
-      }));
+      const insightsToInsert = validatedInsights.map((insight) => {
+        // Smart validation: auto-validate only when evidence is verified AND confidence >= 0.8
+        const shouldAutoValidate = insight.evidence_verified && insight.confidence >= 0.8;
+        // For Excel-sourced deterministic data, always auto-validate
+        const isExcelDeterministic = isExcel && insight.evidence_verified;
+        const autoValidate = shouldAutoValidate || isExcelDeterministic;
+        
+        return {
+          project_id: fileData.project_id,
+          source_file_id: file_id,
+          extraction_job_id: job_id,
+          category: insight.category,
+          title: insight.title.substring(0, 100),
+          content: insight.content.substring(0, 500),
+          evidence: insight.evidence?.substring(0, 300) || null,
+          confidence: Math.min(1, Math.max(0, insight.confidence)),
+          evidence_verified: insight.evidence_verified,
+          extracted_by: user.id,
+          // Smart validation instead of auto-validate-all
+          auto_validated: autoValidate,
+          auto_validation_reason: autoValidate 
+            ? (isExcelDeterministic ? 'excel_deterministic' : 'high_confidence_verified_evidence')
+            : null,
+          human_verified: false,
+          // Only set validated_by/at for auto-validated items
+          ...(autoValidate ? { validated_by: user.id, validated_at: new Date().toISOString() } : {}),
+        };
+      });
 
       const { error: insertError } = await supabaseAdmin.from("knowledge_items").insert(insightsToInsert);
       if (insertError) {

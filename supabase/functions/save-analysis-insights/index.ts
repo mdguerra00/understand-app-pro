@@ -160,18 +160,27 @@ Formato: [{"title": "...", "content": "...", "category": "...", "confidence": 0.
     // Validate and prepare insights for insertion
     const validInsights = insights
       .filter((i) => i.title && i.content && validCategories.includes(i.category))
-      .map((i) => ({
-        project_id,
-        source_file_id: file_id,
-        title: String(i.title).substring(0, 200),
-        content: String(i.content),
-        category: i.category,
-        confidence: Math.min(1, Math.max(0, Number(i.confidence) || 0.7)),
-        evidence: i.evidence ? String(i.evidence).substring(0, 500) : null,
-        extracted_by: user.id,
-        validated_by: user.id,
-        validated_at: new Date().toISOString(),
-      }));
+      .map((i) => {
+        const confidence = Math.min(1, Math.max(0, Number(i.confidence) || 0.7));
+        const hasEvidence = !!i.evidence && String(i.evidence).trim().length > 10;
+        // Smart validation: only auto-validate if high confidence + has evidence
+        const shouldAutoValidate = confidence >= 0.8 && hasEvidence;
+        
+        return {
+          project_id,
+          source_file_id: file_id,
+          title: String(i.title).substring(0, 200),
+          content: String(i.content),
+          category: i.category,
+          confidence,
+          evidence: hasEvidence ? String(i.evidence).substring(0, 500) : null,
+          extracted_by: user.id,
+          auto_validated: shouldAutoValidate,
+          auto_validation_reason: shouldAutoValidate ? 'high_confidence_with_evidence' : null,
+          human_verified: false,
+          ...(shouldAutoValidate ? { validated_by: user.id, validated_at: new Date().toISOString() } : {}),
+        };
+      });
 
     if (validInsights.length === 0) {
       return new Response(
