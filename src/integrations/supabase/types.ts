@@ -123,6 +123,62 @@ export type Database = {
         }
         Relationships: []
       }
+      correlation_jobs: {
+        Row: {
+          completed_at: string | null
+          contradictions_found: number | null
+          created_at: string
+          created_by: string
+          error_message: string | null
+          gaps_found: number | null
+          id: string
+          insights_created: number | null
+          metrics_analyzed: number | null
+          patterns_found: number | null
+          project_id: string
+          started_at: string | null
+          status: string
+        }
+        Insert: {
+          completed_at?: string | null
+          contradictions_found?: number | null
+          created_at?: string
+          created_by: string
+          error_message?: string | null
+          gaps_found?: number | null
+          id?: string
+          insights_created?: number | null
+          metrics_analyzed?: number | null
+          patterns_found?: number | null
+          project_id: string
+          started_at?: string | null
+          status?: string
+        }
+        Update: {
+          completed_at?: string | null
+          contradictions_found?: number | null
+          created_at?: string
+          created_by?: string
+          error_message?: string | null
+          gaps_found?: number | null
+          id?: string
+          insights_created?: number | null
+          metrics_analyzed?: number | null
+          patterns_found?: number | null
+          project_id?: string
+          started_at?: string | null
+          status?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "correlation_jobs_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       experiment_citations: {
         Row: {
           cell_range: string | null
@@ -423,6 +479,8 @@ export type Database = {
       }
       knowledge_items: {
         Row: {
+          auto_validated: boolean | null
+          auto_validation_reason: string | null
           category: Database["public"]["Enums"]["knowledge_category"]
           confidence: number | null
           content: string
@@ -434,16 +492,21 @@ export type Database = {
           extracted_at: string
           extracted_by: string
           extraction_job_id: string | null
+          human_verified: boolean | null
           id: string
+          neighbor_chunk_ids: string[] | null
           project_id: string
           related_items: string[] | null
           relationship_type: string | null
+          source_chunk_id: string | null
           source_file_id: string | null
           title: string
           validated_at: string | null
           validated_by: string | null
         }
         Insert: {
+          auto_validated?: boolean | null
+          auto_validation_reason?: string | null
           category: Database["public"]["Enums"]["knowledge_category"]
           confidence?: number | null
           content: string
@@ -455,16 +518,21 @@ export type Database = {
           extracted_at?: string
           extracted_by: string
           extraction_job_id?: string | null
+          human_verified?: boolean | null
           id?: string
+          neighbor_chunk_ids?: string[] | null
           project_id: string
           related_items?: string[] | null
           relationship_type?: string | null
+          source_chunk_id?: string | null
           source_file_id?: string | null
           title: string
           validated_at?: string | null
           validated_by?: string | null
         }
         Update: {
+          auto_validated?: boolean | null
+          auto_validation_reason?: string | null
           category?: Database["public"]["Enums"]["knowledge_category"]
           confidence?: number | null
           content?: string
@@ -476,10 +544,13 @@ export type Database = {
           extracted_at?: string
           extracted_by?: string
           extraction_job_id?: string | null
+          human_verified?: boolean | null
           id?: string
+          neighbor_chunk_ids?: string[] | null
           project_id?: string
           related_items?: string[] | null
           relationship_type?: string | null
+          source_chunk_id?: string | null
           source_file_id?: string | null
           title?: string
           validated_at?: string | null
@@ -498,6 +569,13 @@ export type Database = {
             columns: ["project_id"]
             isOneToOne: false
             referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "knowledge_items_source_chunk_id_fkey"
+            columns: ["source_chunk_id"]
+            isOneToOne: false
+            referencedRelation: "search_chunks"
             referencedColumns: ["id"]
           },
           {
@@ -521,7 +599,9 @@ export type Database = {
           raw_metric_name: string | null
           source_excerpt: string
           unit: string
+          unit_canonical: string | null
           value: number
+          value_canonical: number | null
         }
         Insert: {
           confidence?: string | null
@@ -534,7 +614,9 @@ export type Database = {
           raw_metric_name?: string | null
           source_excerpt: string
           unit: string
+          unit_canonical?: string | null
           value: number
+          value_canonical?: number | null
         }
         Update: {
           confidence?: string | null
@@ -547,7 +629,9 @@ export type Database = {
           raw_metric_name?: string | null
           source_excerpt?: string
           unit?: string
+          unit_canonical?: string | null
           value?: number
+          value_canonical?: number | null
         }
         Relationships: [
           {
@@ -563,29 +647,38 @@ export type Database = {
         Row: {
           aliases: string[]
           canonical_name: string
+          canonical_unit: string | null
           category: string
+          conversion_factor: number | null
           created_at: string
           display_name: string
           id: string
           unit: string
+          unit_aliases: string[] | null
         }
         Insert: {
           aliases?: string[]
           canonical_name: string
+          canonical_unit?: string | null
           category?: string
+          conversion_factor?: number | null
           created_at?: string
           display_name: string
           id?: string
           unit: string
+          unit_aliases?: string[] | null
         }
         Update: {
           aliases?: string[]
           canonical_name?: string
+          canonical_unit?: string | null
           category?: string
+          conversion_factor?: number | null
           created_at?: string
           display_name?: string
           id?: string
           unit?: string
+          unit_aliases?: string[] | null
         }
         Relationships: []
       }
@@ -1230,7 +1323,72 @@ export type Database = {
       }
     }
     Views: {
-      [_ in never]: never
+      condition_metric_summary: {
+        Row: {
+          avg_value: number | null
+          condition_key: string | null
+          condition_value: string | null
+          max_value: number | null
+          median_value: number | null
+          metric: string | null
+          min_value: number | null
+          n: number | null
+          project_id: string | null
+          stddev_value: number | null
+          unit: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "experiments_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      experiment_metric_summary: {
+        Row: {
+          avg_confidence: number | null
+          avg_value: number | null
+          experiment_id: string | null
+          experiment_title: string | null
+          max_value: number | null
+          median_value: number | null
+          method: string | null
+          metric: string | null
+          min_value: number | null
+          n: number | null
+          project_id: string | null
+          raw_metric_name: string | null
+          source_file_id: string | null
+          stddev_value: number | null
+          unit: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "experiments_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "experiments_source_file_id_fkey"
+            columns: ["source_file_id"]
+            isOneToOne: false
+            referencedRelation: "project_files"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "measurements_experiment_id_fkey"
+            columns: ["experiment_id"]
+            isOneToOne: false
+            referencedRelation: "experiments"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
     }
     Functions: {
       get_project_role: {

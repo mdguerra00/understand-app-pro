@@ -349,76 +349,86 @@ Todas as Edge Functions rodam em **Deno** (Supabase Edge Runtime) e são implant
 
 **Deduplicação:** Soft-delete automático de insights existentes do mesmo arquivo antes de inserir novos.
 
-**Auto-validação:** Todo insight é automaticamente marcado como validado (`validated_by`, `validated_at`).
+**Validação Inteligente (v2.3):** Insights são auto-validados APENAS quando:
+- Excel parser determinístico + evidência verificada
+- Confiança ≥ 0.8 + evidência verificada contra conteúdo original
+- Caso contrário, ficam como `human_verified = false` aguardando revisão
 
 ### 6.3 `analyze-document` (286 linhas)
 
-**Propósito:** Análise profunda de um documento individual.
+**Propósito:** Análise profunda de um documento individual com dados estruturados.
 
 **Fluxo:**
 1. Reconstrói conteúdo total do documento a partir de `search_chunks`
-2. Fallback: usa `knowledge_items` existentes
-3. Envia para Gemini com prompt especializado em P&D odontológico
-4. Retorna análise detalhada com fontes
+2. Enriquece com dados estruturados (`experiments`, `measurements`, `experiment_conditions`)
+3. Fallback: usa `knowledge_items` existentes
+4. Envia para Gemini com prompt especializado em P&D odontológico
+5. Retorna análise detalhada com fontes
 
-### 6.4 `generate-report` (464 linhas)
+### 6.4 `rag-answer` — Pipeline 2 Passos (v2.3)
+
+**Propósito:** Assistente RAG com profundidade analítica.
+
+**Passo A — Evidence Plan** (oculto, modelo leve `gemini-2.5-flash-lite`):
+- Identifica hipóteses e eixos de comparação
+- Detecta trade-offs a investigar
+- Mapeia lacunas de evidência
+- Decide estratégia de síntese
+
+**Passo B — Synthesis** (resposta final, `gemini-3-flash-preview`):
+- Monta resposta com tabela de evidências programática
+- Inclui comparações e correlações obrigatórias
+- Usa resumos estatísticos agregados (`experiment_metric_summary`, `condition_metric_summary`)
+- Usa insights relacionais como pivôs de navegação
+- Identifica trade-offs e contradições explicitamente
+
+**Fontes de dados paralelas:**
+1. `search_chunks` (busca híbrida semântica + FTS)
+2. `experiments` + `measurements` (dados estruturados)
+3. `experiment_metric_summary` VIEW (agregações estatísticas)
+4. `condition_metric_summary` VIEW (agregações por condição)
+5. `knowledge_items` relacionais (correlações, contradições, padrões, lacunas)
+
+### 6.5 `correlate-metrics` — Motor de Correlação (v2.3)
+
+**Propósito:** Detecta automaticamente padrões, contradições e lacunas entre experimentos.
+
+**Fluxo:**
+1. Busca todos os experimentos e medições do projeto
+2. Identifica métricas repetidas em 2+ experimentos
+3. Mapeia cobertura de métricas por experimento
+4. IA analisa e gera insights tipo `pattern`, `contradiction`, `gap`
+5. Soft-delete de correlações anteriores antes de inserir novas
+
+**Resultado:** Insights salvos em `knowledge_items` com `relationship_type = 'auto_correlation'`
+
+### 6.6 `generate-report` (464 linhas)
 
 **Propósito:** Geração automática de relatórios por IA.
 
-**Tipos de relatório:**
-- **Progresso:** Foco em atividades recentes e próximos passos
-- **Final:** Síntese completa com todas as descobertas
-- **Executivo:** Resumo conciso (1-2 páginas) para gestão
+**Tipos:** Progresso, Final, Executivo.
 
-**Dados utilizados:** knowledge_items, experiments, measurements, tasks, project_files
+### 6.7 `index-content` (352 linhas)
 
-### 6.5 `index-content` (352 linhas)
+**Propósito:** Indexação de conteúdo em chunks para busca (1000 chars, 100 overlap).
 
-**Propósito:** Indexação de conteúdo em chunks para busca.
+### 6.8 `indexing-worker` (125 linhas)
 
-**Chunking:** 1000 caracteres com 100 de overlap, com prefixo contextual.
+**Propósito:** Worker assíncrono que processa a fila de indexação (~2 min).
 
-**Geração de embeddings:** text-embedding-3-small (1536 dimensões) via Lovable AI Gateway.
+### 6.9 `search-hybrid` (189 linhas)
 
-**Deduplicação:** SHA-256 hash por chunk para evitar duplicatas.
+**Propósito:** Busca híbrida exposta como API (65% semântico / 35% FTS).
 
-### 6.6 `indexing-worker` (125 linhas)
-
-**Propósito:** Worker assíncrono que processa a fila de indexação.
-
-**Execução:** Invocado periodicamente (a cada ~2 minutos).
-
-**Fluxo:**
-1. Busca jobs com status `queued` (ordenados por prioridade + criação)
-2. Marca como `running`
-3. Chama `index-content` via HTTP interno
-4. Atualiza status para `done` ou `failed`
-
-### 6.7 `search-hybrid` (189 linhas)
-
-**Propósito:** Busca híbrida exposta como API para o frontend.
-
-**Pesos padrão:** 65% semântico / 35% FTS (configuráveis).
-
-### 6.8 `reindex-project` (177 linhas)
+### 6.10 `reindex-project` (177 linhas)
 
 **Propósito:** Reindexação completa de um projeto.
 
-**Fluxo:**
-1. Limpa jobs de indexação obsoletos
-2. Remove chunks antigos
-3. Cria novos jobs para todos os conteúdos do projeto
+### 6.11 `save-analysis-insights` (370 linhas)
 
-### 6.9 `save-analysis-insights` (370 linhas)
+**Propósito:** Salva insights do assistente na Base de Conhecimento com validação inteligente.
 
-**Propósito:** Salva insights gerados pela análise do assistente na Base de Conhecimento.
-
-**Funcionalidades:**
-- Extrai insights + experiments via tool calling (Gemini)
-- Deduplicação: soft-delete de insights existentes do mesmo arquivo
-- Auto-validação de todos os insights salvos
-
-### 6.10 `create-user` (117 linhas)
+### 6.12 `create-user` (117 linhas)
 
 **Propósito:** Criação de usuários pelo administrador.
 
