@@ -179,6 +179,74 @@ export type Database = {
           },
         ]
       }
+      document_structure: {
+        Row: {
+          content_preview: string | null
+          created_at: string
+          end_chunk_id: string | null
+          file_id: string
+          id: string
+          project_id: string
+          section_index: number
+          section_title: string | null
+          section_type: string
+          start_chunk_id: string | null
+        }
+        Insert: {
+          content_preview?: string | null
+          created_at?: string
+          end_chunk_id?: string | null
+          file_id: string
+          id?: string
+          project_id: string
+          section_index?: number
+          section_title?: string | null
+          section_type?: string
+          start_chunk_id?: string | null
+        }
+        Update: {
+          content_preview?: string | null
+          created_at?: string
+          end_chunk_id?: string | null
+          file_id?: string
+          id?: string
+          project_id?: string
+          section_index?: number
+          section_title?: string | null
+          section_type?: string
+          start_chunk_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "document_structure_end_chunk_id_fkey"
+            columns: ["end_chunk_id"]
+            isOneToOne: false
+            referencedRelation: "search_chunks"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "document_structure_file_id_fkey"
+            columns: ["file_id"]
+            isOneToOne: false
+            referencedRelation: "project_files"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "document_structure_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "document_structure_start_chunk_id_fkey"
+            columns: ["start_chunk_id"]
+            isOneToOne: false
+            referencedRelation: "search_chunks"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       experiment_citations: {
         Row: {
           cell_range: string | null
@@ -283,8 +351,10 @@ export type Database = {
         Row: {
           created_at: string
           deleted_at: string | null
+          expected_outcome: string | null
           extracted_by: string
           extraction_job_id: string | null
+          hypothesis: string | null
           id: string
           is_qualitative: boolean
           objective: string | null
@@ -297,8 +367,10 @@ export type Database = {
         Insert: {
           created_at?: string
           deleted_at?: string | null
+          expected_outcome?: string | null
           extracted_by: string
           extraction_job_id?: string | null
+          hypothesis?: string | null
           id?: string
           is_qualitative?: boolean
           objective?: string | null
@@ -311,8 +383,10 @@ export type Database = {
         Update: {
           created_at?: string
           deleted_at?: string | null
+          expected_outcome?: string | null
           extracted_by?: string
           extraction_job_id?: string | null
+          hypothesis?: string | null
           id?: string
           is_qualitative?: boolean
           objective?: string | null
@@ -496,6 +570,9 @@ export type Database = {
           id: string
           neighbor_chunk_ids: string[] | null
           project_id: string
+          ref_condition_key: string | null
+          ref_experiment_id: string | null
+          ref_metric_key: string | null
           related_items: string[] | null
           relationship_type: string | null
           source_chunk_id: string | null
@@ -522,6 +599,9 @@ export type Database = {
           id?: string
           neighbor_chunk_ids?: string[] | null
           project_id: string
+          ref_condition_key?: string | null
+          ref_experiment_id?: string | null
+          ref_metric_key?: string | null
           related_items?: string[] | null
           relationship_type?: string | null
           source_chunk_id?: string | null
@@ -548,6 +628,9 @@ export type Database = {
           id?: string
           neighbor_chunk_ids?: string[] | null
           project_id?: string
+          ref_condition_key?: string | null
+          ref_experiment_id?: string | null
+          ref_metric_key?: string | null
           related_items?: string[] | null
           relationship_type?: string | null
           source_chunk_id?: string | null
@@ -569,6 +652,13 @@ export type Database = {
             columns: ["project_id"]
             isOneToOne: false
             referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "knowledge_items_ref_experiment_id_fkey"
+            columns: ["ref_experiment_id"]
+            isOneToOne: false
+            referencedRelation: "experiments"
             referencedColumns: ["id"]
           },
           {
