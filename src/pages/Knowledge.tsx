@@ -43,6 +43,7 @@ export default function Knowledge() {
   const [entryType, setEntryType] = useState<EntryTypeFilter>('all');
   const [validationFilter, setValidationFilter] = useState<ValidationFilter>('all');
   const [runningCorrelation, setRunningCorrelation] = useState(false);
+  const [runningTrends, setRunningTrends] = useState(false);
 
   const handleRunCorrelation = async () => {
     if (!selectedProject && (!projects || projects.length === 0)) {
@@ -81,6 +82,46 @@ export default function Knowledge() {
       toast.error(err instanceof Error ? err.message : 'Erro ao executar análise');
     } finally {
       setRunningCorrelation(false);
+    }
+  };
+
+  const handleRunTrends = async () => {
+    if (!selectedProject && (!projects || projects.length === 0)) {
+      toast.error('Nenhum projeto disponível');
+      return;
+    }
+    const projectId = selectedProject || projects?.[0]?.id;
+    if (!projectId) return;
+
+    setRunningTrends(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) throw new Error('Não autenticado');
+
+      const response = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/analyze-metric-trends`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${session.access_token}`,
+          },
+          body: JSON.stringify({ project_id: projectId }),
+        }
+      );
+
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Erro');
+
+      toast.success(
+        `Análise concluída: ${data.trends_detected} tendências detectadas, ${data.insights_created} insights criados`,
+        { duration: 5000 }
+      );
+      refetchInsights();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Erro ao analisar tendências');
+    } finally {
+      setRunningTrends(false);
     }
   };
 
@@ -284,10 +325,19 @@ export default function Knowledge() {
             variant="outline"
             size="sm"
             onClick={handleRunCorrelation}
-            disabled={runningCorrelation}
+            disabled={runningCorrelation || runningTrends}
           >
             {runningCorrelation ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Zap className="h-4 w-4 mr-2" />}
             {runningCorrelation ? 'Analisando...' : 'Correlacionar Métricas'}
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleRunTrends}
+            disabled={runningTrends || runningCorrelation}
+          >
+            {runningTrends ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Sparkles className="h-4 w-4 mr-2" />}
+            {runningTrends ? 'Analisando...' : 'Tendências Estatísticas'}
           </Button>
           <Button variant={viewMode === 'grid' ? 'secondary' : 'ghost'} size="icon" onClick={() => setViewMode('grid')}>
             <LayoutGrid className="h-4 w-4" />
