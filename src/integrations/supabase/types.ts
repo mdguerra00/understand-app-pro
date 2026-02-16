@@ -808,6 +808,53 @@ export type Database = {
         }
         Relationships: []
       }
+      project_board_columns: {
+        Row: {
+          color: string | null
+          created_at: string
+          id: string
+          is_blocked_column: boolean | null
+          is_done_column: boolean | null
+          name: string
+          position: number
+          project_id: string
+          status_key: string
+          wip_limit: number | null
+        }
+        Insert: {
+          color?: string | null
+          created_at?: string
+          id?: string
+          is_blocked_column?: boolean | null
+          is_done_column?: boolean | null
+          name: string
+          position?: number
+          project_id: string
+          status_key: string
+          wip_limit?: number | null
+        }
+        Update: {
+          color?: string | null
+          created_at?: string
+          id?: string
+          is_blocked_column?: boolean | null
+          is_done_column?: boolean | null
+          name?: string
+          position?: number
+          project_id?: string
+          status_key?: string
+          wip_limit?: number | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "project_board_columns_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       project_file_versions: {
         Row: {
           created_at: string
@@ -1299,6 +1346,47 @@ export type Database = {
           },
         ]
       }
+      task_activity_log: {
+        Row: {
+          action: string
+          created_at: string
+          field_changed: string | null
+          id: string
+          new_value: string | null
+          old_value: string | null
+          task_id: string
+          user_id: string
+        }
+        Insert: {
+          action: string
+          created_at?: string
+          field_changed?: string | null
+          id?: string
+          new_value?: string | null
+          old_value?: string | null
+          task_id: string
+          user_id: string
+        }
+        Update: {
+          action?: string
+          created_at?: string
+          field_changed?: string | null
+          id?: string
+          new_value?: string | null
+          old_value?: string | null
+          task_id?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "task_activity_log_task_id_fkey"
+            columns: ["task_id"]
+            isOneToOne: false
+            referencedRelation: "tasks"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       task_comments: {
         Row: {
           content: string
@@ -1337,50 +1425,102 @@ export type Database = {
       tasks: {
         Row: {
           assigned_to: string | null
+          blocked_reason: string | null
+          checklist: Json | null
+          column_id: string | null
+          column_order: number | null
+          completed_at: string | null
+          conclusion: string | null
           created_at: string
           created_by: string
+          decision: string | null
           deleted_at: string | null
           deleted_by: string | null
           description: string | null
           due_date: string | null
+          external_links: string[] | null
+          hypothesis: string | null
           id: string
+          partial_results: string | null
           priority: Database["public"]["Enums"]["task_priority"]
+          procedure: string | null
           project_id: string
           status: Database["public"]["Enums"]["task_status"]
+          success_criteria: string | null
+          tags: string[] | null
+          target_metrics: string[] | null
           title: string
           updated_at: string
+          variables_changed: string[] | null
         }
         Insert: {
           assigned_to?: string | null
+          blocked_reason?: string | null
+          checklist?: Json | null
+          column_id?: string | null
+          column_order?: number | null
+          completed_at?: string | null
+          conclusion?: string | null
           created_at?: string
           created_by: string
+          decision?: string | null
           deleted_at?: string | null
           deleted_by?: string | null
           description?: string | null
           due_date?: string | null
+          external_links?: string[] | null
+          hypothesis?: string | null
           id?: string
+          partial_results?: string | null
           priority?: Database["public"]["Enums"]["task_priority"]
+          procedure?: string | null
           project_id: string
           status?: Database["public"]["Enums"]["task_status"]
+          success_criteria?: string | null
+          tags?: string[] | null
+          target_metrics?: string[] | null
           title: string
           updated_at?: string
+          variables_changed?: string[] | null
         }
         Update: {
           assigned_to?: string | null
+          blocked_reason?: string | null
+          checklist?: Json | null
+          column_id?: string | null
+          column_order?: number | null
+          completed_at?: string | null
+          conclusion?: string | null
           created_at?: string
           created_by?: string
+          decision?: string | null
           deleted_at?: string | null
           deleted_by?: string | null
           description?: string | null
           due_date?: string | null
+          external_links?: string[] | null
+          hypothesis?: string | null
           id?: string
+          partial_results?: string | null
           priority?: Database["public"]["Enums"]["task_priority"]
+          procedure?: string | null
           project_id?: string
           status?: Database["public"]["Enums"]["task_status"]
+          success_criteria?: string | null
+          tags?: string[] | null
+          target_metrics?: string[] | null
           title?: string
           updated_at?: string
+          variables_changed?: string[] | null
         }
         Relationships: [
+          {
+            foreignKeyName: "tasks_column_id_fkey"
+            columns: ["column_id"]
+            isOneToOne: false
+            referencedRelation: "project_board_columns"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "tasks_project_id_fkey"
             columns: ["project_id"]
@@ -1481,6 +1621,10 @@ export type Database = {
       }
     }
     Functions: {
+      create_default_board_columns: {
+        Args: { p_project_id: string }
+        Returns: undefined
+      }
       get_project_role: {
         Args: { _project_id: string; _user_id: string }
         Returns: Database["public"]["Enums"]["project_role"]
@@ -1586,7 +1730,13 @@ export type Database = {
         | "approved"
         | "archived"
       task_priority: "low" | "medium" | "high" | "urgent"
-      task_status: "todo" | "in_progress" | "review" | "done"
+      task_status:
+        | "todo"
+        | "in_progress"
+        | "review"
+        | "done"
+        | "backlog"
+        | "blocked"
     }
     CompositeTypes: {
       [_ in never]: never
@@ -1748,7 +1898,14 @@ export const Constants = {
         "archived",
       ],
       task_priority: ["low", "medium", "high", "urgent"],
-      task_status: ["todo", "in_progress", "review", "done"],
+      task_status: [
+        "todo",
+        "in_progress",
+        "review",
+        "done",
+        "backlog",
+        "blocked",
+      ],
     },
   },
 } as const

@@ -48,15 +48,19 @@ type Task = Tables<'tasks'> & {
 };
 
 const statusColors: Record<string, string> = {
+  backlog: 'bg-muted text-muted-foreground',
   todo: 'bg-muted text-muted-foreground',
   in_progress: 'bg-primary/10 text-primary',
+  blocked: 'bg-destructive/10 text-destructive',
   review: 'bg-warning/10 text-warning',
   done: 'bg-success/10 text-success',
 };
 
 const statusLabels: Record<string, string> = {
+  backlog: 'Backlog',
   todo: 'A Fazer',
   in_progress: 'Em Andamento',
+  blocked: 'Bloqueado',
   review: 'Revisão',
   done: 'Concluído',
 };
@@ -192,8 +196,10 @@ export default function Tasks() {
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="all">Todos os status</SelectItem>
+            <SelectItem value="backlog">Backlog</SelectItem>
             <SelectItem value="todo">A Fazer</SelectItem>
             <SelectItem value="in_progress">Em Andamento</SelectItem>
+            <SelectItem value="blocked">Bloqueado</SelectItem>
             <SelectItem value="review">Revisão</SelectItem>
             <SelectItem value="done">Concluído</SelectItem>
           </SelectContent>
