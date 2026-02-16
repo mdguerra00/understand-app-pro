@@ -39,7 +39,7 @@ const taskSchema = z.object({
   title: z.string().min(1, 'Título é obrigatório').max(100, 'Máximo 100 caracteres'),
   description: z.string().max(500, 'Máximo 500 caracteres').optional(),
   priority: z.enum(['low', 'medium', 'high', 'urgent']),
-  status: z.enum(['todo', 'in_progress', 'review', 'done']),
+  status: z.enum(['backlog', 'todo', 'in_progress', 'blocked', 'review', 'done']),
   assigned_to: z.string().optional(),
   due_date: z.string().optional(),
 });
@@ -209,8 +209,10 @@ export function TaskEditModal({ task, projectId, open, onOpenChange, onSuccess }
                         </SelectTrigger>
                       </FormControl>
                       <SelectContent>
+                        <SelectItem value="backlog">Backlog</SelectItem>
                         <SelectItem value="todo">A Fazer</SelectItem>
                         <SelectItem value="in_progress">Em Andamento</SelectItem>
+                        <SelectItem value="blocked">Bloqueado</SelectItem>
                         <SelectItem value="review">Revisão</SelectItem>
                         <SelectItem value="done">Concluído</SelectItem>
                       </SelectContent>

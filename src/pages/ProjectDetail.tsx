@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { useParams, Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -16,31 +16,15 @@ import {
   Settings,
   Plus,
   Bot,
-  MoreHorizontal,
-  Pencil,
-  Trash2,
+  LayoutGrid,
+  List,
 } from 'lucide-react';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '@/components/ui/alert-dialog';
 import { supabase } from '@/integrations/supabase/client';
 import { Tables } from '@/integrations/supabase/types';
 import { TaskFormModal } from '@/components/tasks/TaskFormModal';
-import { TaskDetailModal } from '@/components/tasks/TaskDetailModal';
-import { TaskEditModal } from '@/components/tasks/TaskEditModal';
+import { KanbanBoard, BoardColumn, KanbanTask } from '@/components/tasks/KanbanBoard';
+import { TaskDetailDrawer } from '@/components/tasks/TaskDetailDrawer';
+import { BlockedReasonModal } from '@/components/tasks/BlockedReasonModal';
 import { useToast } from '@/hooks/use-toast';
 import { InviteMemberModal } from '@/components/projects/InviteMemberModal';
 import { ProjectFilesList } from '@/components/files/ProjectFilesList';
@@ -52,7 +36,6 @@ import { ProjectSettingsModal } from '@/components/projects/ProjectSettingsModal
 import { useAuth } from '@/hooks/useAuth';
 
 type Project = Tables<'projects'>;
-type Task = Tables<'tasks'>;
 
 interface MemberWithProfile {
   id: string;
@@ -86,43 +69,37 @@ const roleLabels: Record<string, string> = {
   viewer: 'Visualizador',
 };
 
-const taskStatusLabels: Record<string, string> = {
-  todo: 'A Fazer',
-  in_progress: 'Em Andamento',
-  review: 'Revisão',
-  done: 'Concluído',
-};
-
 export default function ProjectDetail() {
   const { id } = useParams<{ id: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
   const { user } = useAuth();
+  const { toast } = useToast();
   const [project, setProject] = useState<Project | null>(null);
   const [members, setMembers] = useState<MemberWithProfile[]>([]);
-  const [tasks, setTasks] = useState<Task[]>([]);
+  const [tasks, setTasks] = useState<KanbanTask[]>([]);
+  const [columns, setColumns] = useState<BoardColumn[]>([]);
   const [loading, setLoading] = useState(true);
   const [userRole, setUserRole] = useState<string | null>(null);
-  
+  const [taskView, setTaskView] = useState<'board' | 'list'>('board');
+
   const [isTaskModalOpen, setIsTaskModalOpen] = useState(false);
   const [isInviteModalOpen, setIsInviteModalOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [selectedTask, setSelectedTask] = useState<Task | null>(null);
+  const [selectedTask, setSelectedTask] = useState<KanbanTask | null>(null);
   const [isTaskDetailOpen, setIsTaskDetailOpen] = useState(false);
-  const [editTask, setEditTask] = useState<Task | null>(null);
-  const [isEditOpen, setIsEditOpen] = useState(false);
-  const [deleteTask, setDeleteTask] = useState<Task | null>(null);
-  const [isDeleteOpen, setIsDeleteOpen] = useState(false);
-  const [isDeleting, setIsDeleting] = useState(false);
-  const { toast } = useToast();
-  
-  // Tab control for URL navigation
+
+  // Blocked reason modal
+  const [blockedModalOpen, setBlockedModalOpen] = useState(false);
+  const [pendingBlockedTaskId, setPendingBlockedTaskId] = useState<string | null>(null);
+  const [pendingBlockedColumnId, setPendingBlockedColumnId] = useState<string | null>(null);
+
+  // Tab control
   const [activeTab, setActiveTab] = useState('tasks');
   const [initialFileId, setInitialFileId] = useState<string | null>(null);
 
   const isOwner = userRole === 'owner';
 
-  // Handle URL params for task and file navigation (from global search)
   useEffect(() => {
     const tab = searchParams.get('tab');
     const taskId = searchParams.get('task');
@@ -130,9 +107,7 @@ export default function ProjectDetail() {
 
     if (tab === 'files') {
       setActiveTab('files');
-      if (fileId) {
-        setInitialFileId(fileId);
-      }
+      if (fileId) setInitialFileId(fileId);
     }
 
     if (taskId && tasks.length > 0) {
@@ -143,7 +118,6 @@ export default function ProjectDetail() {
       }
     }
 
-    // Clear params after processing
     if (taskId || fileId || tab) {
       setSearchParams({}, { replace: true });
     }
@@ -151,9 +125,7 @@ export default function ProjectDetail() {
 
   const fetchProject = async () => {
     if (!id) return;
-
     try {
-      // Fetch project
       const { data: projectData, error: projectError } = await supabase
         .from('projects')
         .select('*')
@@ -163,21 +135,21 @@ export default function ProjectDetail() {
       if (projectError) throw projectError;
       setProject(projectData);
 
-      // Fetch members with their profiles
+      // Fetch members
       const { data: membersData } = await supabase
         .from('project_members')
         .select('id, user_id, role_in_project')
         .eq('project_id', id);
 
       if (membersData && membersData.length > 0) {
-        const userIds = membersData.map((m) => m.user_id);
+        const userIds = membersData.map(m => m.user_id);
         const { data: profiles } = await supabase
           .from('profiles')
           .select('id, full_name, email, avatar_url')
           .in('id', userIds);
 
-        const membersWithProfiles: MemberWithProfile[] = membersData.map((member) => {
-          const profile = profiles?.find((p) => p.id === member.user_id);
+        const membersWithProfiles: MemberWithProfile[] = membersData.map(member => {
+          const profile = profiles?.find(p => p.id === member.user_id);
           return {
             id: member.id,
             user_id: member.user_id,
@@ -189,8 +161,6 @@ export default function ProjectDetail() {
         });
 
         setMembers(membersWithProfiles);
-
-        // Check current user's role
         const currentUserMembership = membersData.find(m => m.user_id === user?.id);
         setUserRole(currentUserMembership?.role_in_project || null);
       } else {
@@ -198,15 +168,9 @@ export default function ProjectDetail() {
         setUserRole(null);
       }
 
-      // Fetch tasks
-      const { data: tasksData } = await supabase
-        .from('tasks')
-        .select('*')
-        .eq('project_id', id)
-        .is('deleted_at', null)
-        .order('created_at', { ascending: false });
-
-      setTasks(tasksData || []);
+      // Fetch board columns
+      await fetchColumns();
+      await fetchTasks();
     } catch (error) {
       console.error('Error fetching project:', error);
       navigate('/projects');
@@ -215,22 +179,64 @@ export default function ProjectDetail() {
     }
   };
 
-  useEffect(() => {
-    if (user) {
-      fetchProject();
-    }
-  }, [id, user]);
+  const fetchColumns = async () => {
+    if (!id) return;
+    const { data } = await supabase
+      .from('project_board_columns')
+      .select('*')
+      .eq('project_id', id)
+      .order('position');
 
-  const refreshTasks = async () => {
+    if (data && data.length > 0) {
+      setColumns(data as BoardColumn[]);
+    } else {
+      // Create default columns
+      const { error } = await supabase.rpc('create_default_board_columns', { p_project_id: id });
+      if (!error) {
+        const { data: newCols } = await supabase
+          .from('project_board_columns')
+          .select('*')
+          .eq('project_id', id)
+          .order('position');
+        if (newCols) setColumns(newCols as BoardColumn[]);
+      }
+    }
+  };
+
+  const fetchTasks = async () => {
     if (!id) return;
     const { data: tasksData } = await supabase
       .from('tasks')
       .select('*')
       .eq('project_id', id)
       .is('deleted_at', null)
-      .order('created_at', { ascending: false });
-    setTasks(tasksData || []);
+      .order('column_order', { ascending: true });
+
+    if (tasksData) {
+      setTasks(tasksData.map(t => ({
+        id: t.id,
+        title: t.title,
+        description: t.description,
+        status: t.status,
+        priority: t.priority,
+        assigned_to: t.assigned_to,
+        due_date: t.due_date,
+        tags: (t as any).tags || [],
+        column_id: (t as any).column_id,
+        column_order: (t as any).column_order || 0,
+        blocked_reason: (t as any).blocked_reason,
+        created_at: t.created_at,
+      })));
+    }
   };
+
+  useEffect(() => {
+    if (user) fetchProject();
+  }, [id, user]);
+
+  const refreshTasks = useCallback(() => {
+    fetchTasks();
+  }, [id]);
 
   const refreshMembers = async () => {
     if (!id) return;
@@ -240,14 +246,14 @@ export default function ProjectDetail() {
       .eq('project_id', id);
 
     if (membersData && membersData.length > 0) {
-      const userIds = membersData.map((m) => m.user_id);
+      const userIds = membersData.map(m => m.user_id);
       const { data: profiles } = await supabase
         .from('profiles')
         .select('id, full_name, email, avatar_url')
         .in('id', userIds);
 
-      const membersWithProfiles: MemberWithProfile[] = membersData.map((member) => {
-        const profile = profiles?.find((p) => p.id === member.user_id);
+      setMembers(membersData.map(member => {
+        const profile = profiles?.find(p => p.id === member.user_id);
         return {
           id: member.id,
           user_id: member.user_id,
@@ -256,10 +262,53 @@ export default function ProjectDetail() {
           email: profile?.email || '',
           avatar_url: profile?.avatar_url || null,
         };
-      });
-
-      setMembers(membersWithProfiles);
+      }));
     }
+  };
+
+  const handleTaskClick = (task: KanbanTask) => {
+    setSelectedTask(task);
+    setIsTaskDetailOpen(true);
+  };
+
+  const handleBlockedReasonRequired = (taskId: string, columnId: string) => {
+    setPendingBlockedTaskId(taskId);
+    setPendingBlockedColumnId(columnId);
+    setBlockedModalOpen(true);
+  };
+
+  const handleBlockedConfirm = async (reason: string) => {
+    if (!pendingBlockedTaskId || !pendingBlockedColumnId || !user) return;
+    const col = columns.find(c => c.id === pendingBlockedColumnId);
+    if (!col) return;
+
+    const { error } = await supabase
+      .from('tasks')
+      .update({
+        column_id: pendingBlockedColumnId,
+        status: col.status_key as any,
+        blocked_reason: reason,
+      })
+      .eq('id', pendingBlockedTaskId);
+
+    if (!error) {
+      await supabase.from('task_activity_log').insert({
+        task_id: pendingBlockedTaskId,
+        user_id: user.id,
+        action: 'blocked',
+        field_changed: 'status',
+        old_value: 'anterior',
+        new_value: `Bloqueado: ${reason}`,
+      });
+      refreshTasks();
+    }
+    setPendingBlockedTaskId(null);
+    setPendingBlockedColumnId(null);
+  };
+
+  const getInitials = (name?: string | null, email?: string) => {
+    if (name) return name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2);
+    return email?.charAt(0).toUpperCase() ?? '?';
   };
 
   if (loading) {
@@ -288,16 +337,25 @@ export default function ProjectDetail() {
     );
   }
 
-  const getInitials = (name?: string | null, email?: string) => {
-    if (name) {
-      return name
-        .split(' ')
-        .map((n) => n[0])
-        .join('')
-        .toUpperCase()
-        .slice(0, 2);
-    }
-    return email?.charAt(0).toUpperCase() ?? '?';
+  // Full task data for drawer
+  const getFullTaskData = (task: KanbanTask) => {
+    // We need to re-fetch from state or pass full data
+    return {
+      ...task,
+      completed_at: null,
+      hypothesis: null,
+      variables_changed: [],
+      target_metrics: [],
+      success_criteria: null,
+      procedure: null,
+      checklist: [],
+      conclusion: null,
+      decision: null,
+      partial_results: null,
+      external_links: [],
+      updated_at: task.created_at,
+      project_id: id!,
+    };
   };
 
   return (
@@ -318,9 +376,7 @@ export default function ProjectDetail() {
               </Badge>
             </div>
             {project.category && (
-              <Badge variant="outline" className="mt-2">
-                {project.category}
-              </Badge>
+              <Badge variant="outline" className="mt-2">{project.category}</Badge>
             )}
           </div>
         </div>
@@ -385,11 +441,9 @@ export default function ProjectDetail() {
           <CardContent>
             <div className="space-y-3">
               {members.length === 0 ? (
-                <p className="text-sm text-muted-foreground text-center py-2">
-                  Nenhum membro ainda
-                </p>
+                <p className="text-sm text-muted-foreground text-center py-2">Nenhum membro ainda</p>
               ) : (
-                members.map((member) => (
+                members.map(member => (
                   <div key={member.id} className="flex items-center gap-3">
                     <Avatar className="h-8 w-8">
                       <AvatarImage src={member.avatar_url || undefined} />
@@ -435,89 +489,90 @@ export default function ProjectDetail() {
         </TabsList>
 
         <TabsContent value="tasks" className="space-y-4">
+          {/* Task toolbar */}
           <div className="flex items-center justify-between">
-            <p className="text-sm text-muted-foreground">
-              {tasks.length} tarefa{tasks.length !== 1 ? 's' : ''}
-            </p>
+            <div className="flex items-center gap-2">
+              <p className="text-sm text-muted-foreground">
+                {tasks.length} tarefa{tasks.length !== 1 ? 's' : ''}
+              </p>
+              <div className="flex items-center border rounded-md">
+                <Button
+                  variant={taskView === 'board' ? 'secondary' : 'ghost'}
+                  size="sm"
+                  className="h-7 px-2 rounded-r-none"
+                  onClick={() => setTaskView('board')}
+                >
+                  <LayoutGrid className="h-3.5 w-3.5" />
+                </Button>
+                <Button
+                  variant={taskView === 'list' ? 'secondary' : 'ghost'}
+                  size="sm"
+                  className="h-7 px-2 rounded-l-none"
+                  onClick={() => setTaskView('list')}
+                >
+                  <List className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+            </div>
             <Button size="sm" onClick={() => setIsTaskModalOpen(true)}>
               <Plus className="mr-2 h-4 w-4" />
               Nova Tarefa
             </Button>
           </div>
 
-          {tasks.length === 0 ? (
-            <Card className="border-dashed">
-              <CardHeader className="text-center">
-                <CardTitle className="text-base">Nenhuma tarefa</CardTitle>
-                <CardDescription>
-                  Crie a primeira tarefa para este projeto
-                </CardDescription>
-              </CardHeader>
-            </Card>
+          {taskView === 'board' ? (
+            <KanbanBoard
+              columns={columns}
+              tasks={tasks}
+              members={members}
+              onTaskClick={handleTaskClick}
+              onTasksChange={refreshTasks}
+              onBlockedReasonRequired={handleBlockedReasonRequired}
+            />
           ) : (
-            <div className="space-y-2">
-              {tasks.map((task) => (
-                <Card 
-                  key={task.id} 
-                  className="hover:border-primary/50 transition-colors cursor-pointer"
-                  onClick={() => {
-                    setSelectedTask(task);
-                    setIsTaskDetailOpen(true);
-                  }}
-                >
-                  <CardContent className="flex items-center justify-between py-4">
-                    <div className="flex items-center gap-3">
-                      <CheckSquare className="h-4 w-4 text-muted-foreground" />
-                      <div>
-                        <p className="font-medium">{task.title}</p>
-                        {task.description && (
-                          <p className="text-sm text-muted-foreground line-clamp-1">
-                            {task.description}
-                          </p>
-                        )}
+            /* List view (simplified) */
+            tasks.length === 0 ? (
+              <Card className="border-dashed">
+                <CardHeader className="text-center">
+                  <CardTitle className="text-base">Nenhuma tarefa</CardTitle>
+                  <CardDescription>Crie a primeira tarefa para este projeto</CardDescription>
+                </CardHeader>
+              </Card>
+            ) : (
+              <div className="space-y-2">
+                {tasks.map(task => (
+                  <Card
+                    key={task.id}
+                    className="hover:border-primary/50 transition-colors cursor-pointer"
+                    onClick={() => handleTaskClick(task)}
+                  >
+                    <CardContent className="flex items-center justify-between py-3">
+                      <div className="flex items-center gap-3">
+                        <CheckSquare className="h-4 w-4 text-muted-foreground" />
+                        <div>
+                          <p className="font-medium text-sm">{task.title}</p>
+                          {task.due_date && (
+                            <span className="text-xs text-muted-foreground flex items-center gap-1 mt-0.5">
+                              <Calendar className="h-3 w-3" />
+                              {new Date(task.due_date).toLocaleDateString('pt-BR')}
+                            </span>
+                          )}
+                        </div>
                       </div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <Badge variant="outline">{taskStatusLabels[task.status]}</Badge>
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
-                          <Button variant="ghost" size="icon" className="h-8 w-8">
-                            <MoreHorizontal className="h-4 w-4" />
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                          <DropdownMenuItem onClick={(e) => {
-                            e.stopPropagation();
-                            setEditTask(task);
-                            setIsEditOpen(true);
-                          }}>
-                            <Pencil className="mr-2 h-4 w-4" />
-                            Editar
-                          </DropdownMenuItem>
-                          <DropdownMenuItem
-                            className="text-destructive focus:text-destructive"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setDeleteTask(task);
-                              setIsDeleteOpen(true);
-                            }}
-                          >
-                            <Trash2 className="mr-2 h-4 w-4" />
-                            Excluir
-                          </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                    </div>
-                  </CardContent>
-                </Card>
-              ))}
-            </div>
+                      <Badge variant="outline" className="text-xs">
+                        {statusLabels[task.status] || task.status}
+                      </Badge>
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            )
           )}
         </TabsContent>
 
         <TabsContent value="files">
-          <ProjectFilesList 
-            projectId={id!} 
+          <ProjectFilesList
+            projectId={id!}
             initialFileId={initialFileId}
             onFileOpened={() => setInitialFileId(null)}
           />
@@ -539,66 +594,29 @@ export default function ProjectDetail() {
         onOpenChange={setIsTaskModalOpen}
         onSuccess={refreshTasks}
       />
-      <TaskDetailModal
-        task={selectedTask}
+
+      <TaskDetailDrawer
+        task={selectedTask ? getFullTaskData(selectedTask) : null}
         projectId={id!}
         open={isTaskDetailOpen}
         onOpenChange={setIsTaskDetailOpen}
-        onUpdate={refreshTasks}
+        onUpdate={() => { refreshTasks(); }}
+        members={members}
       />
+
       <InviteMemberModal
         projectId={id!}
         open={isInviteModalOpen}
         onOpenChange={setIsInviteModalOpen}
         onSuccess={refreshMembers}
       />
-      {editTask && (
-        <TaskEditModal
-          task={editTask}
-          projectId={id!}
-          open={isEditOpen}
-          onOpenChange={setIsEditOpen}
-          onSuccess={refreshTasks}
-        />
-      )}
-      <AlertDialog open={isDeleteOpen} onOpenChange={setIsDeleteOpen}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Excluir tarefa</AlertDialogTitle>
-            <AlertDialogDescription>
-              Tem certeza que deseja excluir a tarefa "{deleteTask?.title}"? Esta ação pode ser revertida por um administrador.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={isDeleting}>Cancelar</AlertDialogCancel>
-            <AlertDialogAction
-              disabled={isDeleting}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-              onClick={async () => {
-                if (!deleteTask || !user) return;
-                setIsDeleting(true);
-                try {
-                  const { error } = await supabase
-                    .from('tasks')
-                    .update({ deleted_at: new Date().toISOString(), deleted_by: user.id })
-                    .eq('id', deleteTask.id);
-                  if (error) throw error;
-                  toast({ title: 'Tarefa excluída', description: 'A tarefa foi removida com sucesso.' });
-                  refreshTasks();
-                } catch (error: any) {
-                  toast({ variant: 'destructive', title: 'Erro ao excluir', description: error.message });
-                } finally {
-                  setIsDeleting(false);
-                  setIsDeleteOpen(false);
-                  setDeleteTask(null);
-                }
-              }}
-            >
-              {isDeleting ? 'Excluindo...' : 'Excluir'}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+
+      <BlockedReasonModal
+        open={blockedModalOpen}
+        onOpenChange={setBlockedModalOpen}
+        onConfirm={handleBlockedConfirm}
+      />
+
       {project && (
         <ProjectSettingsModal
           projectId={id!}
