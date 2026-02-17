@@ -711,56 +711,88 @@ serve(async (req) => {
       }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
-    // For project mode: search primarily in the project, but also include global for secondary context
-    // For global mode: search all projects equally
-    let searchProjectIds: string[];
+    const validPrimary = primaryProjectIds.filter((id: string) => allowedProjectIds.includes(id));
     let projectName: string | undefined;
 
-    if (contextMode === "project" && primaryProjectIds.length > 0) {
-      // Validate that user has access to primary projects
-      const validPrimary = primaryProjectIds.filter((id: string) => allowedProjectIds.includes(id));
-      // Search ALL projects but will rerank with project boost
-      searchProjectIds = allowedProjectIds;
-
-      // Get project name for context instruction
-      if (validPrimary.length > 0) {
-        const { data: projData } = await supabase.from('projects').select('name').eq('id', validPrimary[0]).single();
-        projectName = projData?.name;
-      }
-    } else {
-      searchProjectIds = allowedProjectIds;
+    if (contextMode === "project" && validPrimary.length > 0) {
+      const { data: projData } = await supabase.from('projects').select('name').eq('id', validPrimary[0]).single();
+      projectName = projData?.name;
     }
 
     // ==========================================
     // PARALLEL DATA FETCHING
     // ==========================================
-    // For project mode, fetch structured data primarily from the project
-    const structuredDataProjectIds = contextMode === "project" && primaryProjectIds.length > 0
-      ? primaryProjectIds.filter((id: string) => allowedProjectIds.includes(id))
+    // For project mode: structured data comes ONLY from the project
+    const structuredDataProjectIds = contextMode === "project" && validPrimary.length > 0
+      ? validPrimary
       : allowedProjectIds;
 
-    const [chunks, expResult, metricSummaries, knowledgePivots] = await Promise.all([
-      searchChunks(supabase, query, searchProjectIds, allowedProjectIds, lovableApiKey, chunk_ids),
-      fetchExperimentContext(supabase, structuredDataProjectIds, query),
-      fetchMetricSummaries(supabase, structuredDataProjectIds, query),
-      fetchKnowledgePivots(supabase, structuredDataProjectIds, query),
-    ]);
+    if (contextMode === "project" && validPrimary.length > 0) {
+      // ==========================================
+      // TWO-PHASE SEARCH (Project Mode)
+      // Phase 1: Search ONLY the project (primary source)
+      // Phase 2: Search globally for supplementary context
+      // ==========================================
+      const [projectChunks, globalChunks, expResult, metricSummaries, knowledgePivots] = await Promise.all([
+        searchChunks(supabase, query, validPrimary, allowedProjectIds, lovableApiKey, chunk_ids),
+        searchChunks(supabase, query, allowedProjectIds, allowedProjectIds, lovableApiKey),
+        fetchExperimentContext(supabase, structuredDataProjectIds, query),
+        fetchMetricSummaries(supabase, structuredDataProjectIds, query),
+        fetchKnowledgePivots(supabase, structuredDataProjectIds, query),
+      ]);
 
-    // ==========================================
-    // PROJECT-WEIGHTED RERANKING
-    // ==========================================
-    const validPrimary = primaryProjectIds.filter((id: string) => allowedProjectIds.includes(id));
-    const rerankedChunks = applyProjectWeighting(chunks, contextMode, validPrimary, 3.0);
-    // Take top 15 after reranking
-    const finalChunks = rerankedChunks.slice(0, 15);
+      console.log(`Project mode: ${projectChunks.length} project chunks, ${globalChunks.length} global chunks`);
+
+      // Merge: guarantee at least 80% of slots for project chunks
+      const MAX_CHUNKS = 15;
+      const MIN_PROJECT_RATIO = 0.8;
+      const minProjectSlots = Math.ceil(MAX_CHUNKS * MIN_PROJECT_RATIO); // 12
+
+      // Deduplicate global chunks (remove ones already in project results)
+      const projectChunkIds = new Set(projectChunks.map(c => c.id));
+      const uniqueGlobalChunks = globalChunks.filter(c => !projectChunkIds.has(c.id));
+      // Also filter out chunks from the same project (already covered)
+      const externalChunks = uniqueGlobalChunks.filter(c => !validPrimary.includes(c.project_id || ''));
+
+      // Take project chunks first (up to all slots), then fill remaining with global
+      const projectSlice = projectChunks.slice(0, MAX_CHUNKS);
+      const remainingSlots = Math.max(0, MAX_CHUNKS - projectSlice.length);
+      const globalSlice = externalChunks.slice(0, Math.min(remainingSlots, MAX_CHUNKS - minProjectSlots));
+
+      // Mark global chunks as secondary
+      const markedGlobal = globalSlice.map(c => ({
+        ...c,
+        source_title: `[EXTERNO] ${c.source_title}`,
+      }));
+
+      var finalChunks = [...projectSlice, ...markedGlobal];
+
+      console.log(`Final: ${projectSlice.length} project + ${markedGlobal.length} external = ${finalChunks.length} total`);
+
+      var { contextText: experimentContextText, evidenceTable: preBuiltEvidenceTable, experimentSources, criticalFileIds } = expResult;
+      var _metricSummaries = metricSummaries;
+      var _knowledgePivots = knowledgePivots;
+
+    } else {
+      // ==========================================
+      // GLOBAL MODE: Equal weight to all projects
+      // ==========================================
+      const [chunks, expResult, metricSummaries, knowledgePivots] = await Promise.all([
+        searchChunks(supabase, query, allowedProjectIds, allowedProjectIds, lovableApiKey, chunk_ids),
+        fetchExperimentContext(supabase, structuredDataProjectIds, query),
+        fetchMetricSummaries(supabase, structuredDataProjectIds, query),
+        fetchKnowledgePivots(supabase, structuredDataProjectIds, query),
+      ]);
+
+      var finalChunks = chunks.slice(0, 15);
+      var { contextText: experimentContextText, evidenceTable: preBuiltEvidenceTable, experimentSources, criticalFileIds } = expResult;
+      var _metricSummaries = metricSummaries;
+      var _knowledgePivots = knowledgePivots;
+    }
 
     const { contextText: experimentContextText, evidenceTable: preBuiltEvidenceTable, experimentSources, criticalFileIds } = expResult;
 
-    if (finalChunks.length === 0 && !experimentContextText && !metricSummaries && !knowledgePivots) {
-      // In project mode, try global fallback
-      if (contextMode === "project") {
-        // Already searched all projects, so no data at all
-      }
+    if (finalChunks.length === 0 && !experimentContextText && !_metricSummaries && !_knowledgePivots) {
       return new Response(JSON.stringify({
         response: "Não encontrei informações relevantes nos documentos disponíveis para responder sua pergunta. Tente reformular a busca ou verifique se o conteúdo já foi indexado.",
         sources: [], chunks_used: 0, context_mode: contextMode,
@@ -771,7 +803,7 @@ serve(async (req) => {
     // STEP A: EVIDENCE PLAN
     // ==========================================
     const evidencePlanResult = await generateEvidencePlan(
-      query, finalChunks, experimentContextText, metricSummaries, knowledgePivots, lovableApiKey,
+      query, finalChunks, experimentContextText, _metricSummaries, _knowledgePivots, lovableApiKey,
       contextMode, projectName
     );
 
@@ -794,7 +826,7 @@ serve(async (req) => {
     // STEP B: SYNTHESIS
     // ==========================================
     const { response } = await generateSynthesis(
-      query, finalChunks, experimentContextText, metricSummaries, knowledgePivots,
+      query, finalChunks, experimentContextText, _metricSummaries, _knowledgePivots,
       preBuiltEvidenceTable, evidencePlanResult.plan, deepReadContent, docStructure,
       lovableApiKey, contextMode, projectName, conversation_history
     );
@@ -839,8 +871,8 @@ serve(async (req) => {
       response: finalResponse, sources: [...chunkSources, ...experimentSources],
       chunks_used: finalChunks.length,
       has_experiment_data: !!experimentContextText,
-      has_metric_summaries: !!metricSummaries,
-      has_knowledge_pivots: !!knowledgePivots,
+      has_metric_summaries: !!_metricSummaries,
+      has_knowledge_pivots: !!_knowledgePivots,
       deep_read_performed: !!deepReadContent,
       verification_passed: verification.verified,
       context_mode: contextMode,
