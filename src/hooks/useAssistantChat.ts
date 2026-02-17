@@ -181,6 +181,7 @@ export function useAssistantChat(options?: UseAssistantChatOptions) {
         content: m.content,
       }));
 
+      const contextMode = options?.projectId ? 'project' : 'global';
       const response = await fetch(
         `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/rag-answer`,
         {
@@ -192,6 +193,7 @@ export function useAssistantChat(options?: UseAssistantChatOptions) {
           body: JSON.stringify({
             query: content.trim(),
             project_ids: options?.projectId ? [options.projectId] : undefined,
+            context_mode: contextMode,
             conversation_history: historyMessages,
           }),
           signal: abortControllerRef.current.signal,

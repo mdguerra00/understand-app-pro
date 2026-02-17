@@ -133,11 +133,17 @@ export default function Assistant() {
               <Bot className="h-5 w-5 text-primary-foreground" />
             </div>
             <div>
-              <h1 className="text-lg font-semibold">
-                {currentConversation?.title || 'Assistente IA'}
-              </h1>
+              <div className="flex items-center gap-2">
+                <h1 className="text-lg font-semibold">
+                  {currentConversation?.title || 'Assistente IA'}
+                </h1>
+                <Badge variant="outline" className="bg-blue-500/10 text-blue-600 border-blue-500/30 text-xs gap-1">
+                  <span className="h-1.5 w-1.5 rounded-full bg-blue-500 animate-pulse" />
+                  Global
+                </Badge>
+              </div>
               <p className="text-xs text-muted-foreground">
-                Pergunte sobre seus documentos e projetos
+                Inteligência corporativa — correlaciona todos os projetos
               </p>
             </div>
           </div>

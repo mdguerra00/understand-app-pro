@@ -6,14 +6,19 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
+type ContextMode = "project" | "global";
+
 interface ChunkSource {
   id: string;
   source_type: string;
   source_id: string;
   source_title: string;
   project_name: string;
+  project_id?: string;
   chunk_text: string;
   chunk_index: number;
+  score_original?: number;
+  score_boosted?: number;
 }
 
 // ==========================================
@@ -34,6 +39,28 @@ const DOMAIN_KNOWLEDGE_BASELINE = `
 `;
 
 // ==========================================
+// CONTEXT MODE SYSTEM INSTRUCTIONS
+// ==========================================
+function getContextModeInstruction(mode: ContextMode, projectName?: string): string {
+  if (mode === "project" && projectName) {
+    return `\n🟢 MODO CONTEXTO DO PROJETO: "${projectName}"
+INSTRUÇÃO PRIORITÁRIA: Foque PRIMARIAMENTE no conhecimento pertencente ao projeto "${projectName}".
+- Dados deste projeto são sua FONTE PRIMÁRIA e mais confiável
+- Use conhecimento externo (outros projetos) SOMENTE se necessário para comparação ou quando explicitamente solicitado
+- Ao citar fontes externas, SEMPRE destaque que são de outro projeto
+- Se houver conflito entre dados do projeto e dados externos, PRIORIZE os dados do projeto
+- Suas respostas devem ser PROFUNDAS e ESPECÍFICAS para este projeto\n`;
+  }
+  return `\n🔵 MODO INTELIGÊNCIA GLOBAL
+INSTRUÇÃO: Você tem acesso igualitário a TODOS os projetos.
+- Correlacione informações entre diferentes projetos
+- Detecte padrões recorrentes entre materiais e experimentos
+- Identifique riscos e oportunidades estratégicas
+- Compare resultados entre projetos diferentes
+- Produza insights de nível macro e estratégico\n`;
+}
+
+// ==========================================
 // EMBEDDING
 // ==========================================
 async function generateQueryEmbedding(text: string, apiKey: string): Promise<string | null> {
@@ -47,6 +74,32 @@ async function generateQueryEmbedding(text: string, apiKey: string): Promise<str
     const data = await response.json();
     return data.data?.[0]?.embedding ? JSON.stringify(data.data[0].embedding) : null;
   } catch { return null; }
+}
+
+// ==========================================
+// PROJECT-WEIGHTED RERANKING
+// ==========================================
+function applyProjectWeighting(
+  chunks: ChunkSource[],
+  contextMode: ContextMode,
+  primaryProjectIds: string[],
+  boostFactor: number = 3.0
+): ChunkSource[] {
+  if (contextMode !== "project" || primaryProjectIds.length === 0) return chunks;
+
+  const primarySet = new Set(primaryProjectIds);
+
+  // Apply boost to project-scoped chunks
+  const weighted = chunks.map(c => ({
+    ...c,
+    score_original: c.score_boosted ?? 1.0,
+    score_boosted: primarySet.has(c.project_id || '') ? (c.score_boosted ?? 1.0) * boostFactor : (c.score_boosted ?? 1.0),
+  }));
+
+  // Re-sort by boosted score
+  weighted.sort((a, b) => (b.score_boosted ?? 0) - (a.score_boosted ?? 0));
+
+  return weighted;
 }
 
 // ==========================================
@@ -131,7 +184,6 @@ async function fetchExperimentContext(
 
   if (relevant.length === 0) return { contextText: '', evidenceTable: '', experimentSources: [], criticalFileIds: [] };
 
-  // Identify critical file IDs (files with highest measurement density for this query)
   const fileRelevanceMap = new Map<string, number>();
   for (const exp of relevant) {
     const fid = exp.source_file_id;
@@ -220,7 +272,6 @@ async function fetchKnowledgePivots(supabase: any, projectIds: string[], query: 
     text += '\n';
   }
 
-  // Fetch neighbor chunks for expanded context
   const allNeighborIds = relevant.flatMap((i: any) => i.neighbor_chunk_ids || []).filter(Boolean);
   if (allNeighborIds.length > 0) {
     const { data: neighborChunks } = await supabase.from('search_chunks').select('chunk_text, metadata').in('id', allNeighborIds.slice(0, 10));
@@ -258,15 +309,14 @@ async function fetchDocumentStructure(supabase: any, fileIds: string[]): Promise
 }
 
 // ==========================================
-// DEEP READ: selective full document read for critical files
+// DEEP READ
 // ==========================================
 async function performDeepRead(supabase: any, fileIds: string[], query: string): Promise<string> {
   if (fileIds.length === 0) return '';
 
   let deepReadText = '\n\n=== LEITURA PROFUNDA DE DOCUMENTOS CRÍTICOS ===\n\n';
   
-  for (const fileId of fileIds.slice(0, 2)) { // max 2 deep reads
-    // Get all chunks for this file, ordered
+  for (const fileId of fileIds.slice(0, 2)) {
     const { data: chunks } = await supabase
       .from('search_chunks')
       .select('chunk_text, chunk_index, metadata')
@@ -280,9 +330,7 @@ async function performDeepRead(supabase: any, fileIds: string[], query: string):
     deepReadText += `📖 DOCUMENTO COMPLETO: ${fileName}\n`;
     deepReadText += `   (${chunks.length} trechos reconstruídos)\n\n`;
     
-    // Reconstruct full content (prioritize results/discussion sections)
     const fullText = chunks.map((c: any) => c.chunk_text).join('\n\n');
-    // Take most relevant portion (up to 4000 chars)
     deepReadText += fullText.substring(0, 4000) + (fullText.length > 4000 ? '\n[...truncado...]' : '') + '\n\n';
   }
 
@@ -290,7 +338,7 @@ async function performDeepRead(supabase: any, fileIds: string[], query: string):
 }
 
 // ==========================================
-// CHUNK SEARCH
+// CHUNK SEARCH (with project_id tracking)
 // ==========================================
 async function searchChunks(
   supabase: any, query: string, targetProjectIds: string[],
@@ -306,21 +354,29 @@ async function searchChunks(
     chunks = (data || []).map((row: any) => ({
       id: row.id, source_type: row.source_type, source_id: row.source_id,
       source_title: row.metadata?.title || "Sem título", project_name: row.projects?.name || "Projeto",
+      project_id: row.project_id,
       chunk_text: row.chunk_text, chunk_index: row.chunk_index,
+      score_boosted: 1.0,
     }));
   } else {
     const queryEmbedding = await generateQueryEmbedding(query, apiKey);
     if (queryEmbedding) {
       try {
+        // For project mode, search ALL allowed projects but fetch more results for reranking
+        const searchProjectIds = targetProjectIds;
+        const fetchLimit = 25; // fetch more, rerank later
+
         const { data: hybridData, error: hybridError } = await supabase.rpc("search_chunks_hybrid", {
           p_query_text: query, p_query_embedding: queryEmbedding,
-          p_project_ids: targetProjectIds, p_limit: 15, p_semantic_weight: 0.65, p_fts_weight: 0.35,
+          p_project_ids: searchProjectIds, p_limit: fetchLimit, p_semantic_weight: 0.65, p_fts_weight: 0.35,
         });
         if (!hybridError && hybridData?.length > 0) {
           chunks = hybridData.map((row: any) => ({
             id: row.chunk_id, source_type: row.source_type, source_id: row.source_id,
             source_title: row.source_title || "Sem título", project_name: row.project_name || "Projeto",
+            project_id: row.project_id,
             chunk_text: row.chunk_text, chunk_index: row.chunk_index || 0,
+            score_boosted: row.score_final || 1.0,
           }));
         }
       } catch {}
@@ -336,10 +392,12 @@ async function searchChunks(
           .textSearch("tsv", query, { type: "websearch", config: "portuguese" })
           .limit(15);
         if (ftsData?.length) {
-          chunks = ftsData.map((row: any) => ({
+          chunks = ftsData.map((row: any, idx: number) => ({
             id: row.id, source_type: row.source_type, source_id: row.source_id,
             source_title: row.metadata?.title || "Sem título", project_name: row.projects?.name || "Projeto",
+            project_id: row.project_id,
             chunk_text: row.chunk_text, chunk_index: row.chunk_index || 0,
+            score_boosted: 1.0 - idx * 0.05,
           }));
         }
       } catch {}
@@ -356,10 +414,12 @@ async function searchChunks(
               .select(`id, project_id, source_type, source_id, chunk_text, chunk_index, metadata, projects!inner(name)`)
               .in("project_id", targetProjectIds).or(orConditions).limit(15);
             if (ilikeData) {
-              chunks = ilikeData.map((row: any) => ({
+              chunks = ilikeData.map((row: any, idx: number) => ({
                 id: row.id, source_type: row.source_type, source_id: row.source_id,
                 source_title: row.metadata?.title || "Sem título", project_name: row.projects?.name || "Projeto",
+                project_id: row.project_id,
                 chunk_text: row.chunk_text, chunk_index: row.chunk_index || 0,
+                score_boosted: 1.0 - idx * 0.05,
               }));
             }
           } catch {}
@@ -371,20 +431,26 @@ async function searchChunks(
 }
 
 // ==========================================
-// STEP A: EVIDENCE PLAN (internal, hidden)
+// STEP A: EVIDENCE PLAN
 // ==========================================
 async function generateEvidencePlan(
   query: string, chunks: ChunkSource[], experimentContext: string,
-  metricSummaries: string, knowledgePivots: string, apiKey: string
+  metricSummaries: string, knowledgePivots: string, apiKey: string,
+  contextMode: ContextMode, projectName?: string
 ): Promise<{ plan: string; needsDeepRead: boolean; deepReadFileIds: string[] }> {
   const chunkSummary = chunks.slice(0, 5).map((c, i) => 
-    `[${i+1}] ${c.source_title}: ${c.chunk_text.substring(0, 150)}...`
+    `[${i+1}] ${c.source_title} (${c.project_name}): ${c.chunk_text.substring(0, 150)}...`
   ).join('\n');
 
-  // Collect unique file IDs from chunks for potential deep read
   const fileIds = [...new Set(chunks.map(c => c.source_id))];
 
+  const modeContext = contextMode === 'project'
+    ? `MODO: Contexto de projeto "${projectName}". Priorize evidências deste projeto.`
+    : `MODO: Inteligência global. Correlacione entre projetos.`;
+
   const planPrompt = `Você é um planejador de pesquisa em materiais odontológicos. Analise e crie um PLANO DE EVIDÊNCIA.
+
+${modeContext}
 
 PERGUNTA: ${query}
 
@@ -459,20 +525,23 @@ ${parsed.needs_deep_read ? `Leitura profunda necessária: ${parsed.deep_read_rea
 }
 
 // ==========================================
-// STEP B: SYNTHESIS (final response)
+// STEP B: SYNTHESIS
 // ==========================================
 async function generateSynthesis(
   query: string, chunks: ChunkSource[], experimentContextText: string,
   metricSummaries: string, knowledgePivots: string, preBuiltEvidenceTable: string,
   evidencePlan: string, deepReadContent: string, docStructure: string,
-  apiKey: string, conversationHistory?: { role: string; content: string }[],
+  apiKey: string, contextMode: ContextMode, projectName?: string,
+  conversationHistory?: { role: string; content: string }[],
 ): Promise<{ response: string }> {
   const formattedChunks = chunks
     .map((chunk, index) => `[${index + 1}] Fonte: ${chunk.source_type} - "${chunk.source_title}" | Projeto: ${chunk.project_name}\n${chunk.chunk_text}`)
     .join("\n\n---\n\n");
 
-  const systemPrompt = `Você é um assistente especializado em P&D de materiais odontológicos. Responda com profundidade analítica.
+  const contextModeInstruction = getContextModeInstruction(contextMode, projectName);
 
+  const systemPrompt = `Você é um assistente especializado em P&D de materiais odontológicos. Responda com profundidade analítica.
+${contextModeInstruction}
 ${DOMAIN_KNOWLEDGE_BASELINE}
 
 REGRAS ABSOLUTAS (NÃO NEGOCIÁVEIS):
@@ -552,16 +621,14 @@ ${evidenceSection}
 // ==========================================
 async function verifyResponse(
   responseText: string, measurements: any[], apiKey: string
-): Promise<{ verified: boolean; issues: string[]; correctedResponse?: string }> {
+): Promise<{ verified: boolean; issues: string[] }> {
   if (!measurements || measurements.length === 0) {
     return { verified: true, issues: [] };
   }
 
-  // Extract numbers from response
   const numbersInResponse = responseText.match(/\d+[.,]?\d*/g) || [];
   if (numbersInResponse.length === 0) return { verified: true, issues: [] };
 
-  // Build a set of valid measurement values
   const validValues = new Set<string>();
   for (const m of measurements) {
     validValues.add(String(m.value));
@@ -572,15 +639,11 @@ async function verifyResponse(
     }
   }
 
-  // Check for numbers in response that aren't in measurements (potential hallucinations)
   const issues: string[] = [];
   const suspectNumbers = numbersInResponse.filter(n => {
-    // Skip very small numbers (likely formatting) and years
     const num = parseFloat(n.replace(',', '.'));
     if (isNaN(num) || num < 0.01 || (num > 1900 && num < 2100)) return false;
-    // Skip if it's a valid measurement value
     if (validValues.has(n) || validValues.has(n.replace(',', '.'))) return false;
-    // Skip common non-measurement numbers (percentages, counts, etc.)
     if (num <= 10 && Number.isInteger(num)) return false;
     return true;
   });
@@ -627,13 +690,17 @@ serve(async (req) => {
       });
     }
 
-    const { query, chunk_ids, project_ids, conversation_history } = await req.json();
+    const { query, chunk_ids, project_ids, conversation_history, context_mode } = await req.json();
 
     if (!query || query.trim().length < 5) {
       return new Response(JSON.stringify({ error: "Query must be at least 5 characters" }), {
         status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
+
+    // Determine context mode
+    const contextMode: ContextMode = context_mode === "project" ? "project" : "global";
+    const primaryProjectIds = project_ids || [];
 
     const { data: userProjects } = await supabase.from("project_members").select("project_id").eq("user_id", user.id);
     const allowedProjectIds = userProjects?.map((p: any) => p.project_id) || [];
@@ -644,26 +711,59 @@ serve(async (req) => {
       }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
-    const targetProjectIds = project_ids?.length > 0
-      ? project_ids.filter((id: string) => allowedProjectIds.includes(id))
-      : allowedProjectIds;
+    // For project mode: search primarily in the project, but also include global for secondary context
+    // For global mode: search all projects equally
+    let searchProjectIds: string[];
+    let projectName: string | undefined;
+
+    if (contextMode === "project" && primaryProjectIds.length > 0) {
+      // Validate that user has access to primary projects
+      const validPrimary = primaryProjectIds.filter((id: string) => allowedProjectIds.includes(id));
+      // Search ALL projects but will rerank with project boost
+      searchProjectIds = allowedProjectIds;
+
+      // Get project name for context instruction
+      if (validPrimary.length > 0) {
+        const { data: projData } = await supabase.from('projects').select('name').eq('id', validPrimary[0]).single();
+        projectName = projData?.name;
+      }
+    } else {
+      searchProjectIds = allowedProjectIds;
+    }
 
     // ==========================================
     // PARALLEL DATA FETCHING
     // ==========================================
+    // For project mode, fetch structured data primarily from the project
+    const structuredDataProjectIds = contextMode === "project" && primaryProjectIds.length > 0
+      ? primaryProjectIds.filter((id: string) => allowedProjectIds.includes(id))
+      : allowedProjectIds;
+
     const [chunks, expResult, metricSummaries, knowledgePivots] = await Promise.all([
-      searchChunks(supabase, query, targetProjectIds, allowedProjectIds, lovableApiKey, chunk_ids),
-      fetchExperimentContext(supabase, targetProjectIds, query),
-      fetchMetricSummaries(supabase, targetProjectIds, query),
-      fetchKnowledgePivots(supabase, targetProjectIds, query),
+      searchChunks(supabase, query, searchProjectIds, allowedProjectIds, lovableApiKey, chunk_ids),
+      fetchExperimentContext(supabase, structuredDataProjectIds, query),
+      fetchMetricSummaries(supabase, structuredDataProjectIds, query),
+      fetchKnowledgePivots(supabase, structuredDataProjectIds, query),
     ]);
+
+    // ==========================================
+    // PROJECT-WEIGHTED RERANKING
+    // ==========================================
+    const validPrimary = primaryProjectIds.filter((id: string) => allowedProjectIds.includes(id));
+    const rerankedChunks = applyProjectWeighting(chunks, contextMode, validPrimary, 3.0);
+    // Take top 15 after reranking
+    const finalChunks = rerankedChunks.slice(0, 15);
 
     const { contextText: experimentContextText, evidenceTable: preBuiltEvidenceTable, experimentSources, criticalFileIds } = expResult;
 
-    if (chunks.length === 0 && !experimentContextText && !metricSummaries && !knowledgePivots) {
+    if (finalChunks.length === 0 && !experimentContextText && !metricSummaries && !knowledgePivots) {
+      // In project mode, try global fallback
+      if (contextMode === "project") {
+        // Already searched all projects, so no data at all
+      }
       return new Response(JSON.stringify({
         response: "Não encontrei informações relevantes nos documentos disponíveis para responder sua pergunta. Tente reformular a busca ou verifique se o conteúdo já foi indexado.",
-        sources: [], chunks_used: 0,
+        sources: [], chunks_used: 0, context_mode: contextMode,
       }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
@@ -671,7 +771,8 @@ serve(async (req) => {
     // STEP A: EVIDENCE PLAN
     // ==========================================
     const evidencePlanResult = await generateEvidencePlan(
-      query, chunks, experimentContextText, metricSummaries, knowledgePivots, lovableApiKey
+      query, finalChunks, experimentContextText, metricSummaries, knowledgePivots, lovableApiKey,
+      contextMode, projectName
     );
 
     // ==========================================
@@ -682,7 +783,7 @@ serve(async (req) => {
     const allCriticalFileIds = [...new Set([...criticalFileIds, ...evidencePlanResult.deepReadFileIds])];
     
     if (evidencePlanResult.needsDeepRead && allCriticalFileIds.length > 0) {
-      console.log(`Deep read triggered for ${allCriticalFileIds.length} files`);
+      console.log(`Deep read triggered for ${allCriticalFileIds.length} files (mode: ${contextMode})`);
       [deepReadContent, docStructure] = await Promise.all([
         performDeepRead(supabase, allCriticalFileIds, query),
         fetchDocumentStructure(supabase, allCriticalFileIds),
@@ -693,17 +794,15 @@ serve(async (req) => {
     // STEP B: SYNTHESIS
     // ==========================================
     const { response } = await generateSynthesis(
-      query, chunks, experimentContextText, metricSummaries, knowledgePivots,
+      query, finalChunks, experimentContextText, metricSummaries, knowledgePivots,
       preBuiltEvidenceTable, evidencePlanResult.plan, deepReadContent, docStructure,
-      lovableApiKey, conversation_history
+      lovableApiKey, contextMode, projectName, conversation_history
     );
 
     // ==========================================
     // STEP C: CHAIN-OF-VERIFICATION
     // ==========================================
-    // Collect all known measurements for verification
     const allMeasurements: any[] = [];
-    // Parse measurements from experiment context if available
     if (experimentContextText) {
       const measMatches = experimentContextText.matchAll(/- (\w+): ([\d.,]+) (\w+)/g);
       for (const m of measMatches) {
@@ -723,14 +822,14 @@ serve(async (req) => {
     // Log
     await supabase.from("rag_logs").insert({
       user_id: user.id, query,
-      chunks_used: chunks.map((c) => c.id),
-      chunks_count: chunks.length,
+      chunks_used: finalChunks.map((c) => c.id),
+      chunks_count: finalChunks.length,
       response_summary: finalResponse.substring(0, 500),
-      model_used: "3-step-pipeline/gemini-3-flash",
+      model_used: `3-step-pipeline/${contextMode}/gemini-3-flash`,
       latency_ms: latencyMs,
     });
 
-    const chunkSources = chunks.map((chunk, index) => ({
+    const chunkSources = finalChunks.map((chunk, index) => ({
       citation: `${index + 1}`, type: chunk.source_type,
       id: chunk.source_id, title: chunk.source_title,
       project: chunk.project_name, excerpt: chunk.chunk_text.substring(0, 200) + "...",
@@ -738,13 +837,15 @@ serve(async (req) => {
 
     return new Response(JSON.stringify({
       response: finalResponse, sources: [...chunkSources, ...experimentSources],
-      chunks_used: chunks.length,
+      chunks_used: finalChunks.length,
       has_experiment_data: !!experimentContextText,
       has_metric_summaries: !!metricSummaries,
       has_knowledge_pivots: !!knowledgePivots,
       deep_read_performed: !!deepReadContent,
       verification_passed: verification.verified,
-      pipeline: '3-step', model_used: "3-step-pipeline/gemini-3-flash", latency_ms: latencyMs,
+      context_mode: contextMode,
+      project_name: projectName,
+      pipeline: '3-step', model_used: `3-step-pipeline/${contextMode}/gemini-3-flash`, latency_ms: latencyMs,
     }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
   } catch (error) {

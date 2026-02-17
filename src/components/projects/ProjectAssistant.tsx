@@ -93,13 +93,17 @@ export function ProjectAssistant({ projectId, projectName }: ProjectAssistantPro
             <div>
               <div className="flex items-center gap-2">
                 <h3 className="text-sm font-semibold">Assistente IA</h3>
+                <Badge variant="outline" className="bg-emerald-500/10 text-emerald-600 border-emerald-500/30 text-xs gap-1">
+                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                  Projeto
+                </Badge>
                 <Badge variant="outline" className="bg-primary/10 text-xs">
                   <FolderOpen className="h-3 w-3 mr-1" />
                   {projectName}
                 </Badge>
               </div>
               <p className="text-xs text-muted-foreground">
-                Pergunte sobre este projeto
+                Contexto profundo — prioriza este projeto
               </p>
             </div>
           </div>
