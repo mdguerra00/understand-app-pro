@@ -790,8 +790,6 @@ serve(async (req) => {
       var _knowledgePivots = knowledgePivots;
     }
 
-    const { contextText: experimentContextText, evidenceTable: preBuiltEvidenceTable, experimentSources, criticalFileIds } = expResult;
-
     if (finalChunks.length === 0 && !experimentContextText && !_metricSummaries && !_knowledgePivots) {
       return new Response(JSON.stringify({
         response: "Não encontrei informações relevantes nos documentos disponíveis para responder sua pergunta. Tente reformular a busca ou verifique se o conteúdo já foi indexado.",
