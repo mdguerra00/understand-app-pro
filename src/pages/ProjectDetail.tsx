@@ -213,7 +213,7 @@ export default function ProjectDetail() {
       .order('column_order', { ascending: true });
 
     if (tasksData) {
-      setTasks(tasksData.map(t => ({
+      const mapped = tasksData.map(t => ({
         id: t.id,
         title: t.title,
         description: t.description,
@@ -239,7 +239,14 @@ export default function ProjectDetail() {
         external_links: t.external_links || [],
         updated_at: t.updated_at,
         project_id: t.project_id,
-      })));
+      }));
+      setTasks(mapped);
+      // Update selectedTask if it's currently open so the drawer reflects saved data
+      setSelectedTask(prev => {
+        if (!prev) return prev;
+        const updated = mapped.find(t => t.id === prev.id);
+        return updated || prev;
+      });
     }
   };
 
