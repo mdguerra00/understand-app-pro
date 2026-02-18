@@ -269,6 +269,9 @@ export function TaskDetailDrawer({
                 className="text-lg font-semibold border-none p-0 h-auto focus-visible:ring-0 shadow-none"
               />
             </div>
+            {task.description && (
+              <p className="text-sm text-muted-foreground whitespace-pre-wrap mt-1">{task.description}</p>
+            )}
           </SheetHeader>
 
           {/* Meta info */}
