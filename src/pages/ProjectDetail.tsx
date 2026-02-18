@@ -221,11 +221,24 @@ export default function ProjectDetail() {
         priority: t.priority,
         assigned_to: t.assigned_to,
         due_date: t.due_date,
-        tags: (t as any).tags || [],
-        column_id: (t as any).column_id,
-        column_order: (t as any).column_order || 0,
-        blocked_reason: (t as any).blocked_reason,
+        tags: t.tags || [],
+        column_id: t.column_id,
+        column_order: t.column_order || 0,
+        blocked_reason: t.blocked_reason,
         created_at: t.created_at,
+        completed_at: t.completed_at,
+        hypothesis: t.hypothesis,
+        variables_changed: t.variables_changed || [],
+        target_metrics: t.target_metrics || [],
+        success_criteria: t.success_criteria,
+        procedure: t.procedure,
+        checklist: Array.isArray(t.checklist) ? t.checklist : [],
+        conclusion: t.conclusion,
+        decision: t.decision,
+        partial_results: t.partial_results,
+        external_links: t.external_links || [],
+        updated_at: t.updated_at,
+        project_id: t.project_id,
       })));
     }
   };
@@ -339,22 +352,9 @@ export default function ProjectDetail() {
 
   // Full task data for drawer
   const getFullTaskData = (task: KanbanTask) => {
-    // We need to re-fetch from state or pass full data
     return {
       ...task,
-      completed_at: null,
-      hypothesis: null,
-      variables_changed: [],
-      target_metrics: [],
-      success_criteria: null,
-      procedure: null,
-      checklist: [],
-      conclusion: null,
-      decision: null,
-      partial_results: null,
-      external_links: [],
-      updated_at: task.created_at,
-      project_id: id!,
+      project_id: task.project_id || id!,
     };
   };
 

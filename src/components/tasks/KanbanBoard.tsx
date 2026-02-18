@@ -45,6 +45,19 @@ export interface KanbanTask {
   column_order: number;
   blocked_reason: string | null;
   created_at: string;
+  completed_at: string | null;
+  hypothesis: string | null;
+  variables_changed: string[];
+  target_metrics: string[];
+  success_criteria: string | null;
+  procedure: string | null;
+  checklist: any[];
+  conclusion: string | null;
+  decision: string | null;
+  partial_results: string | null;
+  external_links: string[];
+  updated_at: string;
+  project_id: string;
 }
 
 interface MemberInfo {
