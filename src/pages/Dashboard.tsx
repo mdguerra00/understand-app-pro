@@ -24,6 +24,8 @@ interface DashboardStats {
   myTasks: number;
 }
 
+const isActiveProjectStatus = (status: string) => !['completed', 'archived'].includes(status);
+
 export default function Dashboard() {
   const { user } = useAuth();
   const [stats, setStats] = useState<DashboardStats | null>(null);
@@ -43,11 +45,17 @@ export default function Dashboard() {
         // Buscar tarefas
         const { data: tasks } = await supabase
           .from('tasks')
-          .select('id, status, assigned_to')
+          .select('id, status, assigned_to, project_id')
           .is('deleted_at', null);
 
         const totalProjects = projects?.length || 0;
-        const activeProjects = projects?.filter(p => p.status === 'in_progress').length || 0;
+        const activeProjectsByStatus = projects?.filter((project) => isActiveProjectStatus(project.status)).length || 0;
+        const activeProjectsFromMyTasks = new Set(
+          (tasks || [])
+            .filter((task) => task.assigned_to === user.id && task.project_id)
+            .map((task) => task.project_id)
+        ).size;
+        const activeProjects = Math.max(activeProjectsByStatus, activeProjectsFromMyTasks);
         const totalTasks = tasks?.length || 0;
         const pendingTasks = tasks?.filter(t => t.status === 'todo' || t.status === 'in_progress').length || 0;
         const myTasks = tasks?.filter(t => t.assigned_to === user.id && (t.status === 'todo' || t.status === 'in_progress')).length || 0;
