@@ -8,6 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -35,6 +36,9 @@ interface UserWithRole {
   id: string;
   email: string;
   full_name: string | null;
+  job_title: string | null;
+  department: string | null;
+  phone: string | null;
   created_at: string;
   status: string;
   role: 'admin' | 'user';
@@ -77,6 +81,23 @@ export default function Admin() {
   const [resetUser, setResetUser] = useState<UserWithRole | null>(null);
   const [resettingPassword, setResettingPassword] = useState(false);
 
+  // Edit user
+  const [editDialogOpen, setEditDialogOpen] = useState(false);
+  const [editingUser, setEditingUser] = useState<UserWithRole | null>(null);
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [editForm, setEditForm] = useState({
+    email: '',
+    full_name: '',
+    job_title: '',
+    department: '',
+    phone: '',
+  });
+
+  // Delete user
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [deleteUser, setDeleteUser] = useState<UserWithRole | null>(null);
+  const [deletingUser, setDeletingUser] = useState(false);
+
   useEffect(() => {
     if (isAdmin) {
       fetchUsers();
@@ -87,7 +108,7 @@ export default function Admin() {
   const fetchUsers = async () => {
     setLoadingUsers(true);
     const [profilesRes, rolesRes] = await Promise.all([
-      supabase.from('profiles').select('id, email, full_name, created_at, status'),
+      supabase.from('profiles').select('id, email, full_name, job_title, department, phone, created_at, status'),
       supabase.from('user_roles').select('user_id, role'),
     ]);
 
@@ -114,6 +135,13 @@ export default function Admin() {
       .limit(200);
     setAuditLogs(data || []);
     setLoadingAudit(false);
+  };
+
+
+  const isEdgeFunctionRequestError = (message?: string) => {
+    if (!message) return false;
+    const normalized = message.toLowerCase();
+    return normalized.includes('failed to send a request to the edge function');
   };
 
   const handleRoleChange = async (userId: string, newRole: 'admin' | 'user') => {
@@ -206,6 +234,117 @@ export default function Admin() {
     setAccessUserId(u.id);
     setAccessUserName(u.full_name || u.email);
     setAccessModalOpen(true);
+  };
+
+
+  const openEditUser = (u: UserWithRole) => {
+    setEditingUser(u);
+    setEditForm({
+      email: u.email,
+      full_name: u.full_name || '',
+      job_title: u.job_title || '',
+      department: u.department || '',
+      phone: u.phone || '',
+    });
+    setEditDialogOpen(true);
+  };
+
+  const handleSaveUserEdit = async () => {
+    if (!editingUser) return;
+    setSavingEdit(true);
+
+    const { data, error } = await supabase.functions.invoke('manage-user', {
+      body: {
+        action: 'update',
+        user_id: editingUser.id,
+        updates: {
+          email: editForm.email.trim(),
+          full_name: editForm.full_name.trim() || null,
+          job_title: editForm.job_title.trim() || null,
+          department: editForm.department.trim() || null,
+          phone: editForm.phone.trim() || null,
+        },
+      },
+    });
+
+    if (error || data?.error) {
+      const edgeMessage = data?.error || error?.message || '';
+
+      if (isEdgeFunctionRequestError(edgeMessage)) {
+        const { error: fallbackError } = await supabase
+          .from('profiles')
+          .update({
+            email: editForm.email.trim(),
+            full_name: editForm.full_name.trim() || null,
+            job_title: editForm.job_title.trim() || null,
+            department: editForm.department.trim() || null,
+            phone: editForm.phone.trim() || null,
+          })
+          .eq('id', editingUser.id);
+
+        if (!fallbackError) {
+          toast.success('Usuário atualizado com sucesso (fallback local).');
+          await fetchUsers();
+          setSavingEdit(false);
+          setEditDialogOpen(false);
+          setEditingUser(null);
+          return;
+        }
+      }
+
+      toast.error(edgeMessage || 'Erro ao atualizar usuário.');
+      setSavingEdit(false);
+      return;
+    }
+
+    toast.success('Usuário atualizado com sucesso.');
+    await fetchUsers();
+    setSavingEdit(false);
+    setEditDialogOpen(false);
+    setEditingUser(null);
+  };
+
+  const handleDeleteUser = async () => {
+    if (!deleteUser) return;
+    setDeletingUser(true);
+
+    const { data, error } = await supabase.functions.invoke('manage-user', {
+      body: {
+        action: 'delete',
+        user_id: deleteUser.id,
+      },
+    });
+
+    if (error || data?.error) {
+      const edgeMessage = data?.error || error?.message || '';
+
+      if (isEdgeFunctionRequestError(edgeMessage)) {
+        const [disableRes, roleRes, membersRes] = await Promise.all([
+          supabase.from('profiles').update({ status: 'disabled' }).eq('id', deleteUser.id),
+          supabase.from('user_roles').delete().eq('user_id', deleteUser.id).eq('role', 'admin'),
+          supabase.from('project_members').delete().eq('user_id', deleteUser.id),
+        ]);
+
+        if (!disableRes.error && !roleRes.error && !membersRes.error) {
+          toast.success('Usuário removido do sistema (fallback sem Edge Function).');
+          await fetchUsers();
+          setDeletingUser(false);
+          setDeleteDialogOpen(false);
+          setDeleteUser(null);
+          return;
+        }
+      }
+
+      toast.error(edgeMessage || 'Erro ao deletar usuário.');
+      setDeletingUser(false);
+      return;
+    }
+
+    toast.success('Usuário deletado com sucesso.');
+    await fetchUsers();
+    setDeletingUser(false);
+    setDeleteDialogOpen(false);
+    setDeleteUser(null);
   };
 
   if (adminLoading) {
@@ -340,6 +479,9 @@ export default function Admin() {
                                 <FolderKanban className="mr-2 h-4 w-4" />
                                 Gerenciar Projetos
                               </DropdownMenuItem>
+                              <DropdownMenuItem onClick={() => openEditUser(u)}>
+                                Editar usuário
+                              </DropdownMenuItem>
                               <DropdownMenuItem onClick={() => { setResetUser(u); setResetDialogOpen(true); }}>
                                 <KeyRound className="mr-2 h-4 w-4" />
                                 Resetar Senha
@@ -353,6 +495,12 @@ export default function Admin() {
                                 ) : (
                                   <><UserCheck className="mr-2 h-4 w-4" />Reativar</>
                                 )}
+                              </DropdownMenuItem>
+                              <DropdownMenuItem
+                                onClick={() => { setDeleteUser(u); setDeleteDialogOpen(true); }}
+                                className="text-destructive focus:text-destructive"
+                              >
+                                Deletar usuário
                               </DropdownMenuItem>
                             </DropdownMenuContent>
                           </DropdownMenu>
@@ -475,6 +623,70 @@ export default function Admin() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+
+      <AlertDialog open={editDialogOpen} onOpenChange={setEditDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Editar usuário</AlertDialogTitle>
+            <AlertDialogDescription>
+              Atualize as informações do usuário selecionado.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="grid gap-3 py-2">
+            <div className="grid gap-1.5">
+              <Label htmlFor="edit-email">Email</Label>
+              <Input id="edit-email" value={editForm.email} onChange={(e) => setEditForm((prev) => ({ ...prev, email: e.target.value }))} />
+            </div>
+            <div className="grid gap-1.5">
+              <Label htmlFor="edit-full-name">Nome completo</Label>
+              <Input id="edit-full-name" value={editForm.full_name} onChange={(e) => setEditForm((prev) => ({ ...prev, full_name: e.target.value }))} />
+            </div>
+            <div className="grid gap-1.5">
+              <Label htmlFor="edit-job-title">Cargo</Label>
+              <Input id="edit-job-title" value={editForm.job_title} onChange={(e) => setEditForm((prev) => ({ ...prev, job_title: e.target.value }))} />
+            </div>
+            <div className="grid gap-1.5">
+              <Label htmlFor="edit-department">Departamento</Label>
+              <Input id="edit-department" value={editForm.department} onChange={(e) => setEditForm((prev) => ({ ...prev, department: e.target.value }))} />
+            </div>
+            <div className="grid gap-1.5">
+              <Label htmlFor="edit-phone">Telefone</Label>
+              <Input id="edit-phone" value={editForm.phone} onChange={(e) => setEditForm((prev) => ({ ...prev, phone: e.target.value }))} />
+            </div>
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={savingEdit}>Cancelar</AlertDialogCancel>
+            <AlertDialogAction onClick={handleSaveUserEdit} disabled={savingEdit || !editForm.email.trim()}>
+              {savingEdit && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              Salvar
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Deletar usuário</AlertDialogTitle>
+            <AlertDialogDescription>
+              Tem certeza que deseja deletar "{deleteUser?.full_name || deleteUser?.email}"? Esta ação remove permanentemente a conta e não pode ser desfeita.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deletingUser}>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleDeleteUser}
+              disabled={deletingUser}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {deletingUser && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              Deletar
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
     </div>
   );
 }
