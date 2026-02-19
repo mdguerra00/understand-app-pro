@@ -39,11 +39,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const signIn = async (email: string, password: string) => {
-    const { error } = await supabase.auth.signInWithPassword({
+    const { data, error } = await supabase.auth.signInWithPassword({
       email,
       password,
     });
-    return { error };
+    if (error) return { error };
+
+    // Check if user is disabled
+    if (data.user) {
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('status')
+        .eq('id', data.user.id)
+        .single();
+
+      if (profile && (profile as any).status === 'disabled') {
+        await supabase.auth.signOut();
+        return { error: new Error('Sua conta foi desativada. Entre em contato com o administrador.') };
+      }
+    }
+
+    return { error: null };
   };
 
   const signUp = async (email: string, password: string, fullName?: string) => {

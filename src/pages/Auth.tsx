@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { z } from 'zod';
 import { useAuth } from '@/hooks/useAuth';
+import { supabase } from '@/integrations/supabase/client';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -26,6 +27,9 @@ const signUpSchema = loginSchema.extend({
 export default function Auth() {
   const [isLoading, setIsLoading] = useState(false);
   const [tab, setTab] = useState<'login' | 'signup'>('login');
+  const [forgotMode, setForgotMode] = useState(false);
+  const [forgotEmail, setForgotEmail] = useState('');
+  const [forgotLoading, setForgotLoading] = useState(false);
   const { signIn, signUp, user } = useAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -180,10 +184,18 @@ export default function Auth() {
                   </div>
                 </CardContent>
 
-                <CardFooter>
+                <CardFooter className="flex flex-col gap-3">
                   <Button type="submit" className="w-full" disabled={isLoading}>
                     {isLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                     Entrar
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="link"
+                    className="text-xs text-muted-foreground"
+                    onClick={() => setForgotMode(true)}
+                  >
+                    Esqueci minha senha
                   </Button>
                 </CardFooter>
               </form>
@@ -258,6 +270,49 @@ export default function Auth() {
             </TabsContent>
           </Tabs>
         </Card>
+
+        {/* Forgot Password Dialog */}
+        {forgotMode && (
+          <Card className="mt-4">
+            <CardHeader>
+              <CardTitle className="text-base">Recuperar senha</CardTitle>
+              <CardDescription>Informe seu email para receber o link de recuperação.</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Input
+                type="email"
+                placeholder="seu@email.com"
+                value={forgotEmail}
+                onChange={(e) => setForgotEmail(e.target.value)}
+              />
+            </CardContent>
+            <CardFooter className="flex gap-2">
+              <Button variant="outline" onClick={() => setForgotMode(false)} className="flex-1">
+                Cancelar
+              </Button>
+              <Button
+                className="flex-1"
+                disabled={forgotLoading || !forgotEmail}
+                onClick={async () => {
+                  setForgotLoading(true);
+                  const { error } = await supabase.auth.resetPasswordForEmail(forgotEmail, {
+                    redirectTo: `${window.location.origin}/reset-password`,
+                  });
+                  setForgotLoading(false);
+                  if (error) {
+                    toast({ variant: 'destructive', title: 'Erro', description: error.message });
+                  } else {
+                    toast({ title: 'Email enviado!', description: 'Verifique sua caixa de entrada.' });
+                    setForgotMode(false);
+                  }
+                }}
+              >
+                {forgotLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                Enviar
+              </Button>
+            </CardFooter>
+          </Card>
+        )}
       </div>
     </div>
   );

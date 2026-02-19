@@ -7,17 +7,36 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Loader2, Shield, ShieldAlert, Users, ScrollText, UserPlus } from 'lucide-react';
+import { Input } from '@/components/ui/input';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
+import { Loader2, Shield, ShieldAlert, Users, ScrollText, UserPlus, MoreHorizontal, KeyRound, FolderKanban, UserX, UserCheck, Search } from 'lucide-react';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import { CreateUserModal } from '@/components/admin/CreateUserModal';
+import { UserProjectAccessModal } from '@/components/admin/UserProjectAccessModal';
 
 interface UserWithRole {
   id: string;
   email: string;
   full_name: string | null;
   created_at: string;
+  status: string;
   role: 'admin' | 'user';
 }
 
@@ -40,6 +59,23 @@ export default function Admin() {
   const [loadingAudit, setLoadingAudit] = useState(true);
   const [updatingRole, setUpdatingRole] = useState<string | null>(null);
   const [createUserOpen, setCreateUserOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [auditSearch, setAuditSearch] = useState('');
+
+  // Project access modal
+  const [accessModalOpen, setAccessModalOpen] = useState(false);
+  const [accessUserId, setAccessUserId] = useState('');
+  const [accessUserName, setAccessUserName] = useState('');
+
+  // Status toggle confirmation
+  const [statusDialogOpen, setStatusDialogOpen] = useState(false);
+  const [statusToggleUser, setStatusToggleUser] = useState<UserWithRole | null>(null);
+  const [togglingStatus, setTogglingStatus] = useState(false);
+
+  // Reset password
+  const [resetDialogOpen, setResetDialogOpen] = useState(false);
+  const [resetUser, setResetUser] = useState<UserWithRole | null>(null);
+  const [resettingPassword, setResettingPassword] = useState(false);
 
   useEffect(() => {
     if (isAdmin) {
@@ -51,7 +87,7 @@ export default function Admin() {
   const fetchUsers = async () => {
     setLoadingUsers(true);
     const [profilesRes, rolesRes] = await Promise.all([
-      supabase.from('profiles').select('id, email, full_name, created_at'),
+      supabase.from('profiles').select('id, email, full_name, created_at, status'),
       supabase.from('user_roles').select('user_id, role'),
     ]);
 
@@ -61,6 +97,7 @@ export default function Admin() {
       );
       const merged: UserWithRole[] = profilesRes.data.map((p) => ({
         ...p,
+        status: (p as any).status || 'active',
         role: rolesMap.get(p.id) || 'user',
       }));
       setUsers(merged);
@@ -74,7 +111,7 @@ export default function Admin() {
       .from('audit_log')
       .select('id, table_name, action, record_id, user_id, created_at, changed_fields')
       .order('created_at', { ascending: false })
-      .limit(100);
+      .limit(200);
     setAuditLogs(data || []);
     setLoadingAudit(false);
   };
@@ -85,42 +122,63 @@ export default function Admin() {
       return;
     }
     setUpdatingRole(userId);
-
     const currentUser = users.find((u) => u.id === userId);
     const currentRole = currentUser?.role;
 
-    if (currentRole === newRole) {
-      setUpdatingRole(null);
-      return;
-    }
+    if (currentRole === newRole) { setUpdatingRole(null); return; }
 
     if (currentRole === 'user' && newRole === 'admin') {
-      // Insert new admin role
-      const { error } = await supabase
-        .from('user_roles')
-        .insert({ user_id: userId, role: 'admin' });
-      if (error) {
-        toast.error('Erro ao atribuir role admin.');
-      } else {
-        toast.success('Usuário promovido a admin.');
-        fetchUsers();
-      }
+      const { error } = await supabase.from('user_roles').insert({ user_id: userId, role: 'admin' });
+      if (error) toast.error('Erro ao atribuir role admin.');
+      else { toast.success('Usuário promovido a admin.'); fetchUsers(); }
     } else if (currentRole === 'admin' && newRole === 'user') {
-      // Delete admin role row
-      const { error } = await supabase
-        .from('user_roles')
-        .delete()
-        .eq('user_id', userId)
-        .eq('role', 'admin');
-      if (error) {
-        toast.error('Erro ao remover role admin.');
-      } else {
-        toast.success('Usuário rebaixado para user.');
-        fetchUsers();
-      }
+      const { error } = await supabase.from('user_roles').delete().eq('user_id', userId).eq('role', 'admin');
+      if (error) toast.error('Erro ao remover role admin.');
+      else { toast.success('Usuário rebaixado para user.'); fetchUsers(); }
     }
-
     setUpdatingRole(null);
+  };
+
+  const handleStatusToggle = async () => {
+    if (!statusToggleUser) return;
+    setTogglingStatus(true);
+    const newStatus = statusToggleUser.status === 'active' ? 'disabled' : 'active';
+    const { error } = await supabase
+      .from('profiles')
+      .update({ status: newStatus })
+      .eq('id', statusToggleUser.id);
+
+    if (error) {
+      toast.error('Erro ao alterar status do usuário.');
+    } else {
+      toast.success(newStatus === 'active' ? 'Usuário reativado.' : 'Usuário desativado.');
+      fetchUsers();
+    }
+    setTogglingStatus(false);
+    setStatusDialogOpen(false);
+    setStatusToggleUser(null);
+  };
+
+  const handleResetPassword = async () => {
+    if (!resetUser) return;
+    setResettingPassword(true);
+    const { error } = await supabase.auth.resetPasswordForEmail(resetUser.email, {
+      redirectTo: `${window.location.origin}/reset-password`,
+    });
+    if (error) {
+      toast.error('Erro ao enviar email de recuperação.');
+    } else {
+      toast.success(`Email de recuperação enviado para ${resetUser.email}`);
+    }
+    setResettingPassword(false);
+    setResetDialogOpen(false);
+    setResetUser(null);
+  };
+
+  const openProjectAccess = (u: UserWithRole) => {
+    setAccessUserId(u.id);
+    setAccessUserName(u.full_name || u.email);
+    setAccessModalOpen(true);
   };
 
   if (adminLoading) {
@@ -141,21 +199,24 @@ export default function Admin() {
     );
   }
 
-  const actionLabel: Record<string, string> = {
-    INSERT: 'Criação',
-    UPDATE: 'Atualização',
-    DELETE: 'Exclusão',
-  };
+  const filteredUsers = users.filter(u =>
+    !searchQuery ||
+    u.full_name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    u.email.toLowerCase().includes(searchQuery.toLowerCase())
+  );
 
+  const filteredAuditLogs = auditLogs.filter(log =>
+    !auditSearch ||
+    log.table_name.toLowerCase().includes(auditSearch.toLowerCase()) ||
+    log.action.toLowerCase().includes(auditSearch.toLowerCase()) ||
+    log.changed_fields?.some(f => f.toLowerCase().includes(auditSearch.toLowerCase()))
+  );
+
+  const actionLabel: Record<string, string> = { INSERT: 'Criação', UPDATE: 'Atualização', DELETE: 'Exclusão' };
   const tableLabel: Record<string, string> = {
-    projects: 'Projetos',
-    tasks: 'Tarefas',
-    reports: 'Relatórios',
-    project_files: 'Arquivos',
-    knowledge_items: 'Conhecimento',
-    project_members: 'Membros',
-    user_roles: 'Roles',
-    profiles: 'Perfis',
+    projects: 'Projetos', tasks: 'Tarefas', reports: 'Relatórios',
+    project_files: 'Arquivos', knowledge_items: 'Conhecimento',
+    project_members: 'Membros', user_roles: 'Roles', profiles: 'Perfis',
   };
 
   return (
@@ -164,24 +225,27 @@ export default function Admin() {
         <Shield className="h-8 w-8 text-primary" />
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Administração</h1>
-          <p className="text-muted-foreground">Gerencie usuários e acompanhe atividades do sistema.</p>
+          <p className="text-muted-foreground">Gerencie usuários, permissões e acompanhe atividades.</p>
         </div>
       </div>
 
       <Tabs defaultValue="users">
         <TabsList>
-          <TabsTrigger value="users" className="gap-2">
-            <Users className="h-4 w-4" />
-            Usuários
-          </TabsTrigger>
-          <TabsTrigger value="audit" className="gap-2">
-            <ScrollText className="h-4 w-4" />
-            Auditoria
-          </TabsTrigger>
+          <TabsTrigger value="users" className="gap-2"><Users className="h-4 w-4" />Usuários</TabsTrigger>
+          <TabsTrigger value="audit" className="gap-2"><ScrollText className="h-4 w-4" />Auditoria</TabsTrigger>
         </TabsList>
 
         <TabsContent value="users">
-          <div className="mb-4 flex justify-end">
+          <div className="mb-4 flex items-center justify-between gap-4">
+            <div className="relative flex-1 max-w-sm">
+              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                placeholder="Buscar por nome ou email..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="pl-9"
+              />
+            </div>
             <Button onClick={() => setCreateUserOpen(true)} className="gap-2">
               <UserPlus className="h-4 w-4" />
               Novo Usuário
@@ -198,15 +262,22 @@ export default function Admin() {
                   <TableRow>
                     <TableHead>Nome</TableHead>
                     <TableHead>Email</TableHead>
+                    <TableHead>Status</TableHead>
                     <TableHead>Role Global</TableHead>
                     <TableHead>Cadastro</TableHead>
+                    <TableHead className="w-[60px]"></TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {users.map((u) => (
-                    <TableRow key={u.id}>
+                  {filteredUsers.map((u) => (
+                    <TableRow key={u.id} className={u.status === 'disabled' ? 'opacity-60' : ''}>
                       <TableCell className="font-medium">{u.full_name || '—'}</TableCell>
                       <TableCell>{u.email}</TableCell>
+                      <TableCell>
+                        <Badge variant={u.status === 'active' ? 'default' : 'destructive'}>
+                          {u.status === 'active' ? 'Ativo' : 'Desativado'}
+                        </Badge>
+                      </TableCell>
                       <TableCell>
                         {u.id === user?.id ? (
                           <Badge>admin</Badge>
@@ -229,6 +300,37 @@ export default function Admin() {
                       <TableCell>
                         {format(new Date(u.created_at), "dd/MM/yyyy", { locale: ptBR })}
                       </TableCell>
+                      <TableCell>
+                        {u.id !== user?.id && (
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button variant="ghost" size="icon" className="h-8 w-8">
+                                <MoreHorizontal className="h-4 w-4" />
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end">
+                              <DropdownMenuItem onClick={() => openProjectAccess(u)}>
+                                <FolderKanban className="mr-2 h-4 w-4" />
+                                Gerenciar Projetos
+                              </DropdownMenuItem>
+                              <DropdownMenuItem onClick={() => { setResetUser(u); setResetDialogOpen(true); }}>
+                                <KeyRound className="mr-2 h-4 w-4" />
+                                Resetar Senha
+                              </DropdownMenuItem>
+                              <DropdownMenuItem
+                                onClick={() => { setStatusToggleUser(u); setStatusDialogOpen(true); }}
+                                className={u.status === 'active' ? 'text-destructive focus:text-destructive' : ''}
+                              >
+                                {u.status === 'active' ? (
+                                  <><UserX className="mr-2 h-4 w-4" />Desativar</>
+                                ) : (
+                                  <><UserCheck className="mr-2 h-4 w-4" />Reativar</>
+                                )}
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        )}
+                      </TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
@@ -238,11 +340,22 @@ export default function Admin() {
         </TabsContent>
 
         <TabsContent value="audit">
+          <div className="mb-4">
+            <div className="relative max-w-sm">
+              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                placeholder="Buscar na auditoria..."
+                value={auditSearch}
+                onChange={(e) => setAuditSearch(e.target.value)}
+                className="pl-9"
+              />
+            </div>
+          </div>
           {loadingAudit ? (
             <div className="flex justify-center py-12">
               <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
             </div>
-          ) : auditLogs.length === 0 ? (
+          ) : filteredAuditLogs.length === 0 ? (
             <p className="py-12 text-center text-muted-foreground">Nenhum registro de auditoria encontrado.</p>
           ) : (
             <div className="rounded-md border">
@@ -256,7 +369,7 @@ export default function Admin() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {auditLogs.map((log) => (
+                  {filteredAuditLogs.map((log) => (
                     <TableRow key={log.id}>
                       <TableCell className="whitespace-nowrap">
                         {format(new Date(log.created_at), "dd/MM/yyyy HH:mm", { locale: ptBR })}
@@ -279,11 +392,62 @@ export default function Admin() {
         </TabsContent>
       </Tabs>
 
-      <CreateUserModal
-        open={createUserOpen}
-        onOpenChange={setCreateUserOpen}
-        onUserCreated={fetchUsers}
+      <CreateUserModal open={createUserOpen} onOpenChange={setCreateUserOpen} onUserCreated={fetchUsers} />
+
+      <UserProjectAccessModal
+        open={accessModalOpen}
+        onOpenChange={setAccessModalOpen}
+        userId={accessUserId}
+        userName={accessUserName}
+        onUpdated={fetchUsers}
       />
+
+      {/* Status Toggle Dialog */}
+      <AlertDialog open={statusDialogOpen} onOpenChange={setStatusDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {statusToggleUser?.status === 'active' ? 'Desativar usuário' : 'Reativar usuário'}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {statusToggleUser?.status === 'active'
+                ? `Tem certeza que deseja desativar "${statusToggleUser?.full_name || statusToggleUser?.email}"? O usuário não poderá mais acessar o sistema.`
+                : `Tem certeza que deseja reativar "${statusToggleUser?.full_name || statusToggleUser?.email}"?`
+              }
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={togglingStatus}>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleStatusToggle}
+              disabled={togglingStatus}
+              className={statusToggleUser?.status === 'active' ? 'bg-destructive text-destructive-foreground hover:bg-destructive/90' : ''}
+            >
+              {togglingStatus && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              {statusToggleUser?.status === 'active' ? 'Desativar' : 'Reativar'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Reset Password Dialog */}
+      <AlertDialog open={resetDialogOpen} onOpenChange={setResetDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Resetar senha</AlertDialogTitle>
+            <AlertDialogDescription>
+              Um email de recuperação de senha será enviado para {resetUser?.email}. O usuário poderá criar uma nova senha através do link recebido.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={resettingPassword}>Cancelar</AlertDialogCancel>
+            <AlertDialogAction onClick={handleResetPassword} disabled={resettingPassword}>
+              {resettingPassword && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              Enviar Email
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
