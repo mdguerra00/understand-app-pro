@@ -614,38 +614,84 @@ O hook `useReportFreshness` detecta relatórios que ficaram desatualizados quand
 ### 11.1 Autenticação
 
 - **Método:** Email + senha (Supabase Auth)
-- **Confirmação de email:** Obrigatória
+- **Confirmação de email:** Obrigatória (bypass para usuários criados pelo admin via edge function)
 - **Sessão:** Persistida em localStorage com auto-refresh
-- **Provider:** `AuthProvider` via React Context
+- **Provider:** `AuthProvider` via React Context (`src/hooks/useAuth.tsx`)
+- **Recuperação de senha:** Email com link para `/reset-password`
+- **Verificação de status:** Login bloqueia usuários com `profiles.status = 'disabled'`
 
-### 11.2 Hierarquia de Papéis
+### 11.2 Modelo de Dados de Usuários
+
+| Tabela | Campos principais | Descrição |
+|--------|------------------|-----------|
+| `auth.users` | id, email | Gerenciada pelo Supabase Auth |
+| `profiles` | id, email, full_name, status, avatar_url, job_title, department, phone | Dados públicos do usuário |
+| `user_roles` | user_id, role (admin/user) | Papéis globais do sistema |
+| `project_members` | project_id, user_id, role_in_project, invited_by | Membership por projeto |
+
+### 11.3 Hierarquia de Papéis (RBAC)
 
 #### Papéis Globais (`user_roles`)
 
 | Papel | Capacidades |
 |-------|------------|
 | `user` | Acesso padrão a projetos onde é membro |
-| `admin` | Tudo de `user` + painel administrativo + criação de usuários |
+| `admin` | Tudo de `user` + painel administrativo + criação/desativação de usuários + gerenciar permissões + ver todos os projetos + auditoria |
 
 #### Papéis de Projeto (`project_members`)
 
 | Papel | Nível | Capacidades |
 |-------|-------|------------|
 | `viewer` | 4 | Visualizar projeto, arquivos, tarefas |
-| `researcher` | 3 | + Criar/editar tarefas, upload de arquivos |
-| `manager` | 2 | + Gerenciar membros, configurações |
+| `researcher` | 3 | + Criar/editar tarefas, upload de arquivos, criar relatórios |
+| `manager` | 2 | + Gerenciar membros, configurações, deletar itens |
 | `owner` | 1 | + Deletar projeto, transferir propriedade |
 
-### 11.3 Row Level Security (RLS)
+### 11.4 Matriz de Permissões Detalhada
 
-Todas as 22 tabelas possuem RLS habilitado. As políticas utilizam as funções auxiliares:
+| Ação | Admin | Owner | Manager | Researcher | Viewer |
+|------|-------|-------|---------|------------|--------|
+| Criar usuários | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Desativar/reativar usuários | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Resetar senhas | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Atribuir papéis globais | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Gerenciar acesso a projetos | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ver todos os projetos | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ver auditoria | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Deletar projeto | ❌ | ✅ | ❌ | ❌ | ❌ |
+| Gerenciar membros do projeto | ❌ | ✅ | ✅ | ❌ | ❌ |
+| Deletar tarefas/arquivos | ❌ | ✅ | ✅ | ❌ | ❌ |
+| Criar/editar tarefas | ❌ | ✅ | ✅ | ✅ | ❌ |
+| Upload de arquivos | ❌ | ✅ | ✅ | ✅ | ❌ |
+| Criar relatórios | ❌ | ✅ | ✅ | ✅ | ❌ |
+| Visualizar projeto | ❌ | ✅ | ✅ | ✅ | ✅ |
 
-```sql
--- Exemplo: Política de leitura de projetos
-CREATE POLICY "Members can view projects"
-ON projects FOR SELECT
-USING (is_project_member(auth.uid(), id));
-```
+### 11.5 Regras de Visibilidade
+
+- **Projetos:** Usuário vê apenas projetos onde é membro. Admin vê todos (inclusive deletados).
+- **Tarefas:** Só visíveis para membros do projeto. Filtro "Minhas Tarefas" no menu principal.
+- **Assignee:** O dropdown de responsável lista **apenas** membros do projeto. Uma trigger backend (`validate_task_assignee`) bloqueia atribuições para não-membros.
+- **Arquivos/Relatórios/Knowledge:** Escopo de projeto via RLS.
+
+### 11.6 Row Level Security (RLS)
+
+Todas as tabelas possuem RLS habilitado. Funções auxiliares:
+
+| Função | Propósito |
+|--------|-----------|
+| `is_project_member(user_id, project_id)` | Verifica membership |
+| `has_project_role(user_id, project_id, min_role)` | Verifica papel mínimo no projeto |
+| `has_role(user_id, role)` | Verifica papel global |
+| `validate_task_assignee()` | Trigger: garante que assigned_to é membro do projeto |
+
+### 11.7 Fluxos de UI
+
+| Fluxo | Rota | Descrição |
+|-------|------|-----------|
+| Login | `/auth` | Email + senha com validação Zod |
+| Recuperação de senha | `/auth` → email → `/reset-password` | Link enviado por email |
+| Administração | `/admin` | Lista de usuários, criar/desativar, roles, acessos por projeto, auditoria |
+| Gerenciar projetos do usuário | `/admin` → Gerenciar Projetos | Checkbox por projeto + seletor de papel |
 
 ---
 
@@ -758,4 +804,4 @@ Trigger → generate-report (Edge Function)
 
 ---
 
-> **Nota:** Esta documentação reflete o estado atual do sistema em 10/02/2026. Para alterações no schema, consulte a pasta `supabase/migrations/`.
+> **Nota:** Esta documentação reflete o estado atual do sistema em 19/02/2026. Para alterações no schema, consulte a pasta `supabase/migrations/`.
