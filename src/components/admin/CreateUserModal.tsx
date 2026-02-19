@@ -26,7 +26,6 @@ export function CreateUserModal({ open, onOpenChange, onUserCreated }: CreateUse
   const [password, setPassword] = useState('');
   const [fullName, setFullName] = useState('');
   const [role, setRole] = useState<'user' | 'admin'>('user');
-  const [projectRole, setProjectRole] = useState<'manager' | 'researcher' | 'viewer'>('researcher');
   const [loading, setLoading] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -36,7 +35,7 @@ export function CreateUserModal({ open, onOpenChange, onUserCreated }: CreateUse
     setLoading(true);
     try {
       const { data, error } = await supabase.functions.invoke('create-user', {
-        body: { email, password, full_name: fullName, role, project_role: projectRole },
+        body: { email, password, full_name: fullName, role },
       });
 
       if (error) throw error;
@@ -49,7 +48,6 @@ export function CreateUserModal({ open, onOpenChange, onUserCreated }: CreateUse
       setPassword('');
       setFullName('');
       setRole('user');
-      setProjectRole('researcher');
     } catch (err: any) {
       toast.error(err.message || 'Erro ao criar usuário');
     } finally {
@@ -63,7 +61,7 @@ export function CreateUserModal({ open, onOpenChange, onUserCreated }: CreateUse
         <DialogHeader>
           <DialogTitle>Novo Usuário</DialogTitle>
           <DialogDescription>
-            Crie um novo usuário no sistema. O email será confirmado automaticamente.
+            Crie um novo usuário no sistema. O acesso a projetos deve ser atribuído depois, de forma explícita.
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={handleSubmit} className="space-y-4">
@@ -110,20 +108,6 @@ export function CreateUserModal({ open, onOpenChange, onUserCreated }: CreateUse
                 <SelectItem value="admin">admin</SelectItem>
               </SelectContent>
             </Select>
-          </div>
-          <div className="space-y-2">
-            <Label>Papel nos projetos</Label>
-            <Select value={projectRole} onValueChange={(v) => setProjectRole(v as 'manager' | 'researcher' | 'viewer')}>
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="manager">Gerente</SelectItem>
-                <SelectItem value="researcher">Pesquisador</SelectItem>
-                <SelectItem value="viewer">Visualizador</SelectItem>
-              </SelectContent>
-            </Select>
-            <p className="text-xs text-muted-foreground">O usuário será adicionado a todos os projetos existentes com este papel.</p>
           </div>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
