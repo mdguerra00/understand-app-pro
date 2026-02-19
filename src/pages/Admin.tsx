@@ -181,6 +181,7 @@ export default function Admin() {
       p_action: 'toggle_status',
       p_user_id: targetUserId,
       p_status: newStatus,
+      p_updates: {},
     });
 
     if (!error && !(data as any)?.error) {
@@ -252,6 +253,7 @@ export default function Admin() {
     const { data, error } = await supabase.rpc('admin_manage_user', {
       p_action: 'update',
       p_user_id: editingUser.id,
+      p_status: '',
       p_updates: updates,
     });
 
@@ -275,6 +277,8 @@ export default function Admin() {
     const { data, error } = await supabase.rpc('admin_manage_user', {
       p_action: 'delete',
       p_user_id: deleteUser.id,
+      p_status: '',
+      p_updates: {},
     });
 
     if (error || (data as any)?.error) {
