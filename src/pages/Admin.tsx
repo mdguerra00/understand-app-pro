@@ -143,16 +143,20 @@ export default function Admin() {
     if (!statusToggleUser) return;
     setTogglingStatus(true);
     const newStatus = statusToggleUser.status === 'active' ? 'disabled' : 'active';
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from('profiles')
       .update({ status: newStatus })
-      .eq('id', statusToggleUser.id);
+      .eq('id', statusToggleUser.id)
+      .select('id, status')
+      .single();
 
-    if (error) {
+    if (error || !data) {
       toast.error('Erro ao alterar status do usuário.');
     } else {
+      setUsers((prev) =>
+        prev.map((u) => (u.id === data.id ? { ...u, status: data.status } : u))
+      );
       toast.success(newStatus === 'active' ? 'Usuário reativado.' : 'Usuário desativado.');
-      fetchUsers();
     }
     setTogglingStatus(false);
     setStatusDialogOpen(false);
