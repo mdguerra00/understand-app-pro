@@ -137,6 +137,13 @@ export default function Admin() {
     setLoadingAudit(false);
   };
 
+
+  const isEdgeFunctionRequestError = (message?: string) => {
+    if (!message) return false;
+    const normalized = message.toLowerCase();
+    return normalized.includes('failed to send a request to the edge function');
+  };
+
   const handleRoleChange = async (userId: string, newRole: 'admin' | 'user') => {
     if (userId === user?.id) {
       toast.error('Você não pode alterar sua própria role.');
