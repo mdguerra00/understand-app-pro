@@ -170,28 +170,16 @@ export default function Admin() {
     let updated = false;
     let lastErrorMessage = '';
 
-    const { data, error } = await supabase.functions.invoke('toggle-user-status', {
-      body: { user_id: targetUserId, status: newStatus },
+    const { data, error } = await supabase.rpc('admin_manage_user', {
+      p_action: 'toggle_status',
+      p_user_id: targetUserId,
+      p_status: newStatus,
     });
 
-    if (!error && !data?.error) {
+    if (!error && !(data as any)?.error) {
       updated = true;
     } else {
-      lastErrorMessage = data?.error || error?.message || '';
-
-      // Fallback para update direto caso a Edge Function ainda não esteja deployada
-      const { data: fallbackData, error: fallbackError } = await supabase
-        .from('profiles')
-        .update({ status: newStatus })
-        .eq('id', targetUserId)
-        .select('id')
-        .maybeSingle();
-
-      if (!fallbackError && fallbackData) {
-        updated = true;
-      } else {
-        lastErrorMessage = fallbackError?.message || lastErrorMessage || 'Erro ao alterar status do usuário.';
-      }
+      lastErrorMessage = (data as any)?.error || error?.message || 'Erro ao alterar status do usuário.';
     }
 
     await fetchUsers();
@@ -246,22 +234,22 @@ export default function Admin() {
     if (!editingUser) return;
     setSavingEdit(true);
 
-    const { data, error } = await supabase.functions.invoke('manage-user', {
-      body: {
-        action: 'update',
-        user_id: editingUser.id,
-        updates: {
-          email: editForm.email.trim(),
-          full_name: editForm.full_name.trim() || null,
-          job_title: editForm.job_title.trim() || null,
-          department: editForm.department.trim() || null,
-          phone: editForm.phone.trim() || null,
-        },
-      },
+    const updates = {
+      email: editForm.email.trim(),
+      full_name: editForm.full_name.trim() || null,
+      job_title: editForm.job_title.trim() || null,
+      department: editForm.department.trim() || null,
+      phone: editForm.phone.trim() || null,
+    };
+
+    const { data, error } = await supabase.rpc('admin_manage_user', {
+      p_action: 'update',
+      p_user_id: editingUser.id,
+      p_updates: updates,
     });
 
-    if (error || data?.error) {
-      toast.error(data?.error || error?.message || 'Erro ao atualizar usuário.');
+    if (error || (data as any)?.error) {
+      toast.error((data as any)?.error || error?.message || 'Erro ao atualizar usuário.');
       setSavingEdit(false);
       return;
     }
@@ -277,15 +265,13 @@ export default function Admin() {
     if (!deleteUser) return;
     setDeletingUser(true);
 
-    const { data, error } = await supabase.functions.invoke('manage-user', {
-      body: {
-        action: 'delete',
-        user_id: deleteUser.id,
-      },
+    const { data, error } = await supabase.rpc('admin_manage_user', {
+      p_action: 'delete',
+      p_user_id: deleteUser.id,
     });
 
-    if (error || data?.error) {
-      toast.error(data?.error || error?.message || 'Erro ao deletar usuário.');
+    if (error || (data as any)?.error) {
+      toast.error((data as any)?.error || error?.message || 'Erro ao deletar usuário.');
       setDeletingUser(false);
       return;
     }
