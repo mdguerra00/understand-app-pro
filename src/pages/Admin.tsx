@@ -146,14 +146,16 @@ export default function Admin() {
     const targetUserId = statusToggleUser.id;
     const newStatus = statusToggleUser.status === 'active' ? 'disabled' : 'active';
 
-    const { error, count } = await supabase
+    const { data, error } = await supabase
       .from('profiles')
-      .update({ status: newStatus }, { count: 'exact' })
-      .eq('id', targetUserId);
+      .update({ status: newStatus })
+      .eq('id', targetUserId)
+      .select('id, status')
+      .maybeSingle();
 
     if (error) {
       toast.error(error.message || 'Erro ao alterar status do usuário.');
-    } else if (!count) {
+    } else if (!data) {
       toast.error('Nenhum usuário foi atualizado. Verifique permissões e tente novamente.');
       await fetchUsers();
     } else {
