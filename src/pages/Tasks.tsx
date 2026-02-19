@@ -3,7 +3,6 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Input } from '@/components/ui/input';
-import { Checkbox } from '@/components/ui/checkbox';
 import { Button } from '@/components/ui/button';
 import {
   Select,
@@ -79,7 +78,6 @@ export default function Tasks() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
-  const [showOnlyMine, setShowOnlyMine] = useState(false);
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
   const [editTask, setEditTask] = useState<Task | null>(null);
@@ -90,10 +88,13 @@ export default function Tasks() {
 
   const fetchTasks = async () => {
     try {
+      if (!user) return;
+
       const { data, error } = await supabase
         .from('tasks')
         .select('*, projects(name)')
         .is('deleted_at', null)
+        .eq('assigned_to', user.id)
         .order('created_at', { ascending: false });
 
       if (error) throw error;
@@ -107,7 +108,7 @@ export default function Tasks() {
 
   useEffect(() => {
     fetchTasks();
-  }, []);
+  }, [user]);
 
   const handleTaskClick = (task: Task) => {
     setSelectedTask(task);
@@ -165,8 +166,7 @@ export default function Tasks() {
     const matchesSearch = task.title.toLowerCase().includes(search.toLowerCase()) ||
       task.description?.toLowerCase().includes(search.toLowerCase());
     const matchesStatus = statusFilter === 'all' || task.status === statusFilter;
-    const matchesMine = !showOnlyMine || task.assigned_to === user?.id;
-    return matchesSearch && matchesStatus && matchesMine;
+    return matchesSearch && matchesStatus;
   });
 
   return (
@@ -175,7 +175,7 @@ export default function Tasks() {
       <div>
         <h1 className="text-2xl font-bold tracking-tight">Tarefas</h1>
         <p className="text-muted-foreground">
-          Acompanhe todas as suas atividades
+Acompanhe as tarefas atribuídas a você
         </p>
       </div>
 
@@ -204,19 +204,6 @@ export default function Tasks() {
             <SelectItem value="done">Concluído</SelectItem>
           </SelectContent>
         </Select>
-        <div className="flex items-center gap-2">
-          <Checkbox
-            id="only-mine"
-            checked={showOnlyMine}
-            onCheckedChange={(checked) => setShowOnlyMine(!!checked)}
-          />
-          <label
-            htmlFor="only-mine"
-            className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
-          >
-            Apenas minhas tarefas
-          </label>
-        </div>
       </div>
 
       {/* Tasks List */}
@@ -239,7 +226,7 @@ export default function Tasks() {
             </div>
             <CardTitle>Nenhuma tarefa encontrada</CardTitle>
             <CardDescription>
-              {search || statusFilter !== 'all' || showOnlyMine
+              {search || statusFilter !== 'all'
                 ? 'Tente ajustar os filtros de busca'
                 : 'As tarefas dos projetos aparecerão aqui'}
             </CardDescription>

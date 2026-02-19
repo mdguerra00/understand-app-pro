@@ -21,6 +21,7 @@
 12. [Design System](#12-design-system)
 13. [Módulos Funcionais](#13-módulos-funcionais)
 14. [Fluxos de Dados](#14-fluxos-de-dados)
+15. [Segurança de Usuários (RLS e Testes)](#15-segurança-de-usuários-rls-e-testes)
 
 ---
 
@@ -805,3 +806,18 @@ Trigger → generate-report (Edge Function)
 ---
 
 > **Nota:** Esta documentação reflete o estado atual do sistema em 19/02/2026. Para alterações no schema, consulte a pasta `supabase/migrations/`.
+
+
+---
+
+## 15. Segurança de Usuários (RLS e Testes)
+
+As policies RLS reais, matriz de permissões e cenários de teste de segurança exigidos para `profiles`, `user_roles`, `projects`, `project_members` e `tasks` estão documentados em:
+
+- `docs/USER_SECURITY_VALIDATION.md`
+
+Esse documento cobre especificamente:
+- SQL das policies vigentes;
+- testes de não-elevação de privilégio;
+- regra de criação de usuário admin-only;
+- regra de tarefas (listagem por atribuição + validações de membro no backend).

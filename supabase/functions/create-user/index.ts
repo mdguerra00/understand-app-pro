@@ -52,7 +52,7 @@ serve(async (req) => {
       });
     }
 
-    const { email, password, full_name, role, project_role } = await req.json();
+    const { email, password, full_name, role } = await req.json();
 
     if (!email || !password) {
       return new Response(JSON.stringify({ error: "Email e senha são obrigatórios" }), {
@@ -83,25 +83,6 @@ serve(async (req) => {
       await adminClient
         .from("user_roles")
         .insert({ user_id: newUser.user.id, role: "admin" });
-    }
-
-    // Auto-add new user to all existing projects as researcher
-    if (newUser.user) {
-      const { data: projects } = await adminClient
-        .from("projects")
-        .select("id")
-        .is("deleted_at", null);
-
-      if (projects && projects.length > 0) {
-        const memberships = projects.map((p: { id: string }) => ({
-          project_id: p.id,
-          user_id: newUser.user!.id,
-          role_in_project: project_role || "researcher",
-          invited_by: caller.id,
-        }));
-
-        await adminClient.from("project_members").insert(memberships);
-      }
     }
 
     return new Response(
