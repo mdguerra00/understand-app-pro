@@ -123,6 +123,248 @@ export type Database = {
         }
         Relationships: []
       }
+      benchmarks: {
+        Row: {
+          as_of_date: string
+          baseline_unit: string
+          baseline_unit_canonical: string | null
+          baseline_value: number
+          baseline_value_canonical: number | null
+          created_at: string
+          experiment_id: string | null
+          id: string
+          material_label: string | null
+          measurement_id: string | null
+          metric_key: string
+          notes: string | null
+          project_id: string
+          scope_definition: Json | null
+          source_claim_id: string | null
+          source_excerpt: string | null
+          source_file_id: string | null
+          status: string
+          superseded_at: string | null
+          superseded_by_benchmark_id: string | null
+          superseded_by_measurement_id: string | null
+          updated_at: string
+        }
+        Insert: {
+          as_of_date: string
+          baseline_unit: string
+          baseline_unit_canonical?: string | null
+          baseline_value: number
+          baseline_value_canonical?: number | null
+          created_at?: string
+          experiment_id?: string | null
+          id?: string
+          material_label?: string | null
+          measurement_id?: string | null
+          metric_key: string
+          notes?: string | null
+          project_id: string
+          scope_definition?: Json | null
+          source_claim_id?: string | null
+          source_excerpt?: string | null
+          source_file_id?: string | null
+          status?: string
+          superseded_at?: string | null
+          superseded_by_benchmark_id?: string | null
+          superseded_by_measurement_id?: string | null
+          updated_at?: string
+        }
+        Update: {
+          as_of_date?: string
+          baseline_unit?: string
+          baseline_unit_canonical?: string | null
+          baseline_value?: number
+          baseline_value_canonical?: number | null
+          created_at?: string
+          experiment_id?: string | null
+          id?: string
+          material_label?: string | null
+          measurement_id?: string | null
+          metric_key?: string
+          notes?: string | null
+          project_id?: string
+          scope_definition?: Json | null
+          source_claim_id?: string | null
+          source_excerpt?: string | null
+          source_file_id?: string | null
+          status?: string
+          superseded_at?: string | null
+          superseded_by_benchmark_id?: string | null
+          superseded_by_measurement_id?: string | null
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "benchmarks_experiment_id_fkey"
+            columns: ["experiment_id"]
+            isOneToOne: false
+            referencedRelation: "current_best"
+            referencedColumns: ["experiment_id"]
+          },
+          {
+            foreignKeyName: "benchmarks_experiment_id_fkey"
+            columns: ["experiment_id"]
+            isOneToOne: false
+            referencedRelation: "experiments"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "benchmarks_measurement_id_fkey"
+            columns: ["measurement_id"]
+            isOneToOne: false
+            referencedRelation: "current_best"
+            referencedColumns: ["measurement_id"]
+          },
+          {
+            foreignKeyName: "benchmarks_measurement_id_fkey"
+            columns: ["measurement_id"]
+            isOneToOne: false
+            referencedRelation: "measurements"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "benchmarks_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "benchmarks_source_claim_id_fkey"
+            columns: ["source_claim_id"]
+            isOneToOne: false
+            referencedRelation: "claims"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "benchmarks_source_file_id_fkey"
+            columns: ["source_file_id"]
+            isOneToOne: false
+            referencedRelation: "project_files"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "benchmarks_superseded_by_benchmark_id_fkey"
+            columns: ["superseded_by_benchmark_id"]
+            isOneToOne: false
+            referencedRelation: "benchmarks"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "benchmarks_superseded_by_measurement_id_fkey"
+            columns: ["superseded_by_measurement_id"]
+            isOneToOne: false
+            referencedRelation: "current_best"
+            referencedColumns: ["measurement_id"]
+          },
+          {
+            foreignKeyName: "benchmarks_superseded_by_measurement_id_fkey"
+            columns: ["superseded_by_measurement_id"]
+            isOneToOne: false
+            referencedRelation: "measurements"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      claims: {
+        Row: {
+          claim_type: string
+          confidence: number | null
+          created_at: string
+          entities: string[] | null
+          evidence_date: string | null
+          excerpt: string
+          id: string
+          metric_key: string | null
+          project_id: string
+          scope_definition: Json | null
+          source_experiment_id: string | null
+          source_file_id: string | null
+          status: string
+          superseded_at: string | null
+          superseded_by: string | null
+          superseded_reason: string | null
+          updated_at: string
+        }
+        Insert: {
+          claim_type: string
+          confidence?: number | null
+          created_at?: string
+          entities?: string[] | null
+          evidence_date?: string | null
+          excerpt: string
+          id?: string
+          metric_key?: string | null
+          project_id: string
+          scope_definition?: Json | null
+          source_experiment_id?: string | null
+          source_file_id?: string | null
+          status?: string
+          superseded_at?: string | null
+          superseded_by?: string | null
+          superseded_reason?: string | null
+          updated_at?: string
+        }
+        Update: {
+          claim_type?: string
+          confidence?: number | null
+          created_at?: string
+          entities?: string[] | null
+          evidence_date?: string | null
+          excerpt?: string
+          id?: string
+          metric_key?: string | null
+          project_id?: string
+          scope_definition?: Json | null
+          source_experiment_id?: string | null
+          source_file_id?: string | null
+          status?: string
+          superseded_at?: string | null
+          superseded_by?: string | null
+          superseded_reason?: string | null
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "claims_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "claims_source_experiment_id_fkey"
+            columns: ["source_experiment_id"]
+            isOneToOne: false
+            referencedRelation: "current_best"
+            referencedColumns: ["experiment_id"]
+          },
+          {
+            foreignKeyName: "claims_source_experiment_id_fkey"
+            columns: ["source_experiment_id"]
+            isOneToOne: false
+            referencedRelation: "experiments"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "claims_source_file_id_fkey"
+            columns: ["source_file_id"]
+            isOneToOne: false
+            referencedRelation: "project_files"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "claims_superseded_by_fkey"
+            columns: ["superseded_by"]
+            isOneToOne: false
+            referencedRelation: "claims"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       correlation_jobs: {
         Row: {
           completed_at: string | null
@@ -296,6 +538,13 @@ export type Database = {
             foreignKeyName: "experiment_citations_experiment_id_fkey"
             columns: ["experiment_id"]
             isOneToOne: false
+            referencedRelation: "current_best"
+            referencedColumns: ["experiment_id"]
+          },
+          {
+            foreignKeyName: "experiment_citations_experiment_id_fkey"
+            columns: ["experiment_id"]
+            isOneToOne: false
             referencedRelation: "experiments"
             referencedColumns: ["id"]
           },
@@ -305,6 +554,13 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "project_files"
             referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "experiment_citations_measurement_id_fkey"
+            columns: ["measurement_id"]
+            isOneToOne: false
+            referencedRelation: "current_best"
+            referencedColumns: ["measurement_id"]
           },
           {
             foreignKeyName: "experiment_citations_measurement_id_fkey"
@@ -342,6 +598,13 @@ export type Database = {
             foreignKeyName: "experiment_conditions_experiment_id_fkey"
             columns: ["experiment_id"]
             isOneToOne: false
+            referencedRelation: "current_best"
+            referencedColumns: ["experiment_id"]
+          },
+          {
+            foreignKeyName: "experiment_conditions_experiment_id_fkey"
+            columns: ["experiment_id"]
+            isOneToOne: false
             referencedRelation: "experiments"
             referencedColumns: ["id"]
           },
@@ -351,6 +614,8 @@ export type Database = {
         Row: {
           created_at: string
           deleted_at: string | null
+          doc_date: string | null
+          evidence_date: string | null
           expected_outcome: string | null
           extracted_by: string
           extraction_job_id: string | null
@@ -367,6 +632,8 @@ export type Database = {
         Insert: {
           created_at?: string
           deleted_at?: string | null
+          doc_date?: string | null
+          evidence_date?: string | null
           expected_outcome?: string | null
           extracted_by: string
           extraction_job_id?: string | null
@@ -383,6 +650,8 @@ export type Database = {
         Update: {
           created_at?: string
           deleted_at?: string | null
+          doc_date?: string | null
+          evidence_date?: string | null
           expected_outcome?: string | null
           extracted_by?: string
           extraction_job_id?: string | null
@@ -658,6 +927,13 @@ export type Database = {
             foreignKeyName: "knowledge_items_ref_experiment_id_fkey"
             columns: ["ref_experiment_id"]
             isOneToOne: false
+            referencedRelation: "current_best"
+            referencedColumns: ["experiment_id"]
+          },
+          {
+            foreignKeyName: "knowledge_items_ref_experiment_id_fkey"
+            columns: ["ref_experiment_id"]
+            isOneToOne: false
             referencedRelation: "experiments"
             referencedColumns: ["id"]
           },
@@ -681,6 +957,7 @@ export type Database = {
         Row: {
           confidence: string | null
           created_at: string
+          evidence_date: string | null
           experiment_id: string
           id: string
           method: string | null
@@ -696,6 +973,7 @@ export type Database = {
         Insert: {
           confidence?: string | null
           created_at?: string
+          evidence_date?: string | null
           experiment_id: string
           id?: string
           method?: string | null
@@ -711,6 +989,7 @@ export type Database = {
         Update: {
           confidence?: string | null
           created_at?: string
+          evidence_date?: string | null
           experiment_id?: string
           id?: string
           method?: string | null
@@ -724,6 +1003,13 @@ export type Database = {
           value_canonical?: number | null
         }
         Relationships: [
+          {
+            foreignKeyName: "measurements_experiment_id_fkey"
+            columns: ["experiment_id"]
+            isOneToOne: false
+            referencedRelation: "current_best"
+            referencedColumns: ["experiment_id"]
+          },
           {
             foreignKeyName: "measurements_experiment_id_fkey"
             columns: ["experiment_id"]
@@ -1580,6 +1866,40 @@ export type Database = {
           },
         ]
       }
+      current_best: {
+        Row: {
+          confidence: string | null
+          doc_id: string | null
+          evidence_date: string | null
+          excerpt: string | null
+          experiment_id: string | null
+          experiment_title: string | null
+          measurement_id: string | null
+          metric_key: string | null
+          project_id: string | null
+          raw_metric_name: string | null
+          unit: string | null
+          unit_canonical: string | null
+          value: number | null
+          value_canonical: number | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "experiments_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "experiments_source_file_id_fkey"
+            columns: ["doc_id"]
+            isOneToOne: false
+            referencedRelation: "project_files"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       experiment_metric_summary: {
         Row: {
           avg_confidence: number | null
@@ -1617,6 +1937,13 @@ export type Database = {
             foreignKeyName: "measurements_experiment_id_fkey"
             columns: ["experiment_id"]
             isOneToOne: false
+            referencedRelation: "current_best"
+            referencedColumns: ["experiment_id"]
+          },
+          {
+            foreignKeyName: "measurements_experiment_id_fkey"
+            columns: ["experiment_id"]
+            isOneToOne: false
             referencedRelation: "experiments"
             referencedColumns: ["id"]
           },
@@ -1624,6 +1951,16 @@ export type Database = {
       }
     }
     Functions: {
+      check_and_supersede_claims: {
+        Args: {
+          p_metric_key: string
+          p_new_evidence_date: string
+          p_new_measurement_id: string
+          p_new_value_canonical: number
+          p_project_id: string
+        }
+        Returns: number
+      }
       create_default_board_columns: {
         Args: { p_project_id: string }
         Returns: undefined

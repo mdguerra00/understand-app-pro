@@ -8,6 +8,48 @@ const corsHeaders = {
 
 type ContextMode = "project" | "global";
 
+// ==========================================
+// COMPARATIVE QUERY DETECTOR (heuristic, no LLM)
+// ==========================================
+function detectComparativeIntent(query: string): { isComparative: boolean; targetMetrics: string[] } {
+  const q = query.toLowerCase();
+  
+  const comparativeTerms = [
+    // Portuguese
+    'melhor', 'maior', 'mais alto', 'mais alta', 'máximo', 'maximo', 'recorde',
+    'superou', 'supera', 'superar', 'benchmark', 'top', 'estado atual', 'até agora',
+    'atualmente', 'hoje', 'atual', 'vigente', 'ranking', 'classificação',
+    'mais resistente', 'mais forte', 'destaque', 'vencedor', 'campeão',
+    // English
+    'best', 'highest', 'maximum', 'record', 'outperform', 'top', 'current best',
+    'so far', 'currently', 'today', 'winner', 'champion', 'leader', 'leading',
+  ];
+  
+  const metricTerms: Record<string, string[]> = {
+    'flexural_strength': ['resistência flexural', 'flexural', 'rf ', 'mpa', 'resistência à flexão'],
+    'hardness': ['dureza', 'vickers', 'knoop', 'hardness', 'hv ', 'khn'],
+    'water_sorption': ['sorção', 'absorção', 'water sorption', 'sorption'],
+    'degree_of_conversion': ['grau de conversão', 'degree of conversion', 'dc ', 'conversão'],
+    'elastic_modulus': ['módulo', 'elasticidade', 'elastic modulus', 'young'],
+    'delta_e': ['delta e', 'cor', 'color', 'colorimetry', 'estabilidade de cor'],
+  };
+  
+  const isComparative = comparativeTerms.some(term => q.includes(term));
+  
+  const targetMetrics: string[] = [];
+  if (isComparative) {
+    for (const [metric, terms] of Object.entries(metricTerms)) {
+      if (terms.some(t => q.includes(t))) {
+        targetMetrics.push(metric);
+      }
+    }
+  }
+  
+  return { isComparative, targetMetrics };
+}
+
+
+
 interface ChunkSource {
   id: string;
   source_type: string;
@@ -617,8 +659,118 @@ ${evidenceSection}
 }
 
 // ==========================================
-// STEP C: CHAIN-OF-VERIFICATION
+// COMPARATIVE MODE: deterministic retrieval
 // ==========================================
+async function runComparativeMode(
+  supabase: any, query: string, projectIds: string[], targetMetrics: string[],
+  apiKey: string, contextMode: ContextMode, projectName?: string,
+): Promise<string> {
+  const [{ data: bestMeasurements }, { data: allClaims }, { data: benchmarks }] = await Promise.all([
+    supabase.from('current_best').select('*').in('project_id', projectIds).limit(50),
+    supabase.from('claims').select('excerpt,claim_type,metric_key,evidence_date,status,superseded_at,superseded_reason').in('project_id', projectIds).order('evidence_date', { ascending: false }).limit(30),
+    supabase.from('benchmarks').select('metric_key,material_label,baseline_value,baseline_unit,as_of_date,status,superseded_at,notes').in('project_id', projectIds).order('as_of_date', { ascending: false }).limit(20),
+  ]);
+  if (!bestMeasurements || bestMeasurements.length === 0) return '';
+  const relevant = targetMetrics.length > 0
+    ? bestMeasurements.filter((m: any) => targetMetrics.some(t => m.metric_key?.includes(t)))
+    : bestMeasurements;
+  let table = '| # | Experimento | Métrica | Valor | Unidade | Data Evidência |\n|---|------------|---------|-------|---------|---------------|\n';
+  for (let i = 0; i < Math.min(relevant.length, 20); i++) {
+    const m = relevant[i];
+    const dt = m.evidence_date ? new Date(m.evidence_date).toISOString().split('T')[0] : 'desconhecida';
+    table += `| ${i+1} | ${m.experiment_title || 'N/A'} | ${m.raw_metric_name || m.metric_key} | **${m.value}** | ${m.unit} | ${dt} |\n`;
+  }
+  let claimsCtx = '';
+  if (allClaims) {
+    const sup = allClaims.filter((c: any) => c.status === 'superseded');
+    if (sup.length > 0) {
+      claimsCtx += '\n⚠️ CLAIMS SUPERADAS (NÃO são verdade atual):\n';
+      for (const c of sup.slice(0, 5)) {
+        const sdt = c.superseded_at ? new Date(c.superseded_at).toISOString().split('T')[0] : '?';
+        claimsCtx += `- [SUPERADA em ${sdt}] "${c.excerpt?.substring(0, 120)}" — ${c.superseded_reason || ''}\n`;
+      }
+    }
+  }
+  const sysPrompt = `Você responde queries COMPARATIVAS. Ground truth = tabela abaixo. Claims são histórico — NUNCA verdade atual.
+REGRAS: 1) Use só a tabela para afirmar superioridade. 2) Claims superadas: mencione que foram superadas. 3) Sem data = incerto.
+TABELA:\n${table}\nHISTÓRICO:\n${claimsCtx || 'Sem claims.'}`;
+  const resp = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+    method: "POST",
+    headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ model: "google/gemini-3-flash-preview", messages: [{ role: "system", content: sysPrompt }, { role: "user", content: `QUERY: ${query}\n\nResponda com: Estado Atual (da tabela), Tabela Comparativa, Evolução Temporal (claims históricas), Ressalvas.` }], temperature: 0.1, max_tokens: 3000 }),
+  });
+  if (!resp.ok) return '';
+  const d = await resp.json();
+  const text = d.choices?.[0]?.message?.content || '';
+  return text ? `[MODO COMPARATIVO DETERMINÍSTICO]\n\n${text}` : '';
+}
+
+// ==========================================
+// STEP B: SYNTHESIS (with anti-temporal-freeze)
+// ==========================================
+async function generateSynthesis(
+  query: string, chunks: ChunkSource[], experimentContextText: string,
+  metricSummaries: string, knowledgePivots: string, preBuiltEvidenceTable: string,
+  evidencePlan: string, deepReadContent: string, docStructure: string,
+  apiKey: string, contextMode: ContextMode, projectName?: string,
+  conversationHistory?: { role: string; content: string }[],
+): Promise<{ response: string }> {
+  const formattedChunks = chunks
+    .map((chunk, index) => `[${index + 1}] Fonte: ${chunk.source_type} - "${chunk.source_title}" | Projeto: ${chunk.project_name}\n${chunk.chunk_text}`)
+    .join("\n\n---\n\n");
+  const contextModeInstruction = getContextModeInstruction(contextMode, projectName);
+  const systemPrompt = `Você é um assistente especializado em P&D de materiais odontológicos.
+${contextModeInstruction}
+${DOMAIN_KNOWLEDGE_BASELINE}
+
+REGRAS ABSOLUTAS:
+1. Toda afirmação técnica DEVE ter citação [1] ou [E1]
+2. Sem evidência: "Não encontrei informações suficientes."
+3. NUNCA invente dados
+4. PRIORIZE dados estruturados sobre texto livre
+5. A TABELA DE EVIDÊNCIAS foi gerada dos dados — inclua SEM modificar valores
+6. SEMPRE compare experimentos quando houver 2+ medições da mesma métrica
+7. ⛔ ANTI-TEMPORAL-FREEZE: "superou todos/melhor até agora/benchmark" são claims históricas.
+   NUNCA as trate como verdade atual sem measurements confirmando. Se não há measurements: rotule como "histórica/não verificada".
+8. ⛔ ANTI-MIXING: Cada número ancora em UM experimento. Proibido combinar valor de E1 com condição de E2.
+${evidencePlan ? `\n${evidencePlan}\n` : ''}
+TRECHOS:
+${formattedChunks}
+${experimentContextText}
+${metricSummaries}
+${knowledgePivots}
+${deepReadContent}
+${docStructure}`;
+  const userPrompt = `PERGUNTA: ${query}
+FORMATO:
+## 1. Síntese Técnica [com citações]
+## 2. Evidências\n${preBuiltEvidenceTable || '[listar com citações]'}
+## 3. Comparações e Correlações
+## 4. Heurísticas Derivadas
+## 5. Lacunas
+## 6. Fontes`;
+  const messages: { role: string; content: string }[] = [{ role: "system", content: systemPrompt }];
+  if (conversationHistory?.length) {
+    for (const msg of conversationHistory.slice(-6)) {
+      if (msg.role === "user" || msg.role === "assistant") messages.push({ role: msg.role, content: msg.content });
+    }
+  }
+  messages.push({ role: "user", content: userPrompt });
+  const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+    method: "POST",
+    headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ model: "google/gemini-3-flash-preview", messages, temperature: 0.3, max_tokens: 5000 }),
+  });
+  if (!response.ok) {
+    if (response.status === 429) throw new Error("Rate limit exceeded.");
+    if (response.status === 402) throw new Error("AI credits exhausted.");
+    throw new Error(`AI Gateway error: ${response.status}`);
+  }
+  const data = await response.json();
+  return { response: data.choices?.[0]?.message?.content || "Erro ao gerar resposta." };
+}
+
+
 async function verifyResponse(
   responseText: string, measurements: any[], apiKey: string
 ): Promise<{ verified: boolean; issues: string[] }> {
