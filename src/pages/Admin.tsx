@@ -174,28 +174,16 @@ export default function Admin() {
     const targetUserId = statusToggleUser.id;
     const newStatus = statusToggleUser.status === 'active' ? 'disabled' : 'active';
 
-    let updated = false;
-    let lastErrorMessage = '';
-
-    const { data, error } = await supabase.rpc('admin_manage_user', {
-      p_action: 'toggle_status',
-      p_user_id: targetUserId,
-      p_status: newStatus,
-      p_updates: {},
+    const { data, error } = await supabase.functions.invoke('toggle-user-status', {
+      body: { user_id: targetUserId, status: newStatus },
     });
-
-    if (!error && !(data as any)?.error) {
-      updated = true;
-    } else {
-      lastErrorMessage = (data as any)?.error || error?.message || 'Erro ao alterar status do usuário.';
-    }
 
     await fetchUsers();
 
-    if (updated) {
-      toast.success(newStatus === 'active' ? 'Usuário reativado.' : 'Usuário desativado.');
+    if (error || (data as any)?.error) {
+      toast.error((data as any)?.error || error?.message || 'Erro ao alterar status do usuário.');
     } else {
-      toast.error(lastErrorMessage || 'Erro ao alterar status do usuário.');
+      toast.success(newStatus === 'active' ? 'Usuário reativado.' : 'Usuário desativado.');
     }
 
     setTogglingStatus(false);
@@ -242,19 +230,18 @@ export default function Admin() {
     if (!editingUser) return;
     setSavingEdit(true);
 
-    const updates = {
-      email: editForm.email.trim(),
-      full_name: editForm.full_name.trim() || null,
-      job_title: editForm.job_title.trim() || null,
-      department: editForm.department.trim() || null,
-      phone: editForm.phone.trim() || null,
-    };
-
-    const { data, error } = await supabase.rpc('admin_manage_user', {
-      p_action: 'update',
-      p_user_id: editingUser.id,
-      p_status: '',
-      p_updates: updates,
+    const { data, error } = await supabase.functions.invoke('manage-user', {
+      body: {
+        action: 'update',
+        user_id: editingUser.id,
+        updates: {
+          email: editForm.email.trim(),
+          full_name: editForm.full_name.trim() || null,
+          job_title: editForm.job_title.trim() || null,
+          department: editForm.department.trim() || null,
+          phone: editForm.phone.trim() || null,
+        },
+      },
     });
 
     if (error || (data as any)?.error) {
@@ -274,11 +261,8 @@ export default function Admin() {
     if (!deleteUser) return;
     setDeletingUser(true);
 
-    const { data, error } = await supabase.rpc('admin_manage_user', {
-      p_action: 'delete',
-      p_user_id: deleteUser.id,
-      p_status: '',
-      p_updates: {},
+    const { data, error } = await supabase.functions.invoke('manage-user', {
+      body: { action: 'delete', user_id: deleteUser.id },
     });
 
     if (error || (data as any)?.error) {
