@@ -808,6 +808,42 @@ serve(async (req) => {
     }
 
     // ==========================================
+    // COMPARATIVE MODE CHECK
+    // ==========================================
+    const { isComparative, targetMetrics } = detectComparativeIntent(query);
+
+    if (isComparative) {
+      console.log(`Comparative query detected. Target metrics: ${targetMetrics.join(', ') || 'all'}`);
+      const comparativeResult = await runComparativeMode(
+        supabase, query, validPrimary.length > 0 ? validPrimary : allowedProjectIds,
+        targetMetrics, lovableApiKey, contextMode, projectName,
+      );
+
+      if (comparativeResult) {
+        const latencyMs = Date.now() - startTime;
+        await supabase.from("rag_logs").insert({
+          user_id: user.id, query,
+          chunks_used: [], chunks_count: 0,
+          response_summary: comparativeResult.substring(0, 500),
+          model_used: `comparative-mode/${contextMode}/gemini-3-flash`,
+          latency_ms: latencyMs,
+        });
+
+        return new Response(JSON.stringify({
+          response: comparativeResult, sources: [],
+          chunks_used: 0, has_experiment_data: true,
+          has_metric_summaries: false, has_knowledge_pivots: false,
+          deep_read_performed: false, verification_passed: true,
+          context_mode: contextMode, project_name: projectName,
+          pipeline: 'comparative', model_used: `comparative-mode/${contextMode}/gemini-3-flash`,
+          latency_ms: latencyMs,
+        }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+      // If comparative mode returned empty, fall through to standard pipeline
+      console.log('Comparative mode returned no data, falling through to standard pipeline');
+    }
+
+    // ==========================================
     // PARALLEL DATA FETCHING
     // ==========================================
     // For project mode: structured data comes ONLY from the project
