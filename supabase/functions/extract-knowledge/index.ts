@@ -1253,6 +1253,109 @@ Se ilegível, retorne apenas um insight de "observation".`;
     }
 
     // ==========================================
+    // CLAIMS DETECTION & SUPERSEDING
+    // ==========================================
+    let claimsCreated = 0;
+    try {
+      // Detect comparative/temporal claims from insights
+      const claimCategories = ['benchmark', 'finding', 'result', 'observation'];
+      const comparativePatterns = [
+        /super(ou|a|ior)/i, /melhor/i, /mais\s+alt[oa]/i, /recorde/i,
+        /benchmark/i, /até\s+agora/i, /best|highest|record|outperform/i,
+        /estado\s+atual/i, /top|máxim[oa]/i,
+      ];
+
+      const claimInsights = validatedInsights.filter(i =>
+        claimCategories.includes(i.category) &&
+        comparativePatterns.some(p => p.test(i.content) || p.test(i.title))
+      );
+
+      for (const ci of claimInsights) {
+        // Determine claim_type
+        let claimType = 'comparative';
+        if (/até\s+agora|so\s+far|atualmente|currently/i.test(ci.content)) claimType = 'temporal';
+        if (/super(ou|a|ior)|outperform|best|highest/i.test(ci.content)) claimType = 'superlative';
+        if (/benchmark/i.test(ci.content)) claimType = 'benchmark_ref';
+
+        // Try to extract metric_key from related experiment data
+        let metricKey: string | null = null;
+        const metricMatch = ci.content.match(/resistência\s+flexural|flexural|hardness|dureza|sorção|conversão|elastic|módulo/i);
+        if (metricMatch) {
+          const metricMap: Record<string, string> = {
+            'resistência flexural': 'flexural_strength', 'flexural': 'flexural_strength',
+            'hardness': 'hardness', 'dureza': 'hardness',
+            'sorção': 'water_sorption', 'conversão': 'degree_of_conversion',
+            'elastic': 'elastic_modulus', 'módulo': 'elastic_modulus',
+          };
+          metricKey = metricMap[metricMatch[0].toLowerCase()] || null;
+        }
+
+        const { error: claimError } = await supabaseAdmin.from('claims').insert({
+          project_id: fileData.project_id,
+          source_file_id: file_id,
+          excerpt: (ci.evidence || ci.content).substring(0, 500),
+          claim_type: claimType,
+          metric_key: metricKey,
+          entities: [],
+          scope_definition: { project_id: fileData.project_id, doc_id: file_id },
+          evidence_date: null, // Will be uncertain without explicit date
+          confidence: ci.confidence,
+          status: 'uncertain', // Start as uncertain since we don't have evidence_date
+        });
+
+        if (!claimError) claimsCreated++;
+      }
+
+      if (claimsCreated > 0) {
+        console.log(`Created ${claimsCreated} claims from comparative insights`);
+      }
+
+      // Run superseding check for each new measurement
+      if (measurementsCount > 0) {
+        // Fetch the measurements we just created for this file
+        const { data: newExps } = await supabaseAdmin
+          .from('experiments')
+          .select('id')
+          .eq('source_file_id', file_id)
+          .eq('project_id', fileData.project_id)
+          .is('deleted_at', null);
+
+        if (newExps && newExps.length > 0) {
+          const expIds = newExps.map((e: any) => e.id);
+          const { data: newMeasurements } = await supabaseAdmin
+            .from('measurements')
+            .select('id, metric, value_canonical, evidence_date')
+            .in('experiment_id', expIds);
+
+          if (newMeasurements) {
+            let totalSuperseded = 0;
+            for (const m of newMeasurements) {
+              if (m.value_canonical && m.metric) {
+                try {
+                  const { data: count } = await supabaseAdmin.rpc('check_and_supersede_claims', {
+                    p_project_id: fileData.project_id,
+                    p_metric_key: m.metric,
+                    p_new_value_canonical: m.value_canonical,
+                    p_new_measurement_id: m.id,
+                    p_new_evidence_date: m.evidence_date || new Date().toISOString(),
+                  });
+                  if (count && count > 0) totalSuperseded += count;
+                } catch (supErr) {
+                  console.warn(`Superseding check failed for measurement ${m.id}:`, supErr);
+                }
+              }
+            }
+            if (totalSuperseded > 0) {
+              console.log(`Auto-superseded ${totalSuperseded} claims/benchmarks`);
+            }
+          }
+        }
+      }
+    } catch (claimsError) {
+      console.warn("Claims detection failed (non-fatal):", claimsError);
+    }
+
+    // ==========================================
     // CROSS-DOCUMENT ANALYSIS
     // ==========================================
     let crossDocInsights = 0;
@@ -1361,6 +1464,7 @@ Se ilegível, retorne apenas um insight de "observation".`;
       insights_count: validatedInsights.length,
       experiments_count: experimentsCount,
       measurements_count: measurementsCount,
+      claims_created: claimsCreated,
       cross_doc_insights: crossDocInsights,
       verified_count: verifiedCount,
       parsing_quality: parsingQuality,
