@@ -484,18 +484,44 @@ function verifyTabularResponse(
 // ==========================================
 function detectComparativeIntent(query: string): { isComparative: boolean; targetMetrics: string[] } {
   const q = query.toLowerCase();
-  
-  const comparativeTerms = [
-    // Portuguese
-    'melhor', 'maior', 'mais alto', 'mais alta', 'máximo', 'maximo', 'recorde',
-    'superou', 'supera', 'superar', 'benchmark', 'top', 'estado atual', 'até agora',
-    'atualmente', 'hoje', 'atual', 'vigente', 'ranking', 'classificação',
-    'mais resistente', 'mais forte', 'destaque', 'vencedor', 'campeão',
-    // English
-    'best', 'highest', 'maximum', 'record', 'outperform', 'top', 'current best',
-    'so far', 'currently', 'today', 'winner', 'champion', 'leader', 'leading',
+
+  // Comparative mode is ONLY for pure ranking queries ("qual é o maior/melhor")
+  // NOT for interpretive queries or material/condition-specific analysis
+  const rankingTerms = [
+    // Portuguese - pure ranking
+    'qual é o melhor', 'qual o melhor', 'qual é o maior', 'qual o maior',
+    'qual é o mais alto', 'qual o mais alto', 'recorde', 'ranking',
+    'classificação', 'top resultado', 'qual superou', 'qual supera',
+    'melhor resultado', 'maior valor', 'valor máximo',
+    // English - pure ranking
+    'what is the best', 'what is the highest', 'which is the best',
+    'which has the highest', 'current best', 'top result', 'record',
+    'ranking', 'leader', 'which outperforms',
   ];
-  
+
+  // Blockers: if these are present, it's NOT a pure ranking query
+  const interpretiveBlockers = [
+    // PT interpretive
+    'o que isso ensina', 'o que demonstra', 'o que demonstrou', 'o que aprendemos',
+    'lição', 'implicação', 'interprete', 'por que aconteceu', 'significado',
+    'análise profunda', 'análise detalhada', 'o que podemos concluir',
+    'trade-off', 'efeito observado',
+    // EN interpretive
+    'what does this teach', 'what did it show', 'what we learned',
+    'implication', 'lesson', 'interpret', 'why did it happen',
+    // Material/condition-specific (should go to IDER or tabular)
+    'quando reduziu', 'quando aumentou', 'de %', 'para %',
+    'com carga de', 'com filler', 'nessa formulação', 'nesse experimento',
+  ];
+
+  const hasRanking = rankingTerms.some(term => q.includes(term));
+  const hasBlocker = interpretiveBlockers.some(term => q.includes(term));
+
+  // Also block if query has specific material + condition context (not pure ranking)
+  const hasSpecificContext = /(\d+\s*%|de\s+~?\d+.*para\s+~?\d+)/i.test(q);
+
+  const isComparative = hasRanking && !hasBlocker && !hasSpecificContext;
+
   const metricTerms: Record<string, string[]> = {
     'flexural_strength': ['resistência flexural', 'flexural', 'rf ', 'mpa', 'resistência à flexão'],
     'hardness': ['dureza', 'vickers', 'knoop', 'hardness', 'hv ', 'khn'],
@@ -504,9 +530,7 @@ function detectComparativeIntent(query: string): { isComparative: boolean; targe
     'elastic_modulus': ['módulo', 'elasticidade', 'elastic modulus', 'young'],
     'delta_e': ['delta e', 'cor', 'color', 'colorimetry', 'estabilidade de cor'],
   };
-  
-  const isComparative = comparativeTerms.some(term => q.includes(term));
-  
+
   const targetMetrics: string[] = [];
   if (isComparative) {
     for (const [metric, terms] of Object.entries(metricTerms)) {
@@ -515,7 +539,7 @@ function detectComparativeIntent(query: string): { isComparative: boolean; targe
       }
     }
   }
-  
+
   return { isComparative, targetMetrics };
 }
 
@@ -1775,43 +1799,11 @@ serve(async (req) => {
     }
 
     // ==========================================
-    // COMPARATIVE MODE CHECK
+    // ROUTING PRIORITY: 1️⃣ Tabular → 2️⃣ IDER → 3️⃣ Comparative → 4️⃣ Standard
     // ==========================================
-    const { isComparative, targetMetrics } = detectComparativeIntent(query);
-
-    if (isComparative) {
-      console.log(`Comparative query detected. Target metrics: ${targetMetrics.join(', ') || 'all'}`);
-      const comparativeResult = await runComparativeMode(
-        supabase, query, validPrimary.length > 0 ? validPrimary : allowedProjectIds,
-        targetMetrics, lovableApiKey, contextMode, projectName,
-      );
-
-      if (comparativeResult) {
-        const latencyMs = Date.now() - startTime;
-        await supabase.from("rag_logs").insert({
-          user_id: user.id, query,
-          chunks_used: [], chunks_count: 0,
-          response_summary: comparativeResult.substring(0, 500),
-          model_used: `comparative-mode/${contextMode}/gemini-3-flash`,
-          latency_ms: latencyMs,
-        });
-
-        return new Response(JSON.stringify({
-          response: comparativeResult, sources: [],
-          chunks_used: 0, has_experiment_data: true,
-          has_metric_summaries: false, has_knowledge_pivots: false,
-          deep_read_performed: false, verification_passed: true,
-          context_mode: contextMode, project_name: projectName,
-          pipeline: 'comparative', model_used: `comparative-mode/${contextMode}/gemini-3-flash`,
-          latency_ms: latencyMs,
-        }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
-      }
-      // If comparative mode returned empty, fall through to standard pipeline
-      console.log('Comparative mode returned no data, falling through to standard pipeline');
-    }
 
     // ==========================================
-    // TABULAR EXCEL MODE CHECK
+    // 1️⃣ TABULAR EXCEL MODE CHECK (highest priority)
     // ==========================================
     const tabularIntent = detectTabularExcelIntent(query);
 
@@ -2006,7 +1998,42 @@ serve(async (req) => {
     }
 
     // ==========================================
-    // PARALLEL DATA FETCHING (Standard 3-step pipeline)
+    // 3️⃣ COMPARATIVE MODE CHECK (pure ranking only)
+    // ==========================================
+    const { isComparative, targetMetrics } = detectComparativeIntent(query);
+
+    if (isComparative) {
+      console.log(`Comparative query detected (pure ranking). Target metrics: ${targetMetrics.join(', ') || 'all'}`);
+      const comparativeResult = await runComparativeMode(
+        supabase, query, validPrimary.length > 0 ? validPrimary : allowedProjectIds,
+        targetMetrics, lovableApiKey, contextMode, projectName,
+      );
+
+      if (comparativeResult) {
+        const latencyMs = Date.now() - startTime;
+        await supabase.from("rag_logs").insert({
+          user_id: user.id, query,
+          chunks_used: [], chunks_count: 0,
+          response_summary: comparativeResult.substring(0, 500),
+          model_used: `comparative-mode/${contextMode}/gemini-3-flash`,
+          latency_ms: latencyMs,
+        });
+
+        return new Response(JSON.stringify({
+          response: comparativeResult, sources: [],
+          chunks_used: 0, has_experiment_data: true,
+          has_metric_summaries: false, has_knowledge_pivots: false,
+          deep_read_performed: false, verification_passed: true,
+          context_mode: contextMode, project_name: projectName,
+          pipeline: 'comparative', model_used: `comparative-mode/${contextMode}/gemini-3-flash`,
+          latency_ms: latencyMs,
+        }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+      console.log('Comparative mode returned no data, falling through to standard pipeline');
+    }
+
+    // ==========================================
+    // 4️⃣ STANDARD 3-STEP PIPELINE
     // ==========================================
     // For project mode: structured data comes ONLY from the project
     const structuredDataProjectIds = contextMode === "project" && validPrimary.length > 0
