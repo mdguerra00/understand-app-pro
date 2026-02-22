@@ -2159,7 +2159,85 @@ async function quickEvidenceCheck(
 
   await Promise.all(checkPromises);
 
+  // Co-occurrence check: if BOTH materials and additives are present and individually found,
+  // verify they co-occur in the same experiment or document chunk
+  if (missing.length === 0 && constraints.materials.length > 0 && constraints.additives.length > 0) {
+    // Build additive search terms from all detected additives
+    const additiveTermMap: Record<string, string[]> = {
+      silver_nanoparticles: ['silver', 'prata', 'ag', 'nanopart'],
+      bomar: ['bomar'],
+      tegdma: ['tegdma'],
+      udma: ['udma'],
+      bisgma: ['bisgma', 'bis-gma'],
+    };
+    const allAdditiveTerms: string[] = [];
+    for (const add of constraints.additives) {
+      const terms = additiveTermMap[add] || [add];
+      allAdditiveTerms.push(...terms);
+    }
+
+    const coOccurs = await checkCoOccurrence(supabase, projectIds, constraints.materials, allAdditiveTerms);
+    if (!coOccurs) {
+      missing.push('co-ocorrencia material+aditivo');
+      console.log(`Co-occurrence check FAILED: materials=${constraints.materials.join(',')} additives=${allAdditiveTerms.join(',')}`);
+    } else {
+      console.log(`Co-occurrence check PASSED`);
+    }
+  }
+
   return { feasible: missing.length === 0, missing };
+}
+
+// Co-occurrence: checks if material AND additive terms appear together
+// in the same experiment (title+conditions) or the same search chunk
+async function checkCoOccurrence(
+  supabase: any, projectIds: string[], materialTerms: string[], additiveSearchTerms: string[]
+): Promise<boolean> {
+  // Strategy 1: experiments table — find experiments matching a material, then check conditions for additive
+  for (const mat of materialTerms) {
+    const { data: exps } = await supabase
+      .from('experiments')
+      .select('id, title')
+      .in('project_id', projectIds)
+      .is('deleted_at', null)
+      .ilike('title', `%${mat}%`)
+      .limit(50);
+
+    if (exps && exps.length > 0) {
+      for (const exp of exps) {
+        // Check if title itself contains an additive term
+        const titleLower = (exp.title || '').toLowerCase();
+        if (additiveSearchTerms.some(t => titleLower.includes(t))) return true;
+
+        // Check conditions
+        const { data: conds } = await supabase
+          .from('experiment_conditions')
+          .select('value')
+          .eq('experiment_id', exp.id);
+
+        if (conds && conds.length > 0) {
+          const allText = [exp.title, ...conds.map((c: any) => c.value)].join(' ').toLowerCase();
+          if (additiveSearchTerms.some(t => allText.includes(t))) return true;
+        }
+      }
+    }
+  }
+
+  // Strategy 2: search_chunks — both terms in same chunk
+  for (const mat of materialTerms) {
+    for (const add of additiveSearchTerms) {
+      const { data } = await supabase
+        .from('search_chunks')
+        .select('id')
+        .in('project_id', projectIds)
+        .ilike('chunk_text', `%${mat}%`)
+        .ilike('chunk_text', `%${add}%`)
+        .limit(1);
+      if (data && data.length > 0) return true;
+    }
+  }
+
+  return false; // no co-occurrence found
 }
 
 // ==========================================
@@ -2980,6 +3058,7 @@ serve(async (req) => {
       pipeline: stdPipeline,
       tabularIntent: tabularIntent.isExcelTableQuery, iderIntent: iderIntent.isIDERQuery, comparativeIntent: isComparative,
       constraints: preConstraints, constraintsKeywordsHit, constraintsScope,
+      evidenceCheckPassed,
       chunksUsed: finalChunks.length,
       verification,
       failClosedTriggered: stdFailClosed, failClosedReason: stdFailReason, failClosedStage: stdFailStage,
