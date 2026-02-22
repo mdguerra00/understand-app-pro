@@ -1365,7 +1365,7 @@ interface EvidenceGraph {
 }
 
 async function buildEvidenceGraph(
-  supabase: any, projectIds: string[], query: string, insightSeeds: InsightSeed[]
+  supabase: any, projectIds: string[], query: string, insightSeeds: InsightSeed[], constraints?: QueryConstraints | null
 ): Promise<EvidenceGraph> {
   const diagnostics: string[] = [];
   const searchTerms = query.toLowerCase().split(/\s+/).filter((w: string) => w.length > 2).slice(0, 8);
@@ -1477,11 +1477,40 @@ async function buildEvidenceGraph(
 
   diagnostics.push(`Built evidence graph: ${expResults.length} experiments, ${expResults.reduce((s, e) => s + e.variants.length, 0)} variants, ${expResults.reduce((s, e) => s + e.variants.reduce((vs, v) => vs + Object.keys(v.metrics).length, 0), 0)} measurements`);
 
+  // CONSTRAINT FILTER: keep only experiments matching material/additive constraints
+  let finalExpResults = expResults;
+  if (constraints?.hasStrongConstraints) {
+    const addTermMap: Record<string, string[]> = {
+      silver_nanoparticles: ['silver', 'prata', 'ag', 'nanopart'],
+      bomar: ['bomar'],
+      tegdma: ['tegdma'],
+      udma: ['udma'],
+      bisgma: ['bisgma', 'bis-gma'],
+    };
+    const constraintTerms = [
+      ...constraints.materials,
+      ...constraints.additives.flatMap(a => addTermMap[a] || [a]),
+    ];
+    if (constraintTerms.length > 0) {
+      finalExpResults = expResults.filter(exp => {
+        const titleLower = exp.title.toLowerCase();
+        const titleMatch = constraintTerms.some(t => titleLower.includes(t));
+        const condMatch = exp.variants.some(v =>
+          Object.values(v.conditions).some(cv =>
+            constraintTerms.some(t => cv.toLowerCase().includes(t))
+          )
+        );
+        return titleMatch || condMatch;
+      });
+      diagnostics.push(`Constraint filter: ${expResults.length} -> ${finalExpResults.length} experiments`);
+    }
+  }
+
   return {
     question: query,
     project_id: projectIds[0] || '',
     target_metrics: targetMetrics,
-    experiments: expResults,
+    experiments: finalExpResults,
     insights_used: insightSeeds.map(s => ({ id: s.insight_id, title: s.title, verified: s.verified, category: s.category })),
     diagnostics,
   };
@@ -2324,6 +2353,50 @@ serve(async (req) => {
     const constraintsScope: 'project' | 'global' = contextMode === 'project' ? 'project' : 'global';
 
     // ==========================================
+    // GLOBAL CONSTRAINT GATE (before routing)
+    // ==========================================
+    let evidenceCheckPassed: boolean | null = null;
+    if (preConstraints.hasStrongConstraints) {
+      const gateProjectIds = validPrimary.length > 0 ? validPrimary : allowedProjectIds;
+      const { feasible, missing } = await quickEvidenceCheck(supabase, gateProjectIds, preConstraints);
+      evidenceCheckPassed = feasible;
+      console.log(`Global constraint gate: feasible=${feasible}, missing=${missing.join(', ')}`);
+
+      if (!feasible) {
+        const latencyMs = Date.now() - startTime;
+        const gateDiag = buildDiagnostics({
+          ...makeDiagnosticsDefaults(requestId, latencyMs),
+          pipeline: 'fail-closed-no-evidence',
+          tabularIntent: tabularIntent.isExcelTableQuery, iderIntent: iderIntent.isIDERQuery, comparativeIntent: isComparative,
+          constraints: preConstraints, constraintsKeywordsHit, constraintsScope,
+          evidenceCheckPassed: false,
+          failClosedTriggered: true, failClosedReason: 'constraint_evidence_missing', failClosedStage: 'routing',
+        });
+        const constraintDesc = [
+          ...preConstraints.materials.map(m => `material="${m}"`),
+          ...preConstraints.additives.map(a => `aditivo="${a}"`),
+          ...preConstraints.properties.map(p => `propriedade="${p}"`),
+        ].join(', ');
+        const suggestions = generateFailClosedSuggestions(query, preConstraints);
+        const failMsg = `**EVIDÊNCIA INEXISTENTE NO PROJETO** para: ${constraintDesc}.\n\nNão encontrei nenhum experimento, condição ou trecho contendo ${missing.join(' e ')} neste projeto.\n\n**Constraints detectadas**: ${constraintsKeywordsHit.join(', ')}\n\nPara responder, envie o Excel/PDF onde isso aparece ou indique o nome do experimento/aba.\n\n**Sugestões de investigação**:\n${suggestions}`;
+
+        await supabase.from("rag_logs").insert({
+          user_id: user.id, query, chunks_used: [], chunks_count: 0,
+          response_summary: failMsg.substring(0, 500),
+          model_used: `global-gate/fail-closed`, latency_ms: latencyMs,
+          request_id: requestId, diagnostics: gateDiag,
+        });
+
+        return new Response(JSON.stringify({
+          response: failMsg, sources: [],
+          chunks_used: 0, context_mode: contextMode, project_name: projectName,
+          pipeline: 'fail-closed-no-evidence', latency_ms: latencyMs,
+          _diagnostics: gateDiag,
+        }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+    }
+
+    // ==========================================
     // ROUTING PRIORITY: 1️⃣ Tabular → 2️⃣ IDER → 3️⃣ Comparative → 4️⃣ Standard
     // ==========================================
 
@@ -2429,8 +2502,8 @@ serve(async (req) => {
       const insightSeeds = await retrieveInsightsCandidates(supabase, iderProjectIds, query);
       console.log(`IDER: ${insightSeeds.length} insight seeds (${insightSeeds.filter(s => s.verified).length} verified)`);
 
-      // Step 2: Build evidence graph
-      const evidenceGraph = await buildEvidenceGraph(supabase, iderProjectIds, query, insightSeeds);
+      // Step 2: Build evidence graph (with constraint filtering)
+      const evidenceGraph = await buildEvidenceGraph(supabase, iderProjectIds, query, insightSeeds, preConstraints);
       console.log(`IDER evidence graph: ${evidenceGraph.experiments.length} experiments, ${evidenceGraph.diagnostics.join(' | ')}`);
 
       // Check sufficiency: need at least 1 experiment with 1 metric
@@ -2462,6 +2535,45 @@ serve(async (req) => {
           chunks_used: 0, context_mode: contextMode,
           pipeline: 'ider-fail-closed',
           _diagnostics: iderNoEvDiag,
+        }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+
+      // EXTERNAL LEAK CHECK (programmatic, pre-synthesis)
+      const { data: pFiles } = await supabase
+        .from('project_files').select('id').in('project_id', iderProjectIds);
+      const projectFileIds = new Set((pFiles || []).map((f: any) => f.id));
+      const externalDocs = evidenceGraph.experiments
+        .flatMap(e => e.doc_ids)
+        .filter(d => d && !projectFileIds.has(d));
+
+      if (externalDocs.length > 0) {
+        console.warn(`IDER external leak detected: ${externalDocs.length} docs not in project: ${externalDocs.join(', ')}`);
+        const latencyMs = Date.now() - startTime;
+        const leakDiag = buildDiagnostics({
+          ...makeDiagnosticsDefaults(requestId, latencyMs),
+          pipeline: 'ider-fail-closed',
+          tabularIntent: tabularIntent.isExcelTableQuery, iderIntent: true, comparativeIntent: isComparative,
+          constraints: preConstraints, constraintsKeywordsHit, constraintsScope,
+          insightSeedsCount: insightSeeds.length,
+          experimentsCount: evidenceGraph.experiments.length,
+          variantsCount: totalVariants, measurementsCount: totalMetrics,
+          failClosedTriggered: true, failClosedReason: 'external_leak', failClosedStage: 'evidence_graph',
+        });
+        const suggestions = generateFailClosedSuggestions(query, preConstraints, evidenceGraph);
+        const failMsg = `**VAZAMENTO EXTERNO DETECTADO**: ${externalDocs.length} documento(s) no grafo de evidência não pertencem ao projeto.\n\nDocumentos externos: ${externalDocs.join(', ')}\n\nA resposta foi bloqueada para evitar dados de fontes externas.\n\n**Sugestões de investigação**:\n${suggestions}`;
+
+        await supabase.from("rag_logs").insert({
+          user_id: user.id, query, chunks_used: [], chunks_count: 0,
+          response_summary: failMsg.substring(0, 500),
+          model_used: `ider-mode/fail-closed-external-leak`, latency_ms: latencyMs,
+          request_id: requestId, diagnostics: leakDiag,
+        });
+
+        return new Response(JSON.stringify({
+          response: failMsg, sources: [],
+          chunks_used: 0, context_mode: contextMode, project_name: projectName,
+          pipeline: 'ider-fail-closed', latency_ms: latencyMs,
+          _diagnostics: leakDiag,
         }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
       }
 
@@ -2845,18 +2957,32 @@ serve(async (req) => {
     const verification = await verifyResponse(response, allMeasurements, lovableApiKey);
     
     let finalResponse = response;
-    if (!verification.verified && verification.issues.length > 0) {
-      finalResponse += `\n\n---\n⚠️ **Nota de verificação**: ${verification.issues.join('; ')}. Valores foram verificados contra a base de medições.`;
+    let stdPipeline = '3-step';
+    let stdFailClosed = false;
+    let stdFailReason: string | null = null;
+    let stdFailStage: string | null = null;
+
+    // HARD FAIL: if verification finds unmatched numbers, block the response
+    if (!verification.verified && verification.unmatched > 0) {
+      console.warn(`3-STEP HARD FAIL-CLOSED: ${verification.unmatched} ungrounded numbers`);
+      const examples = verification.unmatched_examples.slice(0, 5).map(e => `"${e.number}" (…${e.context}…)`).join('\n- ');
+      const constraintInfo = constraintsKeywordsHit.length > 0 ? `\n**Constraints detectadas**: ${constraintsKeywordsHit.join(', ')}` : '';
+      const suggestions = generateFailClosedSuggestions(query, preConstraints);
+      finalResponse = `**VERIFICAÇÃO NUMÉRICA FALHOU**: ${verification.unmatched} número(s) na resposta não correspondem a medições verificadas do projeto.\n\n**Números sem evidência**:\n- ${examples}${constraintInfo}\n\nA resposta foi bloqueada para evitar informações não verificáveis.\n\n**Sugestões de investigação**:\n${suggestions}`;
+      stdFailClosed = true;
+      stdFailReason = 'numeric_grounding_failed';
+      stdFailStage = 'verification';
     }
 
     const latencyMs = Date.now() - startTime;
     const stdDiag = buildDiagnostics({
       ...makeDiagnosticsDefaults(requestId, latencyMs),
-      pipeline: '3-step',
+      pipeline: stdPipeline,
       tabularIntent: tabularIntent.isExcelTableQuery, iderIntent: iderIntent.isIDERQuery, comparativeIntent: isComparative,
       constraints: preConstraints, constraintsKeywordsHit, constraintsScope,
       chunksUsed: finalChunks.length,
       verification,
+      failClosedTriggered: stdFailClosed, failClosedReason: stdFailReason, failClosedStage: stdFailStage,
     });
 
     await supabase.from("rag_logs").insert({
@@ -2879,7 +3005,7 @@ serve(async (req) => {
       response: finalResponse, sources: [...chunkSources, ...experimentSources],
       chunks_used: finalChunks.length,
       context_mode: contextMode, project_name: projectName,
-      pipeline: '3-step', latency_ms: latencyMs,
+      pipeline: stdPipeline, latency_ms: latencyMs,
       _diagnostics: stdDiag,
     }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
