@@ -1177,6 +1177,502 @@ TABELA:\n${table}\nHISTÓRICO:\n${claimsCtx || 'Sem claims.'}`;
 }
 
 
+// ==========================================
+// IDER: Insight-Driven Deep Experimental Reasoning Mode
+// ==========================================
+interface IDERIntent {
+  isIDERQuery: boolean;
+  interpretiveKeywords: string[];
+}
+
+function detectIDERIntent(query: string): IDERIntent {
+  const q = query.toLowerCase();
+  const result: IDERIntent = { isIDERQuery: false, interpretiveKeywords: [] };
+
+  const interpretiveTerms: Record<string, string[]> = {
+    pt: [
+      'o que isso ensina', 'o que isso demonstra', 'o que demonstrou', 'o que aprendemos',
+      'lição', 'lições', 'implicação', 'implicações', 'interprete', 'interpretar',
+      'por que aconteceu', 'por que ocorreu', 'significado', 'conclusão prática',
+      'o que os dados mostram', 'o que os resultados mostram', 'análise profunda',
+      'análise detalhada', 'o que podemos concluir', 'o que se pode concluir',
+      'trade-off', 'trade offs', 'tradeoff', 'efeito observado',
+    ],
+    en: [
+      'what does this teach', 'what did it show', 'what we learned', 'what it demonstrated',
+      'implication', 'implications', 'lesson', 'lessons', 'interpret', 'interpretation',
+      'why did it happen', 'what the data shows', 'deep analysis', 'practical conclusion',
+      'what can we conclude', 'observed effect',
+    ],
+  };
+
+  const allTerms = [...interpretiveTerms.pt, ...interpretiveTerms.en];
+  for (const term of allTerms) {
+    if (q.includes(term)) result.interpretiveKeywords.push(term);
+  }
+
+  // Experiment/table context + interpretive intent
+  const experimentContext = /experimento|tabela|aba|excel|sheet|ensaio|teste\b/.test(q);
+  const interpretiveIntent = result.interpretiveKeywords.length > 0;
+  const deepAnalysisRequest = /(analise|analyze|explique|explain|detalhe|detail|resuma|summarize).*(resultado|result|dado|data|experiment|ensaio)/i.test(q);
+
+  if (interpretiveIntent) {
+    result.isIDERQuery = true;
+  } else if (experimentContext && deepAnalysisRequest) {
+    result.isIDERQuery = true;
+  }
+
+  return result;
+}
+
+// ==========================================
+// IDER: Retrieve insight seeds as bridges
+// ==========================================
+interface InsightSeed {
+  insight_id: string;
+  title: string;
+  content: string;
+  doc_id: string | null;
+  experiment_ids: string[];
+  metric_refs: string[];
+  confidence: number | null;
+  verified: boolean;
+  category: string;
+}
+
+async function retrieveInsightsCandidates(
+  supabase: any, projectIds: string[], query: string
+): Promise<InsightSeed[]> {
+  const searchTerms = query.toLowerCase().split(/\s+/).filter((w: string) => w.length > 2).slice(0, 8);
+
+  const { data: insights } = await supabase
+    .from('knowledge_items')
+    .select('id, title, content, category, confidence, evidence, evidence_verified, human_verified, source_file_id, ref_experiment_id, ref_metric_key, ref_condition_key')
+    .in('project_id', projectIds)
+    .is('deleted_at', null)
+    .order('confidence', { ascending: false })
+    .limit(50);
+
+  if (!insights || insights.length === 0) return [];
+
+  // Score and filter by relevance
+  const scored = insights.map((i: any) => {
+    const text = `${i.title} ${i.content} ${i.ref_metric_key || ''} ${i.ref_condition_key || ''}`.toLowerCase();
+    const matchCount = searchTerms.filter((t: string) => text.includes(t)).length;
+    return { ...i, matchScore: matchCount };
+  }).filter((i: any) => i.matchScore > 0).sort((a: any, b: any) => b.matchScore - a.matchScore);
+
+  return scored.slice(0, 30).map((i: any): InsightSeed => ({
+    insight_id: i.id,
+    title: i.title,
+    content: i.content,
+    doc_id: i.source_file_id,
+    experiment_ids: i.ref_experiment_id ? [i.ref_experiment_id] : [],
+    metric_refs: i.ref_metric_key ? [i.ref_metric_key] : [],
+    confidence: i.confidence,
+    verified: !!(i.evidence_verified || i.human_verified),
+    category: i.category,
+  }));
+}
+
+// ==========================================
+// IDER: Build Evidence Graph (structured-first)
+// ==========================================
+interface EvidenceVariant {
+  variant_id: string;
+  conditions: Record<string, string>;
+  metrics: Record<string, {
+    value: number;
+    unit: string;
+    value_canonical: number | null;
+    unit_canonical: string | null;
+    measurement_id: string;
+    excerpt: string;
+  }>;
+}
+
+interface EvidenceExperiment {
+  experiment_id: string;
+  title: string;
+  doc_ids: string[];
+  evidence_date: string | null;
+  hypothesis: string | null;
+  objective: string | null;
+  variants: EvidenceVariant[];
+}
+
+interface EvidenceGraph {
+  question: string;
+  project_id: string;
+  target_metrics: string[];
+  experiments: EvidenceExperiment[];
+  insights_used: { id: string; title: string; verified: boolean; category: string }[];
+  diagnostics: string[];
+}
+
+async function buildEvidenceGraph(
+  supabase: any, projectIds: string[], query: string, insightSeeds: InsightSeed[]
+): Promise<EvidenceGraph> {
+  const diagnostics: string[] = [];
+  const searchTerms = query.toLowerCase().split(/\s+/).filter((w: string) => w.length > 2).slice(0, 8);
+
+  // 1) Identify target metrics from query + insight refs
+  const metricRefs = new Set<string>();
+  for (const seed of insightSeeds) {
+    for (const m of seed.metric_refs) metricRefs.add(m);
+  }
+  // Add metrics detected from query keywords
+  const metricKeywords: Record<string, string[]> = {
+    'flexural_strength': ['flexural', 'resistência flexural', 'rf', 'mpa'],
+    'elastic_modulus': ['módulo', 'modulus', 'elasticidade', 'gpa'],
+    'hardness_vickers': ['dureza', 'vickers', 'hardness', 'hv'],
+    'water_sorption': ['sorção', 'sorption', 'absorção água'],
+    'delta_e': ['delta e', 'cor', 'color', 'amarelamento', 'yellowing'],
+    'degree_of_conversion': ['conversão', 'conversion', 'dc'],
+    'filler_content': ['carga', 'filler', 'load', 'glass content'],
+    'polymerization_depth': ['profundidade', 'depth of cure', 'dp'],
+  };
+  for (const [metric, kws] of Object.entries(metricKeywords)) {
+    if (kws.some(kw => query.toLowerCase().includes(kw))) metricRefs.add(metric);
+  }
+  const targetMetrics = Array.from(metricRefs);
+  diagnostics.push(`Target metrics: ${targetMetrics.join(', ') || 'all (fallback)'}`);
+
+  // 2) Select candidate experiments
+  const experimentIds = new Set<string>();
+  const docIds = new Set<string>();
+  for (const seed of insightSeeds) {
+    for (const eid of seed.experiment_ids) experimentIds.add(eid);
+    if (seed.doc_id) docIds.add(seed.doc_id);
+  }
+
+  // Also search experiments by keywords
+  const { data: expByKeyword } = await supabase
+    .from('experiments')
+    .select('id, title, objective, summary, hypothesis, expected_outcome, source_file_id, evidence_date')
+    .in('project_id', projectIds)
+    .is('deleted_at', null)
+    .limit(30);
+
+  if (expByKeyword) {
+    for (const exp of expByKeyword) {
+      const text = `${exp.title} ${exp.objective || ''} ${exp.summary || ''} ${exp.hypothesis || ''}`.toLowerCase();
+      if (searchTerms.some((t: string) => text.includes(t))) {
+        experimentIds.add(exp.id);
+      }
+    }
+  }
+
+  const expIds = Array.from(experimentIds).slice(0, 10);
+  diagnostics.push(`Candidate experiments: ${expIds.length}`);
+
+  if (expIds.length === 0) {
+    return { question: query, project_id: projectIds[0] || '', target_metrics: targetMetrics, experiments: [], insights_used: insightSeeds.map(s => ({ id: s.insight_id, title: s.title, verified: s.verified, category: s.category })), diagnostics };
+  }
+
+  // 3) Fetch structured data
+  const [{ data: experiments }, { data: measurements }, { data: conditions }] = await Promise.all([
+    supabase.from('experiments').select('id, title, objective, hypothesis, expected_outcome, source_file_id, evidence_date').in('id', expIds),
+    supabase.from('measurements').select('id, experiment_id, metric, value, unit, value_canonical, unit_canonical, source_excerpt, raw_metric_name, method, confidence').in('experiment_id', expIds),
+    supabase.from('experiment_conditions').select('experiment_id, key, value').in('experiment_id', expIds),
+  ]);
+
+  // 4) Group by experiment
+  const expResults: EvidenceExperiment[] = [];
+  for (const exp of (experiments || [])) {
+    const expMeasurements = (measurements || []).filter((m: any) => m.experiment_id === exp.id);
+    const expConditions = (conditions || []).filter((c: any) => c.experiment_id === exp.id);
+
+    // Filter by target metrics if specified
+    const relevantMeasurements = targetMetrics.length > 0
+      ? expMeasurements.filter((m: any) => targetMetrics.some(tm => m.metric?.includes(tm) || m.raw_metric_name?.toLowerCase().includes(tm)))
+      : expMeasurements;
+
+    if (relevantMeasurements.length === 0 && targetMetrics.length > 0) continue;
+
+    // Group measurements into variants by conditions
+    const condMap: Record<string, string> = {};
+    for (const c of expConditions) condMap[c.key] = c.value;
+
+    const variant: EvidenceVariant = {
+      variant_id: `${exp.id}_v0`,
+      conditions: condMap,
+      metrics: {},
+    };
+    for (const m of (relevantMeasurements.length > 0 ? relevantMeasurements : expMeasurements)) {
+      variant.metrics[m.metric] = {
+        value: m.value,
+        unit: m.unit,
+        value_canonical: m.value_canonical,
+        unit_canonical: m.unit_canonical,
+        measurement_id: m.id,
+        excerpt: m.source_excerpt,
+      };
+    }
+
+    expResults.push({
+      experiment_id: exp.id,
+      title: exp.title,
+      doc_ids: [exp.source_file_id].filter(Boolean),
+      evidence_date: exp.evidence_date,
+      hypothesis: exp.hypothesis,
+      objective: exp.objective,
+      variants: [variant],
+    });
+  }
+
+  diagnostics.push(`Built evidence graph: ${expResults.length} experiments, ${expResults.reduce((s, e) => s + e.variants.length, 0)} variants, ${expResults.reduce((s, e) => s + e.variants.reduce((vs, v) => vs + Object.keys(v.metrics).length, 0), 0)} measurements`);
+
+  return {
+    question: query,
+    project_id: projectIds[0] || '',
+    target_metrics: targetMetrics,
+    experiments: expResults,
+    insights_used: insightSeeds.map(s => ({ id: s.insight_id, title: s.title, verified: s.verified, category: s.category })),
+    diagnostics,
+  };
+}
+
+// ==========================================
+// IDER: Select critical docs for deep read
+// ==========================================
+interface CriticalDoc {
+  doc_id: string;
+  reason: string;
+  score: number;
+}
+
+function selectCriticalDocs(
+  evidenceGraph: EvidenceGraph, insightSeeds: InsightSeed[]
+): CriticalDoc[] {
+  const docScores = new Map<string, { score: number; reasons: string[] }>();
+
+  const addScore = (docId: string, pts: number, reason: string) => {
+    const existing = docScores.get(docId) || { score: 0, reasons: [] };
+    existing.score += pts;
+    existing.reasons.push(reason);
+    docScores.set(docId, existing);
+  };
+
+  // +3 for docs from verified insight seeds
+  for (const seed of insightSeeds) {
+    if (seed.doc_id && seed.verified) addScore(seed.doc_id, 3, 'verified_insight');
+    else if (seed.doc_id) addScore(seed.doc_id, 1, 'unverified_insight');
+  }
+
+  // +2 for docs with measurements matching target metrics
+  for (const exp of evidenceGraph.experiments) {
+    for (const docId of exp.doc_ids) {
+      const metricCount = exp.variants.reduce((s, v) => s + Object.keys(v.metrics).length, 0);
+      if (metricCount > 0) addScore(docId, 2, `has_${metricCount}_measurements`);
+    }
+  }
+
+  return Array.from(docScores.entries())
+    .map(([doc_id, { score, reasons }]) => ({ doc_id, score, reason: reasons.join(', ') }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 3);
+}
+
+// ==========================================
+// IDER: Deep read critical docs (reuses existing performDeepRead)
+// ==========================================
+async function deepReadCriticalDocs(
+  supabase: any, criticalDocs: CriticalDoc[], query: string
+): Promise<{ doc_id: string; text: string; sections_included: string[] }[]> {
+  const results: { doc_id: string; text: string; sections_included: string[] }[] = [];
+
+  for (const doc of criticalDocs.slice(0, 3)) {
+    // Priority: sections like Results, Discussion, Methods
+    const { data: structures } = await supabase
+      .from('document_structure')
+      .select('section_type, section_title, content_preview, start_chunk_id, end_chunk_id')
+      .eq('file_id', doc.doc_id)
+      .in('section_type', ['results', 'discussion', 'conclusion', 'methods', 'abstract'])
+      .order('section_index');
+
+    // Fetch chunks for this document
+    const { data: chunks } = await supabase
+      .from('search_chunks')
+      .select('chunk_text, chunk_index, metadata')
+      .eq('source_id', doc.doc_id)
+      .order('chunk_index', { ascending: true })
+      .limit(30);
+
+    if (!chunks || chunks.length === 0) continue;
+
+    const fullText = chunks.map((c: any) => c.chunk_text).join('\n\n');
+    const sectionsIncluded = (structures || []).map((s: any) => s.section_type);
+
+    results.push({
+      doc_id: doc.doc_id,
+      text: fullText.substring(0, 12000),
+      sections_included: sectionsIncluded,
+    });
+  }
+
+  return results;
+}
+
+// ==========================================
+// IDER: Synthesis prompt
+// ==========================================
+const IDER_MODE_PROMPT = `Você é um analista sênior de P&D. Responda a USER_QUESTION usando SOMENTE:
+(1) EVIDENCE_GRAPH_JSON (dados estruturados com measurements e citações),
+(2) DEEP_READ_PACK (texto integral dos documentos críticos do projeto),
+(3) INSIGHT_SEEDS (apenas como contexto histórico, indicando verified=true/false).
+REGRAS:
+- Não use conhecimento externo. Não invente dados.
+- Toda afirmação numérica deve citar measurement_id OU excerpt que contenha o número+unidade.
+- Não misture variantes/experimentos. Cada número deve estar ancorado em um variant_id/experiment_id.
+- Sempre separar:
+  A) 'O que os dados mostram' (observações)
+  B) 'O que isso nos ensina' (lições)
+  C) 'Limitações e próximas medições'
+- Se houver contradição temporal: contextualize por evidence_date.
+- Se a evidência for insuficiente: responda 'EVIDÊNCIA INSUFICIENTE' e liste exatamente o que falta.
+
+FORMATO:
+1) Evidência identificada (experimentos/docs/variantes)
+2) Observações (com números + âncoras measurement_id ou excerpt)
+3) Interpretação / Lições (cada lição referencia observações)
+4) Contradições/temporalidade (se houver)
+5) Limitações + próximos passos (medidas necessárias)
+6) Fontes (lista de citations/excerpts usados)`;
+
+async function synthesizeIDER(
+  query: string, evidenceGraph: EvidenceGraph, deepReadPack: { doc_id: string; text: string }[], insightSeeds: InsightSeed[], apiKey: string
+): Promise<{ response: string }> {
+  const insightSeedsForPrompt = insightSeeds.slice(0, 10).map(s => ({
+    title: s.title, content: s.content.substring(0, 200), verified: s.verified, category: s.category,
+  }));
+
+  const deepReadForPrompt = deepReadPack.map(d => ({
+    doc_id: d.doc_id, text: d.text.substring(0, 6000),
+  }));
+
+  const userContent = `INPUTS:
+USER_QUESTION: ${query}
+EVIDENCE_GRAPH_JSON: ${JSON.stringify(evidenceGraph, null, 2)}
+DEEP_READ_PACK: ${JSON.stringify(deepReadForPrompt, null, 2)}
+INSIGHT_SEEDS: ${JSON.stringify(insightSeedsForPrompt, null, 2)}`;
+
+  const resp = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+    method: "POST",
+    headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: "google/gemini-3-flash-preview",
+      messages: [
+        { role: "system", content: IDER_MODE_PROMPT },
+        { role: "user", content: userContent },
+      ],
+      temperature: 0.1,
+      max_tokens: 5000,
+    }),
+  });
+
+  if (!resp.ok) throw new Error(`IDER synthesis error: ${resp.status}`);
+  const data = await resp.json();
+  return { response: data.choices?.[0]?.message?.content || 'Erro ao gerar síntese IDER.' };
+}
+
+// ==========================================
+// IDER: Audit (lightweight 2nd pass)
+// ==========================================
+interface AuditIssue {
+  type: 'numeric_missing' | 'cross_variant_mix' | 'unsupported_claim' | 'external_leak' | 'temporal_error';
+  detail: string;
+}
+
+async function auditIDER(
+  responseText: string, evidenceGraph: EvidenceGraph, apiKey: string
+): Promise<AuditIssue[]> {
+  const auditPrompt = `Analise a resposta abaixo e identifique PROBLEMAS ESPECÍFICOS.
+Para cada problema, classifique como:
+- numeric_missing: número citado sem measurement_id ou excerpt
+- cross_variant_mix: dados de um experimento/variante atribuídos a outro
+- unsupported_claim: afirmação/lição sem base nos dados
+- external_leak: uso de conhecimento externo não presente nos dados
+- temporal_error: confusão de datas ou uso de dado superado como atual
+
+Responda APENAS com um JSON array: [{"type":"...","detail":"..."}]
+Se não houver problemas, responda: []
+
+RESPOSTA ANALISADA:
+${responseText.substring(0, 3000)}
+
+EVIDENCE_GRAPH (ground truth):
+${JSON.stringify(evidenceGraph.experiments.slice(0, 5), null, 2).substring(0, 2000)}`;
+
+  try {
+    const resp = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "google/gemini-2.5-flash",
+        messages: [{ role: "user", content: auditPrompt }],
+        temperature: 0.0,
+        max_tokens: 1000,
+      }),
+    });
+
+    if (!resp.ok) return [];
+    const data = await resp.json();
+    let raw = data.choices?.[0]?.message?.content || '[]';
+    raw = raw.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+    const issues = JSON.parse(raw);
+    return Array.isArray(issues) ? issues : [];
+  } catch {
+    return [];
+  }
+}
+
+// ==========================================
+// IDER: Programmatic number verification
+// ==========================================
+function verifyIDERNumbers(
+  responseText: string, evidenceGraph: EvidenceGraph
+): { verified: boolean; issues: string[] } {
+  // Collect all valid values from evidence graph
+  const validValues = new Set<string>();
+  for (const exp of evidenceGraph.experiments) {
+    for (const variant of exp.variants) {
+      for (const [, metric] of Object.entries(variant.metrics)) {
+        validValues.add(String(metric.value));
+        validValues.add(String(metric.value).replace('.', ','));
+        if (metric.value_canonical != null) {
+          validValues.add(String(metric.value_canonical));
+          validValues.add(String(metric.value_canonical).replace('.', ','));
+        }
+      }
+    }
+  }
+
+  const numbersInResponse = responseText.match(/\d+[.,]?\d*/g) || [];
+  const ungrounded: string[] = [];
+
+  for (const n of numbersInResponse) {
+    const num = parseFloat(n.replace(',', '.'));
+    if (isNaN(num)) continue;
+    if (num <= 10 && Number.isInteger(num)) continue;
+    if (num > 1900 && num < 2100) continue;
+
+    if (!validValues.has(n) && !validValues.has(n.replace(',', '.'))) {
+      let grounded = false;
+      for (const v of validValues) {
+        const vn = parseFloat(v.replace(',', '.'));
+        if (!isNaN(vn) && Math.abs(vn - num) <= 0.5) { grounded = true; break; }
+      }
+      if (!grounded) ungrounded.push(n);
+    }
+  }
+
+  const issues: string[] = [];
+  if (ungrounded.length > 2) {
+    issues.push(`NUMERIC_GROUNDING_FAILED_IDER: ${ungrounded.length} numbers not in evidence graph: ${ungrounded.slice(0, 5).join(', ')}`);
+  }
+  return { verified: issues.length === 0, issues };
+}
 
 async function verifyResponse(
   responseText: string, measurements: any[], apiKey: string
@@ -1389,7 +1885,128 @@ serve(async (req) => {
     }
 
     // ==========================================
-    // PARALLEL DATA FETCHING
+    // IDER MODE CHECK (Insight-Driven Deep Experimental Reasoning)
+    // ==========================================
+    const iderIntent = detectIDERIntent(query);
+
+    if (iderIntent.isIDERQuery) {
+      console.log(`IDER mode activated. Keywords: ${iderIntent.interpretiveKeywords.join(', ')}`);
+
+      const iderProjectIds = validPrimary.length > 0 ? validPrimary : allowedProjectIds;
+
+      // Step 1: Retrieve insight seeds
+      const insightSeeds = await retrieveInsightsCandidates(supabase, iderProjectIds, query);
+      console.log(`IDER: ${insightSeeds.length} insight seeds (${insightSeeds.filter(s => s.verified).length} verified)`);
+
+      // Step 2: Build evidence graph
+      const evidenceGraph = await buildEvidenceGraph(supabase, iderProjectIds, query, insightSeeds);
+      console.log(`IDER evidence graph: ${evidenceGraph.experiments.length} experiments, ${evidenceGraph.diagnostics.join(' | ')}`);
+
+      // Check sufficiency: need at least 1 experiment with 1 metric
+      const totalMetrics = evidenceGraph.experiments.reduce((s, e) => s + e.variants.reduce((vs, v) => vs + Object.keys(v.metrics).length, 0), 0);
+      const totalVariants = evidenceGraph.experiments.reduce((s, e) => s + e.variants.length, 0);
+
+      if (evidenceGraph.experiments.length === 0 || totalMetrics === 0) {
+        // FAIL-CLOSED: insufficient structured evidence
+        const latencyMs = Date.now() - startTime;
+        const failMsg = `EVIDÊNCIA INSUFICIENTE para análise interpretativa.\n\nNão encontrei experimentos estruturados com medições no projeto que correspondam à sua pergunta. O sistema precisa de dados experimentais (measurements) para gerar análises baseadas em evidência.\n\n**Diagnóstico**: ${evidenceGraph.diagnostics.join('. ')}\n**Insights encontrados**: ${insightSeeds.length} (mas sem medições estruturadas associadas)`;
+
+        await supabase.from("rag_logs").insert({
+          user_id: user.id, query,
+          chunks_used: [], chunks_count: 0,
+          response_summary: failMsg.substring(0, 500),
+          model_used: `ider-mode/fail-closed`,
+          latency_ms: latencyMs,
+        });
+
+        return new Response(JSON.stringify({
+          response: failMsg, sources: [],
+          chunks_used: 0, context_mode: contextMode,
+          pipeline: 'ider-fail-closed',
+          ider_diagnostics: evidenceGraph.diagnostics,
+        }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+
+      // Step 3: Select critical docs
+      const criticalDocs = selectCriticalDocs(evidenceGraph, insightSeeds);
+      console.log(`IDER: ${criticalDocs.length} critical docs: ${criticalDocs.map(d => `${d.doc_id}(${d.reason})`).join(', ')}`);
+
+      // Step 4: Deep read critical docs
+      const deepReadPack = await deepReadCriticalDocs(supabase, criticalDocs, query);
+      console.log(`IDER: deep read ${deepReadPack.length} docs, ${deepReadPack.reduce((s, d) => s + d.text.length, 0)} chars`);
+
+      // Step 5: Synthesize
+      const { response: iderResponse } = await synthesizeIDER(query, evidenceGraph, deepReadPack, insightSeeds, lovableApiKey);
+
+      // Step 6: Audit (lightweight)
+      const auditIssues = await auditIDER(iderResponse, evidenceGraph, lovableApiKey);
+      console.log(`IDER audit: ${auditIssues.length} issues`);
+
+      // Step 7: Programmatic verification
+      const iderVerification = verifyIDERNumbers(iderResponse, evidenceGraph);
+
+      let finalIDERResponse = iderResponse;
+      if (!iderVerification.verified) {
+        console.warn(`IDER verification failed: ${iderVerification.issues.join('; ')}`);
+        finalIDERResponse += `\n\n---\n⚠️ **Verificação**: ${iderVerification.issues.join('; ')}`;
+      }
+      if (auditIssues.length > 0) {
+        const severeIssues = auditIssues.filter(i => i.type === 'cross_variant_mix' || i.type === 'external_leak');
+        if (severeIssues.length > 0) {
+          finalIDERResponse += `\n\n---\n⚠️ **Auditoria**: ${severeIssues.map(i => `[${i.type}] ${i.detail}`).join('; ')}`;
+        }
+      }
+
+      const latencyMs = Date.now() - startTime;
+      await supabase.from("rag_logs").insert({
+        user_id: user.id, query,
+        chunks_used: [], chunks_count: 0,
+        response_summary: finalIDERResponse.substring(0, 500),
+        model_used: `ider-mode/${contextMode}/gemini-3-flash`,
+        latency_ms: latencyMs,
+      });
+
+      // Build sources from evidence graph
+      const iderSources = evidenceGraph.experiments.flatMap((exp, ei) =>
+        exp.variants.flatMap(v =>
+          Object.entries(v.metrics).map(([metricKey, m], mi) => ({
+            citation: `E${ei + 1}-M${mi + 1}`,
+            type: 'measurement',
+            id: m.measurement_id,
+            title: `${exp.title} — ${metricKey}`,
+            project: projectName || 'Projeto',
+            excerpt: m.excerpt?.substring(0, 200) || `${m.value} ${m.unit}`,
+          }))
+        )
+      );
+
+      return new Response(JSON.stringify({
+        response: finalIDERResponse,
+        sources: iderSources,
+        chunks_used: 0,
+        has_experiment_data: true,
+        has_metric_summaries: false,
+        has_knowledge_pivots: false,
+        deep_read_performed: deepReadPack.length > 0,
+        verification_passed: iderVerification.verified,
+        audit_issues_count: auditIssues.length,
+        context_mode: contextMode,
+        project_name: projectName,
+        pipeline: 'ider',
+        model_used: `ider-mode/${contextMode}/gemini-3-flash`,
+        latency_ms: latencyMs,
+        ider_diagnostics: evidenceGraph.diagnostics,
+        ider_experiments_count: evidenceGraph.experiments.length,
+        ider_variants_count: totalVariants,
+        ider_measurements_count: totalMetrics,
+        ider_insight_seeds_count: insightSeeds.length,
+        ider_critical_docs: criticalDocs.map(d => d.doc_id),
+        ider_deep_read_chars: deepReadPack.reduce((s, d) => s + d.text.length, 0),
+      }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    }
+
+    // ==========================================
+    // PARALLEL DATA FETCHING (Standard 3-step pipeline)
     // ==========================================
     // For project mode: structured data comes ONLY from the project
     const structuredDataProjectIds = contextMode === "project" && validPrimary.length > 0
