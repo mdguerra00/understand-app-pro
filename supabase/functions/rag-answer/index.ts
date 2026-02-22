@@ -1735,6 +1735,325 @@ async function verifyResponse(
 }
 
 // ==========================================
+// CONSTRAINT EXTRACTION (heuristic, no LLM)
+// ==========================================
+interface QueryConstraints {
+  materials: string[];
+  additives: string[];
+  properties: string[];
+  hasStrongConstraints: boolean;
+}
+
+function extractConstraints(query: string): QueryConstraints {
+  const s = query.toLowerCase();
+
+  const materialDict: Record<string, RegExp> = {
+    vitality: /vitality/,
+    filtek: /filtek/,
+    charisma: /charisma/,
+    tetric: /tetric/,
+    grandio: /grandio/,
+    z350: /z\s*350/,
+    z250: /z\s*250/,
+    brilliant: /brilliant/,
+    herculite: /herculite/,
+    clearfil: /clearfil/,
+    estelite: /estelite/,
+    ips: /\bips\b/,
+    ceram: /\bceram/,
+  };
+
+  const additiveDict: Record<string, RegExp> = {
+    silver_nanoparticles: /prata|silver|\bag\b|nanopart[ií]culas?/,
+    bomar: /bomar/,
+    tegdma: /tegdma/,
+    udma: /\budma\b/,
+    bisgma: /bis[\s-]?gma/,
+  };
+
+  const propertyDict: Record<string, RegExp> = {
+    flexural_strength: /resist[eê]ncia flexural|flexural strength|\brf\b/,
+    flexural_modulus: /m[oó]dulo flexural|flexural modulus|\bmf\b/,
+    hardness: /dureza|vickers|knoop|hardness|\bhv\b|\bkhn\b/,
+    water_sorption: /sor[cç][aã]o|sorption|absor[cç][aã]o de [aá]gua/,
+    color: /\bcor\b|color|yellowing|amarel|delta[\s_]?e|Δe/,
+    degree_of_conversion: /convers[aã]o|conversion|\bdc\b/,
+    elastic_modulus: /m[oó]dulo el[aá]stic|elastic modulus|young/,
+  };
+
+  const materials: string[] = [];
+  for (const [name, re] of Object.entries(materialDict)) {
+    if (re.test(s)) materials.push(name);
+  }
+
+  const additives: string[] = [];
+  for (const [name, re] of Object.entries(additiveDict)) {
+    if (re.test(s)) additives.push(name);
+  }
+
+  const properties: string[] = [];
+  for (const [name, re] of Object.entries(propertyDict)) {
+    if (re.test(s)) properties.push(name);
+  }
+
+  const hasStrongConstraints = (materials.length + additives.length + properties.length) >= 2;
+
+  return { materials, additives, properties, hasStrongConstraints };
+}
+
+// ==========================================
+// QUICK EVIDENCE CHECK (gating)
+// ==========================================
+async function quickEvidenceCheck(
+  supabase: any, projectIds: string[], constraints: QueryConstraints
+): Promise<{ feasible: boolean; missing: string[] }> {
+  const missing: string[] = [];
+
+  // Helper: check if ANY of the search terms appear in any of the target tables
+  async function existsInProject(searchTerms: string[]): Promise<boolean> {
+    const ilikePatterns = searchTerms.map(t => `%${t}%`);
+
+    // Run 4 queries in parallel, each with LIMIT 1
+    const checks = await Promise.all([
+      // 1) experiment_conditions
+      (async () => {
+        for (const pat of ilikePatterns) {
+          const { data } = await supabase
+            .from('experiment_conditions')
+            .select('id')
+            .in('experiment_id',
+              supabase.from('experiments').select('id').in('project_id', projectIds).is('deleted_at', null)
+            )
+            .ilike('value', pat)
+            .limit(1);
+          if (data && data.length > 0) return true;
+        }
+        return false;
+      })(),
+      // 2) experiments title/objective/hypothesis
+      (async () => {
+        for (const pat of ilikePatterns) {
+          const { data } = await supabase
+            .from('experiments')
+            .select('id')
+            .in('project_id', projectIds)
+            .is('deleted_at', null)
+            .or(`title.ilike.${pat},objective.ilike.${pat},hypothesis.ilike.${pat}`)
+            .limit(1);
+          if (data && data.length > 0) return true;
+        }
+        return false;
+      })(),
+      // 3) search_chunks
+      (async () => {
+        for (const pat of ilikePatterns) {
+          const { data } = await supabase
+            .from('search_chunks')
+            .select('id')
+            .in('project_id', projectIds)
+            .ilike('chunk_text', pat)
+            .limit(1);
+          if (data && data.length > 0) return true;
+        }
+        return false;
+      })(),
+      // 4) measurements source_excerpt
+      (async () => {
+        for (const pat of ilikePatterns) {
+          const { data } = await supabase
+            .from('measurements')
+            .select('id, experiments!inner(project_id)')
+            .in('experiments.project_id', projectIds)
+            .ilike('source_excerpt', pat)
+            .limit(1);
+          if (data && data.length > 0) return true;
+        }
+        return false;
+      })(),
+    ]);
+
+    return checks.some(Boolean);
+  }
+
+  // Check each constraint type
+  const checkPromises: Promise<void>[] = [];
+
+  for (const mat of constraints.materials) {
+    checkPromises.push((async () => {
+      const found = await existsInProject([mat]);
+      if (!found) missing.push(`material="${mat}"`);
+    })());
+  }
+
+  for (const add of constraints.additives) {
+    // Map additive key to search terms
+    const termMap: Record<string, string[]> = {
+      silver_nanoparticles: ['silver', 'prata', 'ag', 'nanopart'],
+      bomar: ['bomar'],
+      tegdma: ['tegdma'],
+      udma: ['udma'],
+      bisgma: ['bisgma', 'bis-gma'],
+    };
+    const terms = termMap[add] || [add];
+    checkPromises.push((async () => {
+      const found = await existsInProject(terms);
+      if (!found) missing.push(`aditivo="${add}"`);
+    })());
+  }
+
+  for (const prop of constraints.properties) {
+    // For properties, check measurements.metric and search_chunks
+    const propTermMap: Record<string, string[]> = {
+      color: ['color', 'yellowing', 'delta_e', 'whiteness', 'amarel', 'cor'],
+      flexural_strength: ['flexural_strength', 'flexural strength', 'resistência flexural'],
+      hardness: ['hardness', 'dureza', 'vickers'],
+      water_sorption: ['water_sorption', 'sorption', 'sorção'],
+      degree_of_conversion: ['degree_of_conversion', 'conversão', 'conversion'],
+      elastic_modulus: ['elastic_modulus', 'módulo', 'modulus'],
+      flexural_modulus: ['flexural_modulus', 'módulo flexural'],
+    };
+    const terms = propTermMap[prop] || [prop];
+    checkPromises.push((async () => {
+      // Check metric key in measurements
+      let found = false;
+      for (const t of terms) {
+        const { data } = await supabase
+          .from('measurements')
+          .select('id, experiments!inner(project_id)')
+          .in('experiments.project_id', projectIds)
+          .ilike('metric', `%${t}%`)
+          .limit(1);
+        if (data && data.length > 0) { found = true; break; }
+      }
+      if (!found) {
+        // Fallback: check chunks
+        found = await existsInProject(terms);
+      }
+      if (!found) missing.push(`propriedade="${prop}"`);
+    })());
+  }
+
+  await Promise.all(checkPromises);
+
+  return { feasible: missing.length === 0, missing };
+}
+
+// ==========================================
+// COMPARATIVE CONSTRAINED MODE
+// ==========================================
+async function runComparativeConstrained(
+  supabase: any, query: string, projectIds: string[], targetMetrics: string[],
+  constraints: QueryConstraints, apiKey: string, contextMode: ContextMode, projectName?: string,
+): Promise<string> {
+  // Fetch current_best filtered by constraints
+  let bestQuery = supabase.from('current_best').select('*').in('project_id', projectIds);
+
+  // If target metrics specified, filter
+  if (targetMetrics.length > 0) {
+    const metricOr = targetMetrics.map(t => `metric_key.ilike.%${t}%`).join(',');
+    bestQuery = bestQuery.or(metricOr);
+  }
+
+  const { data: bestMeasurements } = await bestQuery.limit(100);
+  if (!bestMeasurements || bestMeasurements.length === 0) return '';
+
+  // Filter by material/additive constraints via experiment_conditions
+  let filteredMeasurements = bestMeasurements;
+
+  if (constraints.materials.length > 0 || constraints.additives.length > 0) {
+    const expIds = [...new Set(bestMeasurements.map((m: any) => m.experiment_id).filter(Boolean))];
+    if (expIds.length > 0) {
+      const [{ data: conditions }, { data: experiments }] = await Promise.all([
+        supabase.from('experiment_conditions').select('experiment_id, key, value').in('experiment_id', expIds),
+        supabase.from('experiments').select('id, title').in('id', expIds),
+      ]);
+
+      const matchingExpIds = new Set<string>();
+
+      // Check materials
+      for (const mat of constraints.materials) {
+        for (const c of (conditions || [])) {
+          if (['material', 'resin', 'composite', 'resina'].includes(c.key.toLowerCase()) &&
+              c.value.toLowerCase().includes(mat)) {
+            matchingExpIds.add(c.experiment_id);
+          }
+        }
+        // Also check experiment title
+        for (const exp of (experiments || [])) {
+          if (exp.title.toLowerCase().includes(mat)) {
+            matchingExpIds.add(exp.id);
+          }
+        }
+      }
+
+      // Check additives
+      const additiveTerms: Record<string, string[]> = {
+        silver_nanoparticles: ['silver', 'prata', 'ag', 'nanopart'],
+        bomar: ['bomar'], tegdma: ['tegdma'], udma: ['udma'], bisgma: ['bisgma', 'bis-gma'],
+      };
+      for (const add of constraints.additives) {
+        const terms = additiveTerms[add] || [add];
+        for (const c of (conditions || [])) {
+          if (terms.some(t => c.value.toLowerCase().includes(t))) {
+            matchingExpIds.add(c.experiment_id);
+          }
+        }
+        for (const exp of (experiments || [])) {
+          if (terms.some(t => exp.title.toLowerCase().includes(t))) {
+            matchingExpIds.add(exp.id);
+          }
+        }
+      }
+
+      if (matchingExpIds.size > 0) {
+        filteredMeasurements = bestMeasurements.filter((m: any) => matchingExpIds.has(m.experiment_id));
+      } else {
+        // No matching experiments found after filtering
+        return '';
+      }
+    }
+  }
+
+  if (filteredMeasurements.length === 0) return '';
+
+  // Build table and synthesize (reuse comparative logic)
+  let table = '| # | Experimento | Métrica | Valor | Unidade | Data Evidência |\n|---|------------|---------|-------|---------|---------------|\n';
+  for (let i = 0; i < Math.min(filteredMeasurements.length, 20); i++) {
+    const m = filteredMeasurements[i];
+    const dt = m.evidence_date ? new Date(m.evidence_date).toISOString().split('T')[0] : 'desconhecida';
+    table += `| ${i+1} | ${m.experiment_title || 'N/A'} | ${m.raw_metric_name || m.metric_key} | **${m.value}** | ${m.unit} | ${dt} |\n`;
+  }
+
+  const constraintDesc = [
+    ...constraints.materials.map(m => `material=${m}`),
+    ...constraints.additives.map(a => `aditivo=${a}`),
+    ...constraints.properties.map(p => `propriedade=${p}`),
+  ].join(', ');
+
+  const sysPrompt = `Você responde queries COMPARATIVAS com FILTRO DE ESCOPO. Os dados abaixo já foram filtrados para: ${constraintDesc}.
+REGRAS: 1) Use só a tabela filtrada. 2) Deixe claro o escopo do filtro. 3) Se os dados forem insuficientes, diga explicitamente.
+TABELA FILTRADA:\n${table}`;
+
+  const resp = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+    method: "POST",
+    headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: "google/gemini-3-flash-preview",
+      messages: [
+        { role: "system", content: sysPrompt },
+        { role: "user", content: `QUERY: ${query}\n\nResponda com: Estado Atual (filtrado por ${constraintDesc}), Tabela Comparativa, Ressalvas sobre escopo.` },
+      ],
+      temperature: 0.1, max_tokens: 3000,
+    }),
+  });
+
+  if (!resp.ok) return '';
+  const d = await resp.json();
+  const text = d.choices?.[0]?.message?.content || '';
+  return text ? `[MODO COMPARATIVO CONSTRAINED — Escopo: ${constraintDesc}]\n\n${text}` : '';
+}
+
+// ==========================================
 // MAIN HANDLER
 // ==========================================
 serve(async (req) => {
@@ -1998,14 +2317,99 @@ serve(async (req) => {
     }
 
     // ==========================================
-    // 3️⃣ COMPARATIVE MODE CHECK (pure ranking only)
+    // 3️⃣ COMPARATIVE MODE CHECK (with gating)
     // ==========================================
     const { isComparative, targetMetrics } = detectComparativeIntent(query);
 
     if (isComparative) {
-      console.log(`Comparative query detected (pure ranking). Target metrics: ${targetMetrics.join(', ') || 'all'}`);
+      const comparativeProjectIds = validPrimary.length > 0 ? validPrimary : allowedProjectIds;
+      const constraints = extractConstraints(query);
+
+      console.log(`Comparative query detected. Constraints: materials=${constraints.materials.join(',')}, additives=${constraints.additives.join(',')}, properties=${constraints.properties.join(',')}, strong=${constraints.hasStrongConstraints}`);
+
+      if (constraints.hasStrongConstraints) {
+        // GATING: check if evidence exists for these constraints
+        const { feasible, missing } = await quickEvidenceCheck(supabase, comparativeProjectIds, constraints);
+        console.log(`Evidence check: feasible=${feasible}, missing=${missing.join(', ')}`);
+
+        if (!feasible) {
+          // FAIL-CLOSED: no evidence for strong constraints
+          const latencyMs = Date.now() - startTime;
+          const constraintDesc = [
+            ...constraints.materials.map(m => `material="${m}"`),
+            ...constraints.additives.map(a => `aditivo="${a}"`),
+            ...constraints.properties.map(p => `propriedade="${p}"`),
+          ].join(', ');
+          const failMsg = `**EVIDÊNCIA INEXISTENTE NO PROJETO** para: ${constraintDesc}.\n\nNão encontrei nenhum experimento, condição ou trecho contendo ${missing.join(' e ')} neste projeto.\n\nPara responder, envie o Excel/PDF onde isso aparece ou indique o nome do experimento/aba.`;
+
+          await supabase.from("rag_logs").insert({
+            user_id: user.id, query,
+            chunks_used: [], chunks_count: 0,
+            response_summary: failMsg.substring(0, 500),
+            model_used: `fail-closed-no-evidence/${contextMode}`,
+            latency_ms: latencyMs,
+          });
+
+          return new Response(JSON.stringify({
+            response: failMsg, sources: [],
+            chunks_used: 0, context_mode: contextMode, project_name: projectName,
+            pipeline: 'fail-closed-no-evidence',
+            constraints_detected: constraints,
+            evidence_check_passed: false,
+            latency_ms: latencyMs,
+          }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        }
+
+        // COMPARATIVE CONSTRAINED: evidence exists, filter by constraints
+        console.log('Running comparative-constrained mode');
+        const constrainedResult = await runComparativeConstrained(
+          supabase, query, comparativeProjectIds, targetMetrics,
+          constraints, lovableApiKey, contextMode, projectName,
+        );
+
+        if (constrainedResult) {
+          const latencyMs = Date.now() - startTime;
+          await supabase.from("rag_logs").insert({
+            user_id: user.id, query,
+            chunks_used: [], chunks_count: 0,
+            response_summary: constrainedResult.substring(0, 500),
+            model_used: `comparative-constrained/${contextMode}/gemini-3-flash`,
+            latency_ms: latencyMs,
+          });
+
+          return new Response(JSON.stringify({
+            response: constrainedResult, sources: [],
+            chunks_used: 0, has_experiment_data: true,
+            context_mode: contextMode, project_name: projectName,
+            pipeline: 'comparative-constrained',
+            constraints_detected: constraints,
+            evidence_check_passed: true,
+            latency_ms: latencyMs,
+          }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        }
+
+        // Constrained returned empty after filtering → fail-closed
+        const latencyMs2 = Date.now() - startTime;
+        const failMsg2 = `**EVIDÊNCIA INSUFICIENTE** após filtrar por escopo. Encontrei evidência parcial no projeto, mas após aplicar os filtros de material/aditivo/propriedade, nenhuma medição restou.\n\nTente reformular sem restrições específicas ou envie os dados relevantes.`;
+        await supabase.from("rag_logs").insert({
+          user_id: user.id, query, chunks_used: [], chunks_count: 0,
+          response_summary: failMsg2.substring(0, 500),
+          model_used: `comparative-constrained/fail-closed/${contextMode}`,
+          latency_ms: latencyMs2,
+        });
+        return new Response(JSON.stringify({
+          response: failMsg2, sources: [],
+          chunks_used: 0, context_mode: contextMode, project_name: projectName,
+          pipeline: 'comparative-constrained-fail-closed',
+          constraints_detected: constraints, evidence_check_passed: true,
+          latency_ms: latencyMs2,
+        }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+
+      // No strong constraints → pure ranking (original comparative)
+      console.log(`Pure ranking comparative. Target metrics: ${targetMetrics.join(', ') || 'all'}`);
       const comparativeResult = await runComparativeMode(
-        supabase, query, validPrimary.length > 0 ? validPrimary : allowedProjectIds,
+        supabase, query, comparativeProjectIds,
         targetMetrics, lovableApiKey, contextMode, projectName,
       );
 
@@ -2022,10 +2426,10 @@ serve(async (req) => {
         return new Response(JSON.stringify({
           response: comparativeResult, sources: [],
           chunks_used: 0, has_experiment_data: true,
-          has_metric_summaries: false, has_knowledge_pivots: false,
-          deep_read_performed: false, verification_passed: true,
           context_mode: contextMode, project_name: projectName,
-          pipeline: 'comparative', model_used: `comparative-mode/${contextMode}/gemini-3-flash`,
+          pipeline: 'comparative',
+          constraints_detected: constraints,
+          evidence_check_passed: true,
           latency_ms: latencyMs,
         }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
       }
