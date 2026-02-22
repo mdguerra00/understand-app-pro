@@ -625,6 +625,17 @@ async function saveExperiments(
       const m = validMeasurements[i];
       const { canonicalMetric, canonicalUnit, conversionFactor } = await normalizeMetric(supabase, m.metric, m.unit);
 
+      // Parse sheet/row/col from source_excerpt for tabular queries
+      let parsedSheet: string | null = null;
+      let parsedRowIdx: number | null = null;
+      let parsedCellAddr: string | null = null;
+      const sheetMatch = m.source_excerpt.match(/Sheet:\s*([^,]+)/);
+      const rowMatch = m.source_excerpt.match(/Row:\s*(\d+)/);
+      const colMatch = m.source_excerpt.match(/Col:\s*([^,]+)/);
+      if (sheetMatch) parsedSheet = sheetMatch[1].trim();
+      if (rowMatch) parsedRowIdx = parseInt(rowMatch[1], 10);
+      if (colMatch) parsedCellAddr = colMatch[1].trim();
+
       const { data: measRecord } = await supabase.from('measurements').insert({
         experiment_id: expRecord.id,
         metric: canonicalMetric,
@@ -637,6 +648,9 @@ async function saveExperiments(
         notes: m.notes || null,
         confidence: m.confidence || 'medium',
         source_excerpt: m.source_excerpt.substring(0, 500),
+        sheet_name: parsedSheet,
+        row_idx: parsedRowIdx,
+        cell_addr: parsedCellAddr,
       }).select('id').single();
 
       totalMeasurements++;

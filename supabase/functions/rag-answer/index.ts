@@ -9,6 +9,477 @@ const corsHeaders = {
 type ContextMode = "project" | "global";
 
 // ==========================================
+// TABULAR EXCEL INTENT DETECTOR (heuristic, no LLM)
+// ==========================================
+interface TabularIntent {
+  isExcelTableQuery: boolean;
+  targetMaterials: string[];
+  targetFeature: string | null;
+  numericTargets: { value: number; tolerance: number }[];
+}
+
+function detectTabularExcelIntent(query: string): TabularIntent {
+  const q = query.toLowerCase();
+  const result: TabularIntent = {
+    isExcelTableQuery: false,
+    targetMaterials: [],
+    targetFeature: null,
+    numericTargets: [],
+  };
+
+  // Extract percentages and numeric pairs (e.g. "60% para 40%", "de 60 para 40", "~60%")
+  const percentPatterns = [
+    /(\d+(?:[.,]\d+)?)\s*%/g,
+    /de\s+~?(\d+(?:[.,]\d+)?)\s+para\s+~?(\d+(?:[.,]\d+)?)/gi,
+    /~(\d+(?:[.,]\d+)?)\s*%?\s*(?:para|→|->|a)\s*~?(\d+(?:[.,]\d+)?)\s*%?/gi,
+  ];
+  
+  const numbers = new Set<number>();
+  for (const pat of percentPatterns) {
+    let m;
+    while ((m = pat.exec(q)) !== null) {
+      for (let i = 1; i < m.length; i++) {
+        if (m[i]) numbers.add(parseFloat(m[i].replace(',', '.')));
+      }
+    }
+  }
+  result.numericTargets = Array.from(numbers).map(v => ({
+    value: v,
+    tolerance: v > 10 ? 3 : 0.05,
+  }));
+
+  // Filler/composition keywords
+  const fillerKeywords = [
+    'carga', 'filler', 'load', 'wt%', 'filled', 'glass', 'ceramic',
+    'conteúdo de carga', 'teor de carga', 'filler content', 'filler fraction',
+  ];
+  const tableKeywords = [
+    'experimento', 'tabela', 'excel', 'aba', 'sheet', 'planilha',
+    'formulação', 'formulacion', 'composição', 'variação', 'variação de',
+  ];
+
+  const hasFillerKw = fillerKeywords.some(kw => q.includes(kw));
+  const hasTableKw = tableKeywords.some(kw => q.includes(kw));
+  const hasTwoNumbers = result.numericTargets.length >= 2;
+  const hasTransitionPhrase = /de\s+~?\d.*para\s+~?\d/i.test(q) || /reduziu|aumentou|variou|mudou|alterou/i.test(q);
+
+  // Activate when: (table/experiment keyword OR filler keyword) AND (two numbers OR transition phrase)
+  if ((hasTableKw || hasFillerKw) && (hasTwoNumbers || hasTransitionPhrase)) {
+    result.isExcelTableQuery = true;
+  }
+  // Also activate for explicit "experimento específico" + numbers
+  if (q.includes('experimento') && hasTwoNumbers) {
+    result.isExcelTableQuery = true;
+  }
+
+  if (hasFillerKw) {
+    result.targetFeature = 'filler_content';
+  }
+
+  // Extract material names (common dental materials)
+  const materialPatterns = [
+    'vitality', 'filtek', 'charisma', 'tetric', 'grandio', 'z350', 'z250',
+    'brilliant', 'herculite', 'clearfil', 'estelite', 'ips', 'ceram',
+  ];
+  for (const mat of materialPatterns) {
+    if (q.includes(mat)) result.targetMaterials.push(mat);
+  }
+
+  return result;
+}
+
+// ==========================================
+// TABULAR RETRIEVAL: fetch Excel row groups
+// ==========================================
+interface RowVariant {
+  sheet: string;
+  row_idx: number;
+  file_id: string;
+  file_name?: string;
+  experiment_id: string;
+  experiment_title?: string;
+  features: Record<string, {
+    value_canonical: number | null;
+    value_raw: number;
+    unit_canonical: string | null;
+    unit_raw: string;
+    measurement_id: string;
+    excerpt: string;
+  }>;
+  material_guess?: string;
+  citations: { sheet: string; row: number; col: string; excerpt: string; measurement_id: string }[];
+}
+
+async function fetchExcelRowGroups(
+  supabase: any,
+  projectIds: string[],
+  intent: TabularIntent,
+): Promise<{ variants: RowVariant[]; diagnostics: string[] }> {
+  const diagnostics: string[] = [];
+
+  // T1: Find candidate measurements matching the target feature
+  const featureKey = intent.targetFeature || 'filler_content';
+  
+  // Get aliases from metrics_catalog
+  const { data: catalogEntry } = await supabase
+    .from('metrics_catalog')
+    .select('aliases, canonical_name')
+    .or(`canonical_name.eq.${featureKey},aliases.cs.{${featureKey}}`)
+    .limit(1)
+    .single();
+  
+  const metricKeys = [featureKey];
+  if (catalogEntry?.aliases) {
+    metricKeys.push(...catalogEntry.aliases);
+  }
+  
+  // Build OR conditions for metric matching
+  const metricOrConditions = metricKeys.map(k => `metric.ilike.%${k}%`).join(',');
+  
+  let query = supabase
+    .from('measurements')
+    .select(`
+      id, experiment_id, metric, value, unit, value_canonical, unit_canonical,
+      source_excerpt, sheet_name, row_idx, cell_addr,
+      experiments!inner(id, title, source_file_id, project_id, project_files!inner(name))
+    `)
+    .in('experiments.project_id', projectIds)
+    .not('sheet_name', 'is', null)
+    .or(metricOrConditions)
+    .limit(200);
+
+  const { data: candidates, error } = await query;
+
+  if (error) {
+    diagnostics.push(`Query error: ${error.message}`);
+    return { variants: [], diagnostics };
+  }
+
+  if (!candidates || candidates.length === 0) {
+    diagnostics.push(`No measurements found for metric "${featureKey}" with sheet_name populated in these projects.`);
+    return { variants: [], diagnostics };
+  }
+
+  diagnostics.push(`Found ${candidates.length} candidate measurements for "${featureKey}".`);
+
+  // T1b: Filter by numeric targets with tolerance
+  let filtered = candidates;
+  if (intent.numericTargets.length > 0) {
+    filtered = candidates.filter((m: any) => {
+      const val = m.value_canonical ?? m.value;
+      // Normalize: if value is fraction (0-1) and targets are pct (>1), convert
+      const normalizedVal = val <= 1 && intent.numericTargets.some(t => t.value > 1) ? val * 100 : val;
+      return intent.numericTargets.some(t => Math.abs(normalizedVal - t.value) <= t.tolerance);
+    });
+    diagnostics.push(`After numeric filter (targets: ${intent.numericTargets.map(t => t.value).join(', ')}): ${filtered.length} matches.`);
+  }
+
+  if (filtered.length === 0) {
+    diagnostics.push(`No measurements within tolerance of targets.`);
+    return { variants: [], diagnostics };
+  }
+
+  // T2: Extract row groups (file_id + sheet + row_idx)
+  const rowGroupMap = new Map<string, { file_id: string; sheet: string; row_idx: number; experiment_id: string; experiment_title: string; file_name: string }>();
+  for (const m of filtered) {
+    const key = `${m.experiments.source_file_id}|${m.sheet_name}|${m.row_idx}`;
+    if (!rowGroupMap.has(key)) {
+      rowGroupMap.set(key, {
+        file_id: m.experiments.source_file_id,
+        sheet: m.sheet_name,
+        row_idx: m.row_idx,
+        experiment_id: m.experiment_id,
+        experiment_title: m.experiments.title,
+        file_name: m.experiments.project_files?.name || '',
+      });
+    }
+  }
+
+  // T3: For each row group, fetch ALL measurements from the same rows
+  const variants: RowVariant[] = [];
+  for (const [, group] of rowGroupMap) {
+    const { data: rowMeasurements } = await supabase
+      .from('measurements')
+      .select('id, metric, value, unit, value_canonical, unit_canonical, source_excerpt, sheet_name, row_idx, cell_addr')
+      .eq('experiment_id', group.experiment_id)
+      .eq('sheet_name', group.sheet)
+      .eq('row_idx', group.row_idx);
+
+    if (!rowMeasurements || rowMeasurements.length === 0) continue;
+
+    const features: RowVariant['features'] = {};
+    const citations: RowVariant['citations'] = [];
+    let materialGuess: string | undefined;
+
+    for (const rm of rowMeasurements) {
+      features[rm.metric] = {
+        value_canonical: rm.value_canonical,
+        value_raw: rm.value,
+        unit_canonical: rm.unit_canonical,
+        unit_raw: rm.unit,
+        measurement_id: rm.id,
+        excerpt: rm.source_excerpt,
+      };
+      citations.push({
+        sheet: rm.sheet_name,
+        row: rm.row_idx,
+        col: rm.cell_addr || '',
+        excerpt: rm.source_excerpt,
+        measurement_id: rm.id,
+      });
+      // Try to guess material from excerpt
+      if (!materialGuess && rm.source_excerpt) {
+        const sampleMatch = rm.source_excerpt.match(/Sample:\s*(.+?)(?:,|$)/);
+        if (sampleMatch) materialGuess = sampleMatch[1].trim();
+      }
+    }
+
+    // Filter by material if specified
+    if (intent.targetMaterials.length > 0 && materialGuess) {
+      const matchesMaterial = intent.targetMaterials.some(m =>
+        materialGuess!.toLowerCase().includes(m.toLowerCase())
+      );
+      if (!matchesMaterial) continue;
+    }
+
+    variants.push({
+      sheet: group.sheet,
+      row_idx: group.row_idx,
+      file_id: group.file_id,
+      file_name: group.file_name,
+      experiment_id: group.experiment_id,
+      experiment_title: group.experiment_title,
+      features,
+      material_guess: materialGuess,
+      citations,
+    });
+  }
+
+  diagnostics.push(`Assembled ${variants.length} row variants from ${rowGroupMap.size} row groups.`);
+
+  return { variants, diagnostics };
+}
+
+// ==========================================
+// TABULAR PAIRING: find best comparison pairs
+// ==========================================
+function pairTabularVariants(
+  variants: RowVariant[],
+  intent: TabularIntent,
+): { pairs: [RowVariant, RowVariant][]; evidenceTableJson: any } {
+  if (variants.length < 2) return { pairs: [], evidenceTableJson: null };
+
+  const featureKey = intent.targetFeature || 'filler_content';
+  const targets = intent.numericTargets.map(t => t.value).sort((a, b) => b - a);
+
+  // Group variants by file+sheet (same table)
+  const tableGroups = new Map<string, RowVariant[]>();
+  for (const v of variants) {
+    const key = `${v.file_id}|${v.sheet}`;
+    if (!tableGroups.has(key)) tableGroups.set(key, []);
+    tableGroups.get(key)!.push(v);
+  }
+
+  const pairs: [RowVariant, RowVariant][] = [];
+  let bestPair: [RowVariant, RowVariant] | null = null;
+  let bestScore = -1;
+
+  for (const [, group] of tableGroups) {
+    if (group.length < 2) continue;
+    
+    // Find pairs where one has ~target[0] and another has ~target[1]
+    for (let i = 0; i < group.length; i++) {
+      for (let j = i + 1; j < group.length; j++) {
+        const a = group[i];
+        const b = group[j];
+        const aFiller = a.features[featureKey];
+        const bFiller = b.features[featureKey];
+        if (!aFiller || !bFiller) continue;
+
+        const aVal = aFiller.value_canonical ?? aFiller.value_raw;
+        const bVal = bFiller.value_canonical ?? bFiller.value_raw;
+        // Normalize fractions
+        const aNorm = aVal <= 1 && targets[0] > 1 ? aVal * 100 : aVal;
+        const bNorm = bVal <= 1 && targets[0] > 1 ? bVal * 100 : bVal;
+
+        // Check if they match different targets
+        if (targets.length >= 2) {
+          const matchesAB = (Math.abs(aNorm - targets[0]) <= 3 && Math.abs(bNorm - targets[1]) <= 3);
+          const matchesBA = (Math.abs(aNorm - targets[1]) <= 3 && Math.abs(bNorm - targets[0]) <= 3);
+          if (!matchesAB && !matchesBA) continue;
+        }
+
+        // Score: more common metrics = better
+        const commonMetrics = Object.keys(a.features).filter(k => k in b.features).length;
+        if (commonMetrics > bestScore) {
+          bestScore = commonMetrics;
+          bestPair = [a, b];
+        }
+      }
+    }
+  }
+
+  if (bestPair) {
+    pairs.push(bestPair);
+  }
+
+  // Build evidence table JSON
+  const evidenceTableJson = pairs.length > 0 ? {
+    comparison_type: 'tabular_excel',
+    feature_variable: featureKey,
+    variants: pairs[0].map((v, idx) => {
+      const fillerVal = v.features[featureKey];
+      return {
+        variant_label: `Variant ${String.fromCharCode(65 + idx)}`,
+        [featureKey]: fillerVal ? `${fillerVal.value_raw} ${fillerVal.unit_raw}` : 'N/A',
+        row: { file: v.file_name || v.file_id, sheet: v.sheet, row_idx: v.row_idx },
+        material: v.material_guess || 'unknown',
+        metrics: Object.fromEntries(
+          Object.entries(v.features).map(([k, f]) => [k, {
+            value: f.value_raw,
+            unit: f.unit_raw,
+            value_canonical: f.value_canonical,
+            unit_canonical: f.unit_canonical,
+            measurement_id: f.measurement_id,
+            excerpt: f.excerpt,
+          }])
+        ),
+      };
+    }),
+    citations: pairs[0].flatMap(v => v.citations),
+  } : null;
+
+  return { pairs, evidenceTableJson };
+}
+
+// ==========================================
+// TABULAR MODE PROMPT (Step B replacement)
+// ==========================================
+const TABULAR_MODE_PROMPT = `Você é um analista de P&D em materiais odontológicos. Você recebeu uma TABELA INTERNA (derivada de linhas de Excel) com variações de formulação/condições e várias medições por variação. 
+Sua tarefa é responder à pergunta do usuário EXCLUSIVAMENTE usando a tabela interna e suas citações. 
+REGRAS:
+- Não use conhecimento externo e não use outras fontes além da tabela interna.
+- Não invente nomes de experimentos, valores, unidades, ou conclusões numéricas.
+- Cada número citado deve apontar para UMA evidência: (sheet, row, col, measurement_id) e incluir a unidade.
+- Não misture valores de uma variação com condições de outra: ancore cada frase numérica à variação correta.
+- Se a pergunta pedir "o que o experimento demonstrou":
+  (1) descreva a hipótese implícita (ex: reduzir filler de ~60% para ~40%)
+  (2) descreva o efeito observado nas métricas (ex: resistência, módulo, cor, etc.)
+  (3) derive lições práticas (trade-offs) SOMENTE a partir dos dados presentes.
+- Se a evidência for insuficiente, diga explicitamente o que falta (ex: ausência de RF, ausência de unidade, ausência de coluna de material) e não especule.`;
+
+const TABULAR_OUTPUT_FORMAT = `FORMATO DE SAÍDA (obrigatório):
+
+1) Identificação do experimento/tabulação (com rastreabilidade)
+- Arquivo/Documento: <nome do arquivo>
+- Sheet: <sheet>
+- Linhas comparadas: <row A> vs <row B> (e outras se houver)
+- Variável principal: <feature> ~X% -> ~Y%
+
+2) O que o experimento demonstrou (baseado em dados)
+- Observação 1 (com números + citações no formato [Sheet, Row R, Col C])
+- Observação 2 (com números + citações)
+- Observação 3 ...
+
+3) O que isso nos ensina (lições práticas)
+- Lição 1 (ligada a evidência)
+- Lição 2 ...
+- Limitações: o que não dá para concluir com segurança a partir da tabela
+
+4) Fontes (obrigatório)
+Liste TODAS as citações usadas no formato:
+- [Doc <nome>] Sheet <sheet>, Row <r>, Col <c>: "<excerpt>" (measurement_id: <id>)`;
+
+async function generateTabularSynthesis(
+  query: string,
+  evidenceTableJson: any,
+  apiKey: string,
+): Promise<{ response: string }> {
+  const messages = [
+    { role: "system", content: TABULAR_MODE_PROMPT },
+    {
+      role: "user",
+      content: `${TABULAR_OUTPUT_FORMAT}
+
+INPUTS:
+- USER_QUESTION: ${query}
+- EVIDENCE_TABLE_JSON: ${JSON.stringify(evidenceTableJson, null, 2)}`,
+    },
+  ];
+
+  const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+    method: "POST",
+    headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: "google/gemini-3-flash-preview",
+      messages,
+      temperature: 0.2,
+      max_tokens: 4000,
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Tabular synthesis AI error: ${response.status}`);
+  }
+
+  const data = await response.json();
+  return { response: data.choices?.[0]?.message?.content || "Erro ao gerar síntese tabular." };
+}
+
+// ==========================================
+// STEP C TABULAR: Programmatic numeric verification
+// ==========================================
+function verifyTabularResponse(
+  responseText: string,
+  evidenceTableJson: any,
+): { verified: boolean; issues: string[] } {
+  if (!evidenceTableJson?.variants) return { verified: true, issues: [] };
+
+  // Collect all valid values from evidence table
+  const validValues = new Set<string>();
+  for (const variant of evidenceTableJson.variants) {
+    if (!variant.metrics) continue;
+    for (const [, metric] of Object.entries(variant.metrics) as any) {
+      validValues.add(String(metric.value));
+      validValues.add(String(metric.value).replace('.', ','));
+      if (metric.value_canonical != null) {
+        validValues.add(String(metric.value_canonical));
+        validValues.add(String(metric.value_canonical).replace('.', ','));
+      }
+    }
+  }
+
+  // Extract all numbers from response
+  const numbersInResponse = responseText.match(/\d+[.,]?\d*/g) || [];
+  const issues: string[] = [];
+  const ungrounded: string[] = [];
+
+  for (const n of numbersInResponse) {
+    const num = parseFloat(n.replace(',', '.'));
+    if (isNaN(num)) continue;
+    // Skip trivial numbers (row indices, small ordinals, years)
+    if (num <= 10 && Number.isInteger(num)) continue;
+    if (num > 1900 && num < 2100) continue;
+    
+    if (!validValues.has(n) && !validValues.has(n.replace(',', '.'))) {
+      // Check with tolerance
+      let grounded = false;
+      for (const v of validValues) {
+        const vn = parseFloat(v.replace(',', '.'));
+        if (!isNaN(vn) && Math.abs(vn - num) <= 0.5) { grounded = true; break; }
+      }
+      if (!grounded) ungrounded.push(n);
+    }
+  }
+
+  if (ungrounded.length > 2) {
+    issues.push(`NUMERIC_GROUNDING_FAILED_TABULAR: ${ungrounded.length} numbers not found in evidence table: ${ungrounded.slice(0, 5).join(', ')}`);
+  }
+
+  return { verified: issues.length === 0, issues };
+}
+
+// ==========================================
 // COMPARATIVE QUERY DETECTOR (heuristic, no LLM)
 // ==========================================
 function detectComparativeIntent(query: string): { isComparative: boolean; targetMetrics: string[] } {
@@ -841,6 +1312,80 @@ serve(async (req) => {
       }
       // If comparative mode returned empty, fall through to standard pipeline
       console.log('Comparative mode returned no data, falling through to standard pipeline');
+    }
+
+    // ==========================================
+    // TABULAR EXCEL MODE CHECK
+    // ==========================================
+    const tabularIntent = detectTabularExcelIntent(query);
+
+    if (tabularIntent.isExcelTableQuery) {
+      console.log(`Tabular Excel query detected. Feature: ${tabularIntent.targetFeature}, Targets: ${tabularIntent.numericTargets.map(t => t.value).join(', ')}, Materials: ${tabularIntent.targetMaterials.join(', ')}`);
+
+      const targetProjIds = validPrimary.length > 0 ? validPrimary : allowedProjectIds;
+      const { variants, diagnostics } = await fetchExcelRowGroups(supabase, targetProjIds, tabularIntent);
+      console.log(`Tabular retrieval: ${variants.length} variants. Diagnostics: ${diagnostics.join(' | ')}`);
+
+      if (variants.length >= 2) {
+        const { pairs, evidenceTableJson } = pairTabularVariants(variants, tabularIntent);
+
+        if (pairs.length > 0 && evidenceTableJson) {
+          console.log(`Tabular pairs found: ${pairs.length}. Generating tabular synthesis (skipping Step A).`);
+
+          const { response: tabularResponse } = await generateTabularSynthesis(query, evidenceTableJson, lovableApiKey);
+
+          // Step C tabular verification
+          const tabularVerification = verifyTabularResponse(tabularResponse, evidenceTableJson);
+          let finalTabularResponse = tabularResponse;
+
+          if (!tabularVerification.verified) {
+            console.warn(`Tabular verification failed: ${tabularVerification.issues.join('; ')}`);
+            finalTabularResponse += `\n\n---\n⚠️ **Nota de verificação**: ${tabularVerification.issues.join('; ')}`;
+          }
+
+          const latencyMs = Date.now() - startTime;
+          await supabase.from("rag_logs").insert({
+            user_id: user.id, query,
+            chunks_used: [], chunks_count: 0,
+            response_summary: finalTabularResponse.substring(0, 500),
+            model_used: `tabular-excel-mode/${contextMode}/gemini-3-flash`,
+            latency_ms: latencyMs,
+          });
+
+          return new Response(JSON.stringify({
+            response: finalTabularResponse,
+            sources: pairs[0].flatMap(v => v.citations.map((c, idx) => ({
+              citation: `T${idx + 1}`, type: 'excel_cell',
+              id: c.measurement_id, title: `${v.file_name || v.file_id} — ${c.sheet} Row ${c.row}`,
+              project: projectName || 'Projeto', excerpt: c.excerpt,
+            }))),
+            chunks_used: 0, has_experiment_data: true,
+            has_metric_summaries: false, has_knowledge_pivots: false,
+            deep_read_performed: false, verification_passed: tabularVerification.verified,
+            context_mode: contextMode, project_name: projectName,
+            pipeline: 'tabular-excel', model_used: `tabular-excel-mode/${contextMode}/gemini-3-flash`,
+            latency_ms: latencyMs, tabular_diagnostics: diagnostics,
+          }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        }
+      }
+
+      // FAIL-CLOSED: tabular query but insufficient evidence
+      const latencyMs = Date.now() - startTime;
+      const failMsg = `Não encontrei no projeto um experimento tabular com ${tabularIntent.targetFeature || 'a métrica solicitada'} ${tabularIntent.numericTargets.map(t => `~${t.value}%`).join(' e ')} com evidência suficiente para comparação.\n\nPara localizar, preciso do nome da aba (sheet) ou do arquivo Excel, ou de um trecho da tabela.\n\n**Diagnóstico**: ${diagnostics.join('. ')}`;
+      
+      await supabase.from("rag_logs").insert({
+        user_id: user.id, query,
+        chunks_used: [], chunks_count: 0,
+        response_summary: failMsg.substring(0, 500),
+        model_used: `tabular-excel-mode/fail-closed`,
+        latency_ms: latencyMs,
+      });
+
+      return new Response(JSON.stringify({
+        response: failMsg, sources: [],
+        chunks_used: 0, context_mode: contextMode,
+        pipeline: 'tabular-excel-fail-closed', tabular_diagnostics: diagnostics,
+      }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
     // ==========================================
