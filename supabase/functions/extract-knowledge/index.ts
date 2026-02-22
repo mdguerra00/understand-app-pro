@@ -72,23 +72,82 @@ async function generateFingerprint(data: ArrayBuffer): Promise<string> {
   return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
+// ==========================================
+// FILLER CONTENT DETERMINISTIC OVERRIDE
+// ==========================================
+
+const FILLER_HEADER_SUBSTRINGS = [
+  'carga', 'filler', 'load', 'wt%', 'weight %', 'weight%',
+  'glass content', 'ceramic content', '% filler', '% carga',
+  'filled', 'glass', 'ceramic', 'filler content',
+  'carga inorgânica', 'carga inorganica', 'conteúdo de carga', 'conteudo de carga',
+];
+
+function isFillerHeader(header: string): boolean {
+  const h = header.toLowerCase().trim();
+  return FILLER_HEADER_SUBSTRINGS.some(sub => h.includes(sub));
+}
+
+function headerIndicatesPercent(header: string): boolean {
+  const h = header.toLowerCase().trim();
+  return h.includes('%') || h.includes('pct') || h.includes('percent') || h.includes('wt');
+}
+
+/**
+ * Normalize a raw cell value for filler_content:
+ * - 0.4 with % header → 40 pct
+ * - "40%" string → 40 pct
+ * - 40 with filler header → 40 pct
+ * - 0.6 without % symbol but filler header → 60 pct
+ */
+function normalizeFillerValue(rawValue: any, header: string): { value: number; valueCanonical: number; unit: string; unitCanonical: string } | null {
+  let numVal: number;
+  let rawStr = String(rawValue).trim();
+  let unitCanonical = 'pct';
+  
+  // Case B: string "40%" or "40 %"
+  const pctMatch = rawStr.match(/^(\d+[.,]?\d*)\s*%$/);
+  if (pctMatch) {
+    numVal = parseFloat(pctMatch[1].replace(',', '.'));
+    if (isNaN(numVal)) return null;
+    return { value: numVal, valueCanonical: numVal, unit: '%', unitCanonical };
+  }
+  
+  numVal = parseFloat(rawStr.replace(',', '.'));
+  if (isNaN(numVal)) return null;
+  
+  // Case A: value ≤ 1.5 and header indicates % → multiply by 100
+  // (Excel stores 40% as 0.4)
+  if (numVal <= 1.5 && numVal > 0 && (headerIndicatesPercent(header) || isFillerHeader(header))) {
+    return { value: numVal, valueCanonical: numVal * 100, unit: 'fraction', unitCanonical };
+  }
+  
+  // Case C & D: value > 1.5, treat as already in pct
+  return { value: numVal, valueCanonical: numVal, unit: headerIndicatesPercent(header) ? '%' : 'pct', unitCanonical };
+}
+
 /**
  * Validate a measurement against anti-hallucination rules:
  * 1. value must be a valid number
- * 2. unit must not be empty
+ * 2. unit must not be empty (relaxed for filler_content: inferred from header)
  * 3. source_excerpt must contain the numeric value
  */
 function validateMeasurement(m: any): boolean {
   if (typeof m.value !== 'number' || isNaN(m.value)) return false;
-  if (!m.unit || String(m.unit).trim() === '') return false;
+  // Relaxed: allow filler_content with inferred unit
+  const isFiller = m.metric === 'filler_content' || isFillerHeader(m.raw_metric_name || m.metric || '');
+  if (!isFiller && (!m.unit || String(m.unit).trim() === '')) return false;
   if (!m.source_excerpt || String(m.source_excerpt).trim() === '') return false;
-  // Check that the excerpt contains the value (as string)
+  // Check that the excerpt contains the value (as string) 
   const valueStr = String(m.value);
   const excerpt = String(m.source_excerpt);
-  // Try exact match or close match (e.g., "131" in "131 MPa")
   if (excerpt.includes(valueStr)) return true;
-  // Try with comma separator (European format)
   if (excerpt.includes(valueStr.replace('.', ','))) return true;
+  // For filler with normalized values, check the raw value
+  if (isFiller && m.value_raw) {
+    const rawStr = String(m.value_raw);
+    if (excerpt.includes(rawStr) || excerpt.includes(rawStr.replace('.', ','))) return true;
+  }
   return false;
 }
 
@@ -128,7 +187,8 @@ function parseExcelStructured(arrayBuffer: ArrayBuffer, fileName: string): {
       // 3. Fall back to first row with ≥3 meaningful cells
       const metricKeywords = ['rf', 'mf', 'mpa', 'along', 'dureza', 'hardness', 'flexural', 'strength',
         'valor', 'value', 'média', 'media', 'mean', 'amostra', 'sample', 'grupo', 'group',
-        'resistência', 'módulo', 'modulo', 'sorção', 'conversão', 'delta', 'desvio', 'std'];
+        'resistência', 'módulo', 'modulo', 'sorção', 'conversão', 'delta', 'desvio', 'std',
+        'carga', 'filler', 'load', 'wt%', 'glass', 'ceramic', 'filled'];
       
       let headerRowIdx = 0;
       let bestScore = 0;
@@ -436,18 +496,50 @@ function generateExcelExperiments(
         if (!key) continue;
         const rawValue = row[key];
         if (rawValue === '' || rawValue === undefined || rawValue === null) continue;
+
+        const headerRaw = mc.column_name || key;
+        const excerpt = `Sheet: ${sheet.sheetName}, Row: ${rowIdx + 2}, Col: ${key}, Value: ${rawValue}${rowId ? `, Sample: ${rowId}` : ''}`;
+
+        // ===== DETERMINISTIC FILLER OVERRIDE =====
+        // Check if this header should be forced to filler_content
+        if (isFillerHeader(headerRaw)) {
+          const normalized = normalizeFillerValue(rawValue, headerRaw);
+          if (normalized) {
+            measurements.push({
+              metric: 'filler_content',
+              value: normalized.valueCanonical, // already normalized to pct scale
+              unit: normalized.unit,
+              confidence: 'high',
+              source_excerpt: excerpt,
+              // Extra fields for audit (carried through to saveExperiments)
+              value_raw: String(rawValue),
+              header_raw: headerRaw,
+              unit_canonical_override: normalized.unitCanonical,
+              value_canonical_override: normalized.valueCanonical,
+            } as any);
+
+            citations.push({
+              sheet_name: sheet.sheetName,
+              cell_range: `Row ${rowIdx + 2}, Col ${key}`,
+              excerpt: excerpt.substring(0, 300),
+            });
+            continue; // Skip normal metric processing for this column
+          }
+        }
+
+        // Normal metric processing
         const numValue = parseFloat(String(rawValue).replace(',', '.'));
         if (isNaN(numValue)) continue;
 
-        const excerpt = `Sheet: ${sheet.sheetName}, Row: ${rowIdx + 2}, Col: ${key}, Value: ${rawValue}${rowId ? `, Sample: ${rowId}` : ''}`;
-        
         measurements.push({
           metric: mc.canonical_metric || mc.column_name,
           value: numValue,
           unit: mc.unit || '',
           confidence: 'high',
           source_excerpt: excerpt,
-        });
+          value_raw: String(rawValue),
+          header_raw: headerRaw,
+        } as any);
 
         citations.push({
           sheet_name: sheet.sheetName,
@@ -622,8 +714,28 @@ async function saveExperiments(
 
     // Save measurements (normalized) + create citation per measurement
     for (let i = 0; i < validMeasurements.length; i++) {
-      const m = validMeasurements[i];
-      const { canonicalMetric, canonicalUnit, conversionFactor } = await normalizeMetric(supabase, m.metric, m.unit);
+      const m = validMeasurements[i] as any;
+      
+      // Check for deterministic override (e.g., filler_content)
+      let canonicalMetric: string;
+      let canonicalUnit: string;
+      let conversionFactor: number;
+      let valueCanonical: number;
+      
+      if (m.unit_canonical_override !== undefined && m.value_canonical_override !== undefined) {
+        // Deterministic override path (filler_content, etc.)
+        canonicalMetric = m.metric; // already set to filler_content
+        canonicalUnit = m.unit_canonical_override;
+        conversionFactor = 1;
+        valueCanonical = m.value_canonical_override;
+      } else {
+        // Normal normalization path
+        const norm = await normalizeMetric(supabase, m.metric, m.unit);
+        canonicalMetric = norm.canonicalMetric;
+        canonicalUnit = norm.canonicalUnit;
+        conversionFactor = norm.conversionFactor;
+        valueCanonical = m.value * conversionFactor;
+      }
 
       // Parse sheet/row/col from source_excerpt for tabular queries
       let parsedSheet: string | null = null;
@@ -641,8 +753,8 @@ async function saveExperiments(
         metric: canonicalMetric,
         raw_metric_name: m.metric, // preserve original name
         value: m.value,
-        unit: m.unit,
-        value_canonical: m.value * conversionFactor,
+        unit: m.unit || canonicalUnit,
+        value_canonical: valueCanonical,
         unit_canonical: canonicalUnit,
         method: m.method || null,
         notes: m.notes || null,
@@ -651,6 +763,8 @@ async function saveExperiments(
         sheet_name: parsedSheet,
         row_idx: parsedRowIdx,
         cell_addr: parsedCellAddr,
+        value_raw: m.value_raw || String(m.value),
+        header_raw: m.header_raw || null,
       }).select('id').single();
 
       totalMeasurements++;
