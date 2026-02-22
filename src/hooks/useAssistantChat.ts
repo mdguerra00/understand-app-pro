@@ -20,6 +20,7 @@ export interface ChatMessage {
   isError?: boolean;
   analysisFileId?: string;
   analysisProjectId?: string;
+  diagnostics?: Record<string, any>;
 }
 
 export interface Conversation {
@@ -213,7 +214,12 @@ export function useAssistantChat(options?: UseAssistantChatOptions) {
         content: data.response || 'Desculpe, não consegui gerar uma resposta.',
         sources: data.sources || [],
         timestamp: new Date(),
+        diagnostics: data._diagnostics || undefined,
       };
+
+      if (data._diagnostics) {
+        console.log('[RAG Diagnostics]', data._diagnostics.request_id, JSON.stringify(data._diagnostics, null, 2));
+      }
       setMessages(prev => [...prev, assistantMessage]);
       await persistMessage(activeConvId, assistantMessage);
 

@@ -429,13 +429,23 @@ INPUTS:
 // ==========================================
 // STEP C TABULAR: Programmatic numeric verification
 // ==========================================
+interface DetailedVerification {
+  verified: boolean;
+  issues: string[];
+  numbers_extracted: number;
+  matched: number;
+  unmatched: number;
+  issue_types: string[];
+  unmatched_examples: { number: string; context: string }[];
+}
+
 function verifyTabularResponse(
   responseText: string,
   evidenceTableJson: any,
-): { verified: boolean; issues: string[] } {
-  if (!evidenceTableJson?.variants) return { verified: true, issues: [] };
+): DetailedVerification {
+  const emptyResult: DetailedVerification = { verified: true, issues: [], numbers_extracted: 0, matched: 0, unmatched: 0, issue_types: [], unmatched_examples: [] };
+  if (!evidenceTableJson?.variants) return emptyResult;
 
-  // Collect all valid values from evidence table
   const validValues = new Set<string>();
   for (const variant of evidenceTableJson.variants) {
     if (!variant.metrics) continue;
@@ -449,34 +459,48 @@ function verifyTabularResponse(
     }
   }
 
-  // Extract all numbers from response
   const numbersInResponse = responseText.match(/\d+[.,]?\d*/g) || [];
   const issues: string[] = [];
-  const ungrounded: string[] = [];
+  const ungrounded: { number: string; context: string }[] = [];
+  let matched = 0;
+  let numbersExtracted = 0;
 
   for (const n of numbersInResponse) {
     const num = parseFloat(n.replace(',', '.'));
     if (isNaN(num)) continue;
-    // Skip trivial numbers (row indices, small ordinals, years)
     if (num <= 10 && Number.isInteger(num)) continue;
     if (num > 1900 && num < 2100) continue;
-    
-    if (!validValues.has(n) && !validValues.has(n.replace(',', '.'))) {
-      // Check with tolerance
-      let grounded = false;
-      for (const v of validValues) {
-        const vn = parseFloat(v.replace(',', '.'));
-        if (!isNaN(vn) && Math.abs(vn - num) <= 0.5) { grounded = true; break; }
-      }
-      if (!grounded) ungrounded.push(n);
+    numbersExtracted++;
+
+    if (validValues.has(n) || validValues.has(n.replace(',', '.'))) {
+      matched++;
+      continue;
     }
+    let grounded = false;
+    for (const v of validValues) {
+      const vn = parseFloat(v.replace(',', '.'));
+      if (!isNaN(vn) && Math.abs(vn - num) <= 0.5) { grounded = true; break; }
+    }
+    if (grounded) { matched++; continue; }
+    const idx = responseText.indexOf(n);
+    const ctx = idx >= 0 ? responseText.substring(Math.max(0, idx - 15), idx + n.length + 15) : '';
+    ungrounded.push({ number: n, context: ctx });
   }
 
-  if (ungrounded.length > 2) {
-    issues.push(`NUMERIC_GROUNDING_FAILED_TABULAR: ${ungrounded.length} numbers not found in evidence table: ${ungrounded.slice(0, 5).join(', ')}`);
+  const unmatchedCount = ungrounded.length;
+  if (unmatchedCount > 2) {
+    issues.push(`NUMERIC_GROUNDING_FAILED_TABULAR: ${unmatchedCount} numbers not found in evidence table: ${ungrounded.slice(0, 5).map(u => u.number).join(', ')}`);
   }
 
-  return { verified: issues.length === 0, issues };
+  return {
+    verified: issues.length === 0,
+    issues,
+    numbers_extracted: numbersExtracted,
+    matched,
+    unmatched: unmatchedCount,
+    issue_types: unmatchedCount > 2 ? ['missing_measurement'] : [],
+    unmatched_examples: ungrounded.slice(0, 5),
+  };
 }
 
 // ==========================================
@@ -1656,8 +1680,7 @@ ${JSON.stringify(evidenceGraph.experiments.slice(0, 5), null, 2).substring(0, 20
 // ==========================================
 function verifyIDERNumbers(
   responseText: string, evidenceGraph: EvidenceGraph
-): { verified: boolean; issues: string[] } {
-  // Collect all valid values from evidence graph
+): DetailedVerification {
   const validValues = new Set<string>();
   for (const exp of evidenceGraph.experiments) {
     for (const variant of exp.variants) {
@@ -1673,40 +1696,56 @@ function verifyIDERNumbers(
   }
 
   const numbersInResponse = responseText.match(/\d+[.,]?\d*/g) || [];
-  const ungrounded: string[] = [];
+  const ungrounded: { number: string; context: string }[] = [];
+  let matched = 0;
+  let numbersExtracted = 0;
 
   for (const n of numbersInResponse) {
     const num = parseFloat(n.replace(',', '.'));
     if (isNaN(num)) continue;
     if (num <= 10 && Number.isInteger(num)) continue;
     if (num > 1900 && num < 2100) continue;
+    numbersExtracted++;
 
-    if (!validValues.has(n) && !validValues.has(n.replace(',', '.'))) {
-      let grounded = false;
-      for (const v of validValues) {
-        const vn = parseFloat(v.replace(',', '.'));
-        if (!isNaN(vn) && Math.abs(vn - num) <= 0.5) { grounded = true; break; }
-      }
-      if (!grounded) ungrounded.push(n);
+    if (validValues.has(n) || validValues.has(n.replace(',', '.'))) {
+      matched++;
+      continue;
     }
+    let grounded = false;
+    for (const v of validValues) {
+      const vn = parseFloat(v.replace(',', '.'));
+      if (!isNaN(vn) && Math.abs(vn - num) <= 0.5) { grounded = true; break; }
+    }
+    if (grounded) { matched++; continue; }
+    const idx = responseText.indexOf(n);
+    const ctx = idx >= 0 ? responseText.substring(Math.max(0, idx - 15), idx + n.length + 15) : '';
+    ungrounded.push({ number: n, context: ctx });
   }
 
+  const unmatchedCount = ungrounded.length;
   const issues: string[] = [];
-  if (ungrounded.length > 2) {
-    issues.push(`NUMERIC_GROUNDING_FAILED_IDER: ${ungrounded.length} numbers not in evidence graph: ${ungrounded.slice(0, 5).join(', ')}`);
+  if (unmatchedCount > 0) {
+    issues.push(`NUMERIC_GROUNDING_FAILED_IDER: ${unmatchedCount} numbers not in evidence graph: ${ungrounded.slice(0, 5).map(u => u.number).join(', ')}`);
   }
-  return { verified: issues.length === 0, issues };
+  return {
+    verified: unmatchedCount === 0,
+    issues,
+    numbers_extracted: numbersExtracted,
+    matched,
+    unmatched: unmatchedCount,
+    issue_types: unmatchedCount > 0 ? ['not_in_evidence_graph'] : [],
+    unmatched_examples: ungrounded.slice(0, 5),
+  };
 }
 
 async function verifyResponse(
   responseText: string, measurements: any[], apiKey: string
-): Promise<{ verified: boolean; issues: string[] }> {
-  if (!measurements || measurements.length === 0) {
-    return { verified: true, issues: [] };
-  }
+): Promise<DetailedVerification> {
+  const emptyResult: DetailedVerification = { verified: true, issues: [], numbers_extracted: 0, matched: 0, unmatched: 0, issue_types: [], unmatched_examples: [] };
+  if (!measurements || measurements.length === 0) return emptyResult;
 
   const numbersInResponse = responseText.match(/\d+[.,]?\d*/g) || [];
-  if (numbersInResponse.length === 0) return { verified: true, issues: [] };
+  if (numbersInResponse.length === 0) return emptyResult;
 
   const validValues = new Set<string>();
   for (const m of measurements) {
@@ -1718,20 +1757,40 @@ async function verifyResponse(
     }
   }
 
-  const issues: string[] = [];
-  const suspectNumbers = numbersInResponse.filter(n => {
-    const num = parseFloat(n.replace(',', '.'));
-    if (isNaN(num) || num < 0.01 || (num > 1900 && num < 2100)) return false;
-    if (validValues.has(n) || validValues.has(n.replace(',', '.'))) return false;
-    if (num <= 10 && Number.isInteger(num)) return false;
-    return true;
-  });
+  const ungrounded: { number: string; context: string }[] = [];
+  let matched = 0;
+  let numbersExtracted = 0;
 
-  if (suspectNumbers.length > 3) {
-    issues.push(`${suspectNumbers.length} números na resposta não correspondem a medições verificadas`);
+  for (const n of numbersInResponse) {
+    const num = parseFloat(n.replace(',', '.'));
+    if (isNaN(num) || num < 0.01 || (num > 1900 && num < 2100)) continue;
+    if (num <= 10 && Number.isInteger(num)) continue;
+    numbersExtracted++;
+
+    if (validValues.has(n) || validValues.has(n.replace(',', '.'))) {
+      matched++;
+      continue;
+    }
+    const idx = responseText.indexOf(n);
+    const ctx = idx >= 0 ? responseText.substring(Math.max(0, idx - 15), idx + n.length + 15) : '';
+    ungrounded.push({ number: n, context: ctx });
   }
 
-  return { verified: issues.length === 0, issues };
+  const unmatchedCount = ungrounded.length;
+  const issues: string[] = [];
+  if (unmatchedCount > 3) {
+    issues.push(`${unmatchedCount} números na resposta não correspondem a medições verificadas`);
+  }
+
+  return {
+    verified: issues.length === 0,
+    issues,
+    numbers_extracted: numbersExtracted,
+    matched,
+    unmatched: unmatchedCount,
+    issue_types: unmatchedCount > 3 ? ['missing_measurement'] : [],
+    unmatched_examples: ungrounded.slice(0, 5),
+  };
 }
 
 // ==========================================
@@ -1799,6 +1858,80 @@ function extractConstraints(query: string): QueryConstraints {
   const hasStrongConstraints = (materials.length + additives.length + properties.length) >= 2;
 
   return { materials, additives, properties, hasStrongConstraints };
+}
+
+// ==========================================
+// UNIFIED DIAGNOSTICS BUILDER
+// ==========================================
+interface DiagnosticsInput {
+  requestId: string;
+  pipeline: string;
+  tabularIntent: boolean;
+  iderIntent: boolean;
+  comparativeIntent: boolean;
+  constraints: QueryConstraints | null;
+  constraintsKeywordsHit: string[];
+  constraintsScope: 'project' | 'global';
+  materialFilterApplied: boolean;
+  additiveFilterApplied: boolean;
+  evidenceCheckPassed: boolean | null;
+  insightSeedsCount: number;
+  experimentsCount: number;
+  variantsCount: number;
+  measurementsCount: number;
+  criticalDocs: string[];
+  chunksUsed: number;
+  auditIssues: AuditIssue[];
+  verification: DetailedVerification | null;
+  failClosedTriggered: boolean;
+  failClosedReason: string | null;
+  failClosedStage: string | null;
+  latencyMs: number;
+}
+
+function buildDiagnostics(input: DiagnosticsInput): Record<string, any> {
+  const v = input.verification;
+  return {
+    request_id: input.requestId,
+    pipeline_selected: input.pipeline,
+    ider_intent: input.iderIntent,
+    tabular_intent: input.tabularIntent,
+    comparative_intent: input.comparativeIntent,
+    constraints_detected: input.constraints || { materials: [], additives: [], properties: [], hasStrongConstraints: false },
+    constraints_keywords_hit: input.constraintsKeywordsHit,
+    constraints_scope: input.constraintsScope,
+    material_filter_applied: input.materialFilterApplied,
+    additive_filter_applied: input.additiveFilterApplied,
+    evidence_check_passed: input.evidenceCheckPassed,
+    insight_seeds_count: input.insightSeedsCount,
+    experiments_count: input.experimentsCount,
+    variants_count: input.variantsCount,
+    measurements_count: input.measurementsCount,
+    critical_docs: input.criticalDocs,
+    chunks_used: input.chunksUsed,
+    audit_issues: input.auditIssues,
+    verification_passed: v?.verified ?? null,
+    verification_numbers_extracted: v?.numbers_extracted ?? 0,
+    verification_matched: v?.matched ?? 0,
+    verification_unmatched: v?.unmatched ?? 0,
+    verification_issue_types: v?.issue_types ?? [],
+    verification_unmatched_examples: v?.unmatched_examples ?? [],
+    fail_closed_triggered: input.failClosedTriggered,
+    fail_closed_reason: input.failClosedReason,
+    fail_closed_stage: input.failClosedStage,
+    latency_ms: input.latencyMs,
+  };
+}
+
+function makeDiagnosticsDefaults(requestId: string, latencyMs: number): DiagnosticsInput {
+  return {
+    requestId, pipeline: '', tabularIntent: false, iderIntent: false, comparativeIntent: false,
+    constraints: null, constraintsKeywordsHit: [], constraintsScope: 'project',
+    materialFilterApplied: false, additiveFilterApplied: false, evidenceCheckPassed: null,
+    insightSeedsCount: 0, experimentsCount: 0, variantsCount: 0, measurementsCount: 0,
+    criticalDocs: [], chunksUsed: 0, auditIssues: [], verification: null,
+    failClosedTriggered: false, failClosedReason: null, failClosedStage: null, latencyMs,
+  };
 }
 
 // ==========================================
@@ -2118,13 +2251,23 @@ serve(async (req) => {
     }
 
     // ==========================================
+    // PRE-COMPUTE ALL INTENTS + REQUEST ID
+    // ==========================================
+    const requestId = crypto.randomUUID();
+    const tabularIntent = detectTabularExcelIntent(query);
+    const iderIntent = detectIDERIntent(query);
+    const { isComparative, targetMetrics } = detectComparativeIntent(query);
+    const preConstraints = extractConstraints(query);
+    const constraintsKeywordsHit = [...preConstraints.materials, ...preConstraints.additives, ...preConstraints.properties];
+    const constraintsScope: 'project' | 'global' = contextMode === 'project' ? 'project' : 'global';
+
+    // ==========================================
     // ROUTING PRIORITY: 1️⃣ Tabular → 2️⃣ IDER → 3️⃣ Comparative → 4️⃣ Standard
     // ==========================================
 
     // ==========================================
     // 1️⃣ TABULAR EXCEL MODE CHECK (highest priority)
     // ==========================================
-    const tabularIntent = detectTabularExcelIntent(query);
 
     if (tabularIntent.isExcelTableQuery) {
       console.log(`Tabular Excel query detected. Feature: ${tabularIntent.targetFeature}, Targets: ${tabularIntent.numericTargets.map(t => t.value).join(', ')}, Materials: ${tabularIntent.targetMaterials.join(', ')}`);
@@ -2151,12 +2294,24 @@ serve(async (req) => {
           }
 
           const latencyMs = Date.now() - startTime;
+          const tabDiag = buildDiagnostics({
+            ...makeDiagnosticsDefaults(requestId, latencyMs),
+            pipeline: 'tabular-excel',
+            tabularIntent: true, iderIntent: iderIntent.isIDERQuery, comparativeIntent: isComparative,
+            constraints: preConstraints, constraintsKeywordsHit, constraintsScope,
+            variantsCount: variants.length,
+            measurementsCount: pairs[0].reduce((s, v) => s + Object.keys(v.features).length, 0),
+            verification: tabularVerification,
+          });
+
           await supabase.from("rag_logs").insert({
             user_id: user.id, query,
             chunks_used: [], chunks_count: 0,
             response_summary: finalTabularResponse.substring(0, 500),
             model_used: `tabular-excel-mode/${contextMode}/gemini-3-flash`,
             latency_ms: latencyMs,
+            request_id: requestId,
+            diagnostics: tabDiag,
           });
 
           return new Response(JSON.stringify({
@@ -2166,39 +2321,42 @@ serve(async (req) => {
               id: c.measurement_id, title: `${v.file_name || v.file_id} — ${c.sheet} Row ${c.row}`,
               project: projectName || 'Projeto', excerpt: c.excerpt,
             }))),
-            chunks_used: 0, has_experiment_data: true,
-            has_metric_summaries: false, has_knowledge_pivots: false,
-            deep_read_performed: false, verification_passed: tabularVerification.verified,
-            context_mode: contextMode, project_name: projectName,
-            pipeline: 'tabular-excel', model_used: `tabular-excel-mode/${contextMode}/gemini-3-flash`,
-            latency_ms: latencyMs, tabular_diagnostics: diagnostics,
+            chunks_used: 0, context_mode: contextMode, project_name: projectName,
+            pipeline: 'tabular-excel', latency_ms: latencyMs,
+            _diagnostics: tabDiag,
           }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
         }
       }
 
       // FAIL-CLOSED: tabular query but insufficient evidence
       const latencyMs = Date.now() - startTime;
+      const tabFailDiag = buildDiagnostics({
+        ...makeDiagnosticsDefaults(requestId, latencyMs),
+        pipeline: 'tabular-excel-fail-closed',
+        tabularIntent: true, iderIntent: iderIntent.isIDERQuery, comparativeIntent: isComparative,
+        constraints: preConstraints, constraintsKeywordsHit, constraintsScope,
+        failClosedTriggered: true, failClosedReason: 'no_evidence', failClosedStage: 'routing',
+      });
       const failMsg = `Não encontrei no projeto um experimento tabular com ${tabularIntent.targetFeature || 'a métrica solicitada'} ${tabularIntent.numericTargets.map(t => `~${t.value}%`).join(' e ')} com evidência suficiente para comparação.\n\nPara localizar, preciso do nome da aba (sheet) ou do arquivo Excel, ou de um trecho da tabela.\n\n**Diagnóstico**: ${diagnostics.join('. ')}`;
       
       await supabase.from("rag_logs").insert({
-        user_id: user.id, query,
-        chunks_used: [], chunks_count: 0,
+        user_id: user.id, query, chunks_used: [], chunks_count: 0,
         response_summary: failMsg.substring(0, 500),
-        model_used: `tabular-excel-mode/fail-closed`,
-        latency_ms: latencyMs,
+        model_used: `tabular-excel-mode/fail-closed`, latency_ms: latencyMs,
+        request_id: requestId, diagnostics: tabFailDiag,
       });
 
       return new Response(JSON.stringify({
         response: failMsg, sources: [],
         chunks_used: 0, context_mode: contextMode,
-        pipeline: 'tabular-excel-fail-closed', tabular_diagnostics: diagnostics,
+        pipeline: 'tabular-excel-fail-closed',
+        _diagnostics: tabFailDiag,
       }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
     // ==========================================
     // IDER MODE CHECK (Insight-Driven Deep Experimental Reasoning)
     // ==========================================
-    const iderIntent = detectIDERIntent(query);
 
     if (iderIntent.isIDERQuery) {
       console.log(`IDER mode activated. Keywords: ${iderIntent.interpretiveKeywords.join(', ')}`);
@@ -2220,21 +2378,28 @@ serve(async (req) => {
       if (evidenceGraph.experiments.length === 0 || totalMetrics === 0) {
         // FAIL-CLOSED: insufficient structured evidence
         const latencyMs = Date.now() - startTime;
+        const iderNoEvDiag = buildDiagnostics({
+          ...makeDiagnosticsDefaults(requestId, latencyMs),
+          pipeline: 'ider-fail-closed',
+          tabularIntent: tabularIntent.isExcelTableQuery, iderIntent: true, comparativeIntent: isComparative,
+          constraints: preConstraints, constraintsKeywordsHit, constraintsScope,
+          insightSeedsCount: insightSeeds.length,
+          failClosedTriggered: true, failClosedReason: 'no_evidence', failClosedStage: 'evidence_graph',
+        });
         const failMsg = `EVIDÊNCIA INSUFICIENTE para análise interpretativa.\n\nNão encontrei experimentos estruturados com medições no projeto que correspondam à sua pergunta. O sistema precisa de dados experimentais (measurements) para gerar análises baseadas em evidência.\n\n**Diagnóstico**: ${evidenceGraph.diagnostics.join('. ')}\n**Insights encontrados**: ${insightSeeds.length} (mas sem medições estruturadas associadas)`;
 
         await supabase.from("rag_logs").insert({
-          user_id: user.id, query,
-          chunks_used: [], chunks_count: 0,
+          user_id: user.id, query, chunks_used: [], chunks_count: 0,
           response_summary: failMsg.substring(0, 500),
-          model_used: `ider-mode/fail-closed`,
-          latency_ms: latencyMs,
+          model_used: `ider-mode/fail-closed`, latency_ms: latencyMs,
+          request_id: requestId, diagnostics: iderNoEvDiag,
         });
 
         return new Response(JSON.stringify({
           response: failMsg, sources: [],
           chunks_used: 0, context_mode: contextMode,
           pipeline: 'ider-fail-closed',
-          ider_diagnostics: evidenceGraph.diagnostics,
+          _diagnostics: iderNoEvDiag,
         }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
       }
 
@@ -2257,11 +2422,23 @@ serve(async (req) => {
       const iderVerification = verifyIDERNumbers(iderResponse, evidenceGraph);
 
       let finalIDERResponse = iderResponse;
+      let iderPipeline = 'ider';
+      let iderFailClosed = false;
+      let iderFailReason: string | null = null;
+      let iderFailStage: string | null = null;
+
+      // HARD FAIL-CLOSED: if ANY numbers are ungrounded, block the response
       if (!iderVerification.verified) {
-        console.warn(`IDER verification failed: ${iderVerification.issues.join('; ')}`);
-        finalIDERResponse += `\n\n---\n⚠️ **Verificação**: ${iderVerification.issues.join('; ')}`;
+        console.warn(`IDER HARD FAIL-CLOSED: ${iderVerification.unmatched} ungrounded numbers`);
+        const examples = iderVerification.unmatched_examples.slice(0, 5).map(e => `"${e.number}" (…${e.context}…)`).join('\n- ');
+        finalIDERResponse = `**VERIFICAÇÃO FALHOU**: ${iderVerification.unmatched} número(s) na resposta não correspondem a medições do projeto.\n\n**Números sem evidência**:\n- ${examples}\n\nA resposta foi bloqueada para evitar informações não verificáveis.\nPara investigar, use a pergunta diretamente sobre o experimento/aba específica.`;
+        iderPipeline = 'ider-fail-closed-verification';
+        iderFailClosed = true;
+        iderFailReason = 'numeric_grounding_failed';
+        iderFailStage = 'verification';
       }
-      if (auditIssues.length > 0) {
+
+      if (auditIssues.length > 0 && !iderFailClosed) {
         const severeIssues = auditIssues.filter(i => i.type === 'cross_variant_mix' || i.type === 'external_leak');
         if (severeIssues.length > 0) {
           finalIDERResponse += `\n\n---\n⚠️ **Auditoria**: ${severeIssues.map(i => `[${i.type}] ${i.detail}`).join('; ')}`;
@@ -2269,12 +2446,35 @@ serve(async (req) => {
       }
 
       const latencyMs = Date.now() - startTime;
+      const iderDiag = buildDiagnostics({
+        ...makeDiagnosticsDefaults(requestId, latencyMs),
+        pipeline: iderPipeline,
+        tabularIntent: tabularIntent.isExcelTableQuery,
+        iderIntent: iderIntent.isIDERQuery,
+        comparativeIntent: isComparative,
+        constraints: preConstraints,
+        constraintsKeywordsHit,
+        constraintsScope,
+        insightSeedsCount: insightSeeds.length,
+        experimentsCount: evidenceGraph.experiments.length,
+        variantsCount: totalVariants,
+        measurementsCount: totalMetrics,
+        criticalDocs: criticalDocs.map(d => d.doc_id),
+        auditIssues,
+        verification: iderVerification,
+        failClosedTriggered: iderFailClosed,
+        failClosedReason: iderFailReason,
+        failClosedStage: iderFailStage,
+      });
+
       await supabase.from("rag_logs").insert({
         user_id: user.id, query,
         chunks_used: [], chunks_count: 0,
         response_summary: finalIDERResponse.substring(0, 500),
         model_used: `ider-mode/${contextMode}/gemini-3-flash`,
         latency_ms: latencyMs,
+        request_id: requestId,
+        diagnostics: iderDiag,
       });
 
       // Build sources from evidence graph
@@ -2295,35 +2495,21 @@ serve(async (req) => {
         response: finalIDERResponse,
         sources: iderSources,
         chunks_used: 0,
-        has_experiment_data: true,
-        has_metric_summaries: false,
-        has_knowledge_pivots: false,
-        deep_read_performed: deepReadPack.length > 0,
-        verification_passed: iderVerification.verified,
-        audit_issues_count: auditIssues.length,
         context_mode: contextMode,
         project_name: projectName,
-        pipeline: 'ider',
-        model_used: `ider-mode/${contextMode}/gemini-3-flash`,
+        pipeline: iderPipeline,
         latency_ms: latencyMs,
-        ider_diagnostics: evidenceGraph.diagnostics,
-        ider_experiments_count: evidenceGraph.experiments.length,
-        ider_variants_count: totalVariants,
-        ider_measurements_count: totalMetrics,
-        ider_insight_seeds_count: insightSeeds.length,
-        ider_critical_docs: criticalDocs.map(d => d.doc_id),
-        ider_deep_read_chars: deepReadPack.reduce((s, d) => s + d.text.length, 0),
+        _diagnostics: iderDiag,
       }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
     // ==========================================
     // 3️⃣ COMPARATIVE MODE CHECK (with gating)
     // ==========================================
-    const { isComparative, targetMetrics } = detectComparativeIntent(query);
 
     if (isComparative) {
       const comparativeProjectIds = validPrimary.length > 0 ? validPrimary : allowedProjectIds;
-      const constraints = extractConstraints(query);
+      const constraints = preConstraints;
 
       console.log(`Comparative query detected. Constraints: materials=${constraints.materials.join(',')}, additives=${constraints.additives.join(',')}, properties=${constraints.properties.join(',')}, strong=${constraints.hasStrongConstraints}`);
 
@@ -2335,6 +2521,14 @@ serve(async (req) => {
         if (!feasible) {
           // FAIL-CLOSED: no evidence for strong constraints
           const latencyMs = Date.now() - startTime;
+          const compFailDiag = buildDiagnostics({
+            ...makeDiagnosticsDefaults(requestId, latencyMs),
+            pipeline: 'fail-closed-no-evidence',
+            tabularIntent: tabularIntent.isExcelTableQuery, iderIntent: iderIntent.isIDERQuery, comparativeIntent: true,
+            constraints, constraintsKeywordsHit, constraintsScope,
+            evidenceCheckPassed: false,
+            failClosedTriggered: true, failClosedReason: 'constraint_evidence_missing', failClosedStage: 'routing',
+          });
           const constraintDesc = [
             ...constraints.materials.map(m => `material="${m}"`),
             ...constraints.additives.map(a => `aditivo="${a}"`),
@@ -2343,20 +2537,17 @@ serve(async (req) => {
           const failMsg = `**EVIDÊNCIA INEXISTENTE NO PROJETO** para: ${constraintDesc}.\n\nNão encontrei nenhum experimento, condição ou trecho contendo ${missing.join(' e ')} neste projeto.\n\nPara responder, envie o Excel/PDF onde isso aparece ou indique o nome do experimento/aba.`;
 
           await supabase.from("rag_logs").insert({
-            user_id: user.id, query,
-            chunks_used: [], chunks_count: 0,
+            user_id: user.id, query, chunks_used: [], chunks_count: 0,
             response_summary: failMsg.substring(0, 500),
-            model_used: `fail-closed-no-evidence/${contextMode}`,
-            latency_ms: latencyMs,
+            model_used: `fail-closed-no-evidence/${contextMode}`, latency_ms: latencyMs,
+            request_id: requestId, diagnostics: compFailDiag,
           });
 
           return new Response(JSON.stringify({
             response: failMsg, sources: [],
             chunks_used: 0, context_mode: contextMode, project_name: projectName,
             pipeline: 'fail-closed-no-evidence',
-            constraints_detected: constraints,
-            evidence_check_passed: false,
-            latency_ms: latencyMs,
+            _diagnostics: compFailDiag,
           }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
         }
 
@@ -2369,40 +2560,54 @@ serve(async (req) => {
 
         if (constrainedResult) {
           const latencyMs = Date.now() - startTime;
+          const compConsDiag = buildDiagnostics({
+            ...makeDiagnosticsDefaults(requestId, latencyMs),
+            pipeline: 'comparative-constrained',
+            tabularIntent: tabularIntent.isExcelTableQuery, iderIntent: iderIntent.isIDERQuery, comparativeIntent: true,
+            constraints, constraintsKeywordsHit, constraintsScope,
+            materialFilterApplied: constraints.materials.length > 0,
+            additiveFilterApplied: constraints.additives.length > 0,
+            evidenceCheckPassed: true,
+          });
           await supabase.from("rag_logs").insert({
-            user_id: user.id, query,
-            chunks_used: [], chunks_count: 0,
+            user_id: user.id, query, chunks_used: [], chunks_count: 0,
             response_summary: constrainedResult.substring(0, 500),
-            model_used: `comparative-constrained/${contextMode}/gemini-3-flash`,
-            latency_ms: latencyMs,
+            model_used: `comparative-constrained/${contextMode}/gemini-3-flash`, latency_ms: latencyMs,
+            request_id: requestId, diagnostics: compConsDiag,
           });
 
           return new Response(JSON.stringify({
             response: constrainedResult, sources: [],
-            chunks_used: 0, has_experiment_data: true,
-            context_mode: contextMode, project_name: projectName,
+            chunks_used: 0, context_mode: contextMode, project_name: projectName,
             pipeline: 'comparative-constrained',
-            constraints_detected: constraints,
-            evidence_check_passed: true,
-            latency_ms: latencyMs,
+            _diagnostics: compConsDiag,
           }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
         }
 
         // Constrained returned empty after filtering → fail-closed
         const latencyMs2 = Date.now() - startTime;
+        const compConsFailDiag = buildDiagnostics({
+          ...makeDiagnosticsDefaults(requestId, latencyMs2),
+          pipeline: 'comparative-constrained-fail-closed',
+          tabularIntent: tabularIntent.isExcelTableQuery, iderIntent: iderIntent.isIDERQuery, comparativeIntent: true,
+          constraints, constraintsKeywordsHit, constraintsScope,
+          materialFilterApplied: constraints.materials.length > 0,
+          additiveFilterApplied: constraints.additives.length > 0,
+          evidenceCheckPassed: true,
+          failClosedTriggered: true, failClosedReason: 'constraint_evidence_missing', failClosedStage: 'evidence_graph',
+        });
         const failMsg2 = `**EVIDÊNCIA INSUFICIENTE** após filtrar por escopo. Encontrei evidência parcial no projeto, mas após aplicar os filtros de material/aditivo/propriedade, nenhuma medição restou.\n\nTente reformular sem restrições específicas ou envie os dados relevantes.`;
         await supabase.from("rag_logs").insert({
           user_id: user.id, query, chunks_used: [], chunks_count: 0,
           response_summary: failMsg2.substring(0, 500),
-          model_used: `comparative-constrained/fail-closed/${contextMode}`,
-          latency_ms: latencyMs2,
+          model_used: `comparative-constrained/fail-closed/${contextMode}`, latency_ms: latencyMs2,
+          request_id: requestId, diagnostics: compConsFailDiag,
         });
         return new Response(JSON.stringify({
           response: failMsg2, sources: [],
           chunks_used: 0, context_mode: contextMode, project_name: projectName,
           pipeline: 'comparative-constrained-fail-closed',
-          constraints_detected: constraints, evidence_check_passed: true,
-          latency_ms: latencyMs2,
+          _diagnostics: compConsFailDiag,
         }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
       }
 
@@ -2415,22 +2620,25 @@ serve(async (req) => {
 
       if (comparativeResult) {
         const latencyMs = Date.now() - startTime;
+        const compDiag = buildDiagnostics({
+          ...makeDiagnosticsDefaults(requestId, latencyMs),
+          pipeline: 'comparative',
+          tabularIntent: tabularIntent.isExcelTableQuery, iderIntent: iderIntent.isIDERQuery, comparativeIntent: true,
+          constraints, constraintsKeywordsHit, constraintsScope,
+          evidenceCheckPassed: true,
+        });
         await supabase.from("rag_logs").insert({
-          user_id: user.id, query,
-          chunks_used: [], chunks_count: 0,
+          user_id: user.id, query, chunks_used: [], chunks_count: 0,
           response_summary: comparativeResult.substring(0, 500),
-          model_used: `comparative-mode/${contextMode}/gemini-3-flash`,
-          latency_ms: latencyMs,
+          model_used: `comparative-mode/${contextMode}/gemini-3-flash`, latency_ms: latencyMs,
+          request_id: requestId, diagnostics: compDiag,
         });
 
         return new Response(JSON.stringify({
           response: comparativeResult, sources: [],
-          chunks_used: 0, has_experiment_data: true,
-          context_mode: contextMode, project_name: projectName,
+          chunks_used: 0, context_mode: contextMode, project_name: projectName,
           pipeline: 'comparative',
-          constraints_detected: constraints,
-          evidence_check_passed: true,
-          latency_ms: latencyMs,
+          _diagnostics: compDiag,
         }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
       }
       console.log('Comparative mode returned no data, falling through to standard pipeline');
@@ -2565,8 +2773,15 @@ serve(async (req) => {
     }
 
     const latencyMs = Date.now() - startTime;
+    const stdDiag = buildDiagnostics({
+      ...makeDiagnosticsDefaults(requestId, latencyMs),
+      pipeline: '3-step',
+      tabularIntent: tabularIntent.isExcelTableQuery, iderIntent: iderIntent.isIDERQuery, comparativeIntent: isComparative,
+      constraints: preConstraints, constraintsKeywordsHit, constraintsScope,
+      chunksUsed: finalChunks.length,
+      verification,
+    });
 
-    // Log
     await supabase.from("rag_logs").insert({
       user_id: user.id, query,
       chunks_used: finalChunks.map((c) => c.id),
@@ -2574,6 +2789,7 @@ serve(async (req) => {
       response_summary: finalResponse.substring(0, 500),
       model_used: `3-step-pipeline/${contextMode}/gemini-3-flash`,
       latency_ms: latencyMs,
+      request_id: requestId, diagnostics: stdDiag,
     });
 
     const chunkSources = finalChunks.map((chunk, index) => ({
@@ -2585,14 +2801,9 @@ serve(async (req) => {
     return new Response(JSON.stringify({
       response: finalResponse, sources: [...chunkSources, ...experimentSources],
       chunks_used: finalChunks.length,
-      has_experiment_data: !!experimentContextText,
-      has_metric_summaries: !!_metricSummaries,
-      has_knowledge_pivots: !!_knowledgePivots,
-      deep_read_performed: !!deepReadContent,
-      verification_passed: verification.verified,
-      context_mode: contextMode,
-      project_name: projectName,
-      pipeline: '3-step', model_used: `3-step-pipeline/${contextMode}/gemini-3-flash`, latency_ms: latencyMs,
+      context_mode: contextMode, project_name: projectName,
+      pipeline: '3-step', latency_ms: latencyMs,
+      _diagnostics: stdDiag,
     }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
   } catch (error) {
