@@ -459,7 +459,13 @@ function verifyTabularResponse(
     }
   }
 
-  const numbersInResponse = responseText.match(/\d+[.,]?\d*/g) || [];
+  // Extract only scientifically relevant numbers (associated with units or decimal values)
+  const scientificNumberPattern = /(\d+[.,]\d+)\s*(%|MPa|GPa|kPa|°C|℃|min|h|s|mm|cm|µm|nm|mW|mL|mg|µg|g\/|kg|ppm|ppb|N|J|Hz|kHz|MHz|mol|wt%|vol%|HV|KHN|mW\/cm²|µm²)/gi;
+  const decimalPattern = /(?<!\w)(\d+[.,]\d{1,})\b/g;
+  const scientificMatches = [...responseText.matchAll(scientificNumberPattern)].map(m => m[1]);
+  const decimalMatches = [...responseText.matchAll(decimalPattern)].map(m => m[1]);
+  const numbersInResponse = [...new Set([...scientificMatches, ...decimalMatches])];
+  
   const issues: string[] = [];
   const ungrounded: { number: string; context: string }[] = [];
   let matched = 0;
@@ -468,8 +474,8 @@ function verifyTabularResponse(
   for (const n of numbersInResponse) {
     const num = parseFloat(n.replace(',', '.'));
     if (isNaN(num)) continue;
-    if (num <= 10 && Number.isInteger(num)) continue;
-    if (num > 1900 && num < 2100) continue;
+    if (num <= 1 && Number.isInteger(num)) continue; // skip 0, 1
+    if (num > 1900 && num < 2100) continue; // skip years
     numbersExtracted++;
 
     if (validValues.has(n) || validValues.has(n.replace(',', '.'))) {
@@ -1695,7 +1701,13 @@ function verifyIDERNumbers(
     }
   }
 
-  const numbersInResponse = responseText.match(/\d+[.,]?\d*/g) || [];
+  // Extract only scientifically relevant numbers (unit-associated or decimals)
+  const scientificNumberPattern = /(\d+[.,]\d+)\s*(%|MPa|GPa|kPa|°C|℃|min|h|s|mm|cm|µm|nm|mW|mL|mg|µg|g\/|kg|ppm|ppb|N|J|Hz|kHz|MHz|mol|wt%|vol%|HV|KHN|mW\/cm²|µm²)/gi;
+  const decimalPattern = /(?<!\w)(\d+[.,]\d{1,})\b/g;
+  const scientificMatches = [...responseText.matchAll(scientificNumberPattern)].map(m => m[1]);
+  const decimalMatches = [...responseText.matchAll(decimalPattern)].map(m => m[1]);
+  const numbersInResponse = [...new Set([...scientificMatches, ...decimalMatches])];
+
   const ungrounded: { number: string; context: string }[] = [];
   let matched = 0;
   let numbersExtracted = 0;
@@ -1703,7 +1715,7 @@ function verifyIDERNumbers(
   for (const n of numbersInResponse) {
     const num = parseFloat(n.replace(',', '.'));
     if (isNaN(num)) continue;
-    if (num <= 10 && Number.isInteger(num)) continue;
+    if (num <= 1 && Number.isInteger(num)) continue;
     if (num > 1900 && num < 2100) continue;
     numbersExtracted++;
 
@@ -1744,7 +1756,12 @@ async function verifyResponse(
   const emptyResult: DetailedVerification = { verified: true, issues: [], numbers_extracted: 0, matched: 0, unmatched: 0, issue_types: [], unmatched_examples: [] };
   if (!measurements || measurements.length === 0) return emptyResult;
 
-  const numbersInResponse = responseText.match(/\d+[.,]?\d*/g) || [];
+  // Extract only scientifically relevant numbers
+  const scientificNumberPattern = /(\d+[.,]\d+)\s*(%|MPa|GPa|kPa|°C|℃|min|h|s|mm|cm|µm|nm|mW|mL|mg|µg|g\/|kg|ppm|ppb|N|J|Hz|kHz|MHz|mol|wt%|vol%|HV|KHN|mW\/cm²|µm²)/gi;
+  const decimalPattern = /(?<!\w)(\d+[.,]\d{1,})\b/g;
+  const scientificMatches = [...responseText.matchAll(scientificNumberPattern)].map(m => m[1]);
+  const decimalMatches = [...responseText.matchAll(decimalPattern)].map(m => m[1]);
+  const numbersInResponse = [...new Set([...scientificMatches, ...decimalMatches])];
   if (numbersInResponse.length === 0) return emptyResult;
 
   const validValues = new Set<string>();
@@ -1764,7 +1781,7 @@ async function verifyResponse(
   for (const n of numbersInResponse) {
     const num = parseFloat(n.replace(',', '.'));
     if (isNaN(num) || num < 0.01 || (num > 1900 && num < 2100)) continue;
-    if (num <= 10 && Number.isInteger(num)) continue;
+    if (num <= 1 && Number.isInteger(num)) continue;
     numbersExtracted++;
 
     if (validValues.has(n) || validValues.has(n.replace(',', '.'))) {
@@ -1932,6 +1949,51 @@ function makeDiagnosticsDefaults(requestId: string, latencyMs: number): Diagnost
     criticalDocs: [], chunksUsed: 0, auditIssues: [], verification: null,
     failClosedTriggered: false, failClosedReason: null, failClosedStage: null, latencyMs,
   };
+}
+
+// ==========================================
+// FAIL-CLOSED SUGGESTION GENERATOR
+// ==========================================
+function generateFailClosedSuggestions(
+  query: string, constraints: QueryConstraints, evidenceGraph?: EvidenceGraph
+): string {
+  const suggestions: string[] = [];
+  
+  // Suggest metric-specific queries
+  if (constraints.properties.length > 0) {
+    const propNames: Record<string, string> = {
+      color: 'cor (ΔE/yellowing)', flexural_strength: 'resistência flexural', hardness: 'dureza',
+      water_sorption: 'sorção de água', degree_of_conversion: 'grau de conversão',
+      elastic_modulus: 'módulo elástico', flexural_modulus: 'módulo flexural',
+    };
+    for (const p of constraints.properties.slice(0, 2)) {
+      const name = propNames[p] || p;
+      suggestions.push(`- "Liste todas as medições de ${name} do projeto."`);
+    }
+  }
+  
+  // Suggest material/additive-specific queries
+  if (constraints.materials.length > 0 || constraints.additives.length > 0) {
+    const terms = [...constraints.materials, ...constraints.additives.map(a => {
+      const nameMap: Record<string, string> = { silver_nanoparticles: 'Ag/prata/silver', bomar: 'BOMAR', tegdma: 'TEGDMA', udma: 'UDMA', bisgma: 'BisGMA' };
+      return nameMap[a] || a;
+    })];
+    suggestions.push(`- "Mostre experimentos que mencionem ${terms.join(' ou ')}."`);
+  }
+  
+  // Suggest experiment-specific queries from evidence graph
+  if (evidenceGraph && evidenceGraph.experiments.length > 0) {
+    const expTitle = evidenceGraph.experiments[0].title;
+    suggestions.push(`- "O que o experimento '${expTitle.substring(0, 50)}' demonstrou?"`);
+  }
+  
+  // Fallback generic suggestions
+  if (suggestions.length === 0) {
+    suggestions.push('- "Liste todos os experimentos do projeto."');
+    suggestions.push('- "Quais métricas foram medidas neste projeto?"');
+  }
+  
+  return suggestions.slice(0, 3).join('\n');
 }
 
 // ==========================================
@@ -2431,17 +2493,30 @@ serve(async (req) => {
       if (!iderVerification.verified) {
         console.warn(`IDER HARD FAIL-CLOSED: ${iderVerification.unmatched} ungrounded numbers`);
         const examples = iderVerification.unmatched_examples.slice(0, 5).map(e => `"${e.number}" (…${e.context}…)`).join('\n- ');
-        finalIDERResponse = `**VERIFICAÇÃO FALHOU**: ${iderVerification.unmatched} número(s) na resposta não correspondem a medições do projeto.\n\n**Números sem evidência**:\n- ${examples}\n\nA resposta foi bloqueada para evitar informações não verificáveis.\nPara investigar, use a pergunta diretamente sobre o experimento/aba específica.`;
-        iderPipeline = 'ider-fail-closed-verification';
+        const constraintInfo = constraintsKeywordsHit.length > 0 ? `\n**Constraints detectadas**: ${constraintsKeywordsHit.join(', ')}` : '';
+        const docsInfo = criticalDocs.length > 0 ? `\n**Documentos analisados**: ${criticalDocs.map(d => d.doc_id).join(', ')}` : '';
+        const suggestions = generateFailClosedSuggestions(query, preConstraints, evidenceGraph);
+        finalIDERResponse = `**VERIFICAÇÃO FALHOU**: ${iderVerification.unmatched} número(s) na resposta não correspondem a medições do projeto.\n\n**Números sem evidência**:\n- ${examples}${constraintInfo}${docsInfo}\n\nA resposta foi bloqueada para evitar informações não verificáveis.\n\n**Sugestões de investigação**:\n${suggestions}`;
+        iderPipeline = 'ider-fail-closed';
         iderFailClosed = true;
         iderFailReason = 'numeric_grounding_failed';
         iderFailStage = 'verification';
       }
 
-      if (auditIssues.length > 0 && !iderFailClosed) {
+      // HARD FAIL-CLOSED: audit issues with external_leak or cross_variant_mix
+      if (!iderFailClosed && auditIssues.length > 0) {
         const severeIssues = auditIssues.filter(i => i.type === 'cross_variant_mix' || i.type === 'external_leak');
         if (severeIssues.length > 0) {
-          finalIDERResponse += `\n\n---\n⚠️ **Auditoria**: ${severeIssues.map(i => `[${i.type}] ${i.detail}`).join('; ')}`;
+          console.warn(`IDER HARD FAIL-CLOSED (audit): ${severeIssues.map(i => i.type).join(', ')}`);
+          const issueDetails = severeIssues.map(i => `- **[${i.type}]** ${i.detail}`).join('\n');
+          const constraintInfo = constraintsKeywordsHit.length > 0 ? `\n**Constraints detectadas**: ${constraintsKeywordsHit.join(', ')}` : '';
+          const docsInfo = criticalDocs.length > 0 ? `\n**Documentos analisados**: ${criticalDocs.map(d => d.doc_id).join(', ')}` : '';
+          const suggestions = generateFailClosedSuggestions(query, preConstraints, evidenceGraph);
+          finalIDERResponse = `**AUDITORIA FALHOU**: A resposta foi bloqueada por problemas de integridade.\n\n**Problemas detectados**:\n${issueDetails}${constraintInfo}${docsInfo}\n\nA resposta foi bloqueada para evitar dados misturados ou não-rastreáveis.\n\n**Sugestões de investigação**:\n${suggestions}`;
+          iderPipeline = 'ider-fail-closed';
+          iderFailClosed = true;
+          iderFailReason = severeIssues[0].type as string;
+          iderFailStage = 'audit';
         }
       }
 
@@ -2534,7 +2609,8 @@ serve(async (req) => {
             ...constraints.additives.map(a => `aditivo="${a}"`),
             ...constraints.properties.map(p => `propriedade="${p}"`),
           ].join(', ');
-          const failMsg = `**EVIDÊNCIA INEXISTENTE NO PROJETO** para: ${constraintDesc}.\n\nNão encontrei nenhum experimento, condição ou trecho contendo ${missing.join(' e ')} neste projeto.\n\nPara responder, envie o Excel/PDF onde isso aparece ou indique o nome do experimento/aba.`;
+          const suggestions = generateFailClosedSuggestions(query, constraints);
+          const failMsg = `**EVIDÊNCIA INEXISTENTE NO PROJETO** para: ${constraintDesc}.\n\nNão encontrei nenhum experimento, condição ou trecho contendo ${missing.join(' e ')} neste projeto.\n\n**Constraints detectadas**: ${constraintsKeywordsHit.join(', ')}\n\nPara responder, envie o Excel/PDF onde isso aparece ou indique o nome do experimento/aba.\n\n**Sugestões de investigação**:\n${suggestions}`;
 
           await supabase.from("rag_logs").insert({
             user_id: user.id, query, chunks_used: [], chunks_count: 0,
@@ -2596,7 +2672,8 @@ serve(async (req) => {
           evidenceCheckPassed: true,
           failClosedTriggered: true, failClosedReason: 'constraint_evidence_missing', failClosedStage: 'evidence_graph',
         });
-        const failMsg2 = `**EVIDÊNCIA INSUFICIENTE** após filtrar por escopo. Encontrei evidência parcial no projeto, mas após aplicar os filtros de material/aditivo/propriedade, nenhuma medição restou.\n\nTente reformular sem restrições específicas ou envie os dados relevantes.`;
+        const suggestions2 = generateFailClosedSuggestions(query, constraints);
+        const failMsg2 = `**EVIDÊNCIA INSUFICIENTE** após filtrar por escopo. Encontrei evidência parcial no projeto, mas após aplicar os filtros de material/aditivo/propriedade, nenhuma medição restou.\n\n**Constraints detectadas**: ${constraintsKeywordsHit.join(', ')}\n\nTente reformular sem restrições específicas ou envie os dados relevantes.\n\n**Sugestões de investigação**:\n${suggestions2}`;
         await supabase.from("rag_logs").insert({
           user_id: user.id, query, chunks_used: [], chunks_count: 0,
           response_summary: failMsg2.substring(0, 500),
