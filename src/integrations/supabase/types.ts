@@ -955,6 +955,8 @@ export type Database = {
       }
       measurements: {
         Row: {
+          cell_addr: string | null
+          col_idx: number | null
           confidence: string | null
           created_at: string
           evidence_date: string | null
@@ -964,6 +966,8 @@ export type Database = {
           metric: string
           notes: string | null
           raw_metric_name: string | null
+          row_idx: number | null
+          sheet_name: string | null
           source_excerpt: string
           unit: string
           unit_canonical: string | null
@@ -971,6 +975,8 @@ export type Database = {
           value_canonical: number | null
         }
         Insert: {
+          cell_addr?: string | null
+          col_idx?: number | null
           confidence?: string | null
           created_at?: string
           evidence_date?: string | null
@@ -980,6 +986,8 @@ export type Database = {
           metric: string
           notes?: string | null
           raw_metric_name?: string | null
+          row_idx?: number | null
+          sheet_name?: string | null
           source_excerpt: string
           unit: string
           unit_canonical?: string | null
@@ -987,6 +995,8 @@ export type Database = {
           value_canonical?: number | null
         }
         Update: {
+          cell_addr?: string | null
+          col_idx?: number | null
           confidence?: string | null
           created_at?: string
           evidence_date?: string | null
@@ -996,6 +1006,8 @@ export type Database = {
           metric?: string
           notes?: string | null
           raw_metric_name?: string | null
+          row_idx?: number | null
+          sheet_name?: string | null
           source_excerpt?: string
           unit?: string
           unit_canonical?: string | null
