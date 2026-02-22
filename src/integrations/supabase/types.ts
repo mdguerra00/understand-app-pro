@@ -961,6 +961,7 @@ export type Database = {
           created_at: string
           evidence_date: string | null
           experiment_id: string
+          header_raw: string | null
           id: string
           method: string | null
           metric: string
@@ -973,6 +974,7 @@ export type Database = {
           unit_canonical: string | null
           value: number
           value_canonical: number | null
+          value_raw: string | null
         }
         Insert: {
           cell_addr?: string | null
@@ -981,6 +983,7 @@ export type Database = {
           created_at?: string
           evidence_date?: string | null
           experiment_id: string
+          header_raw?: string | null
           id?: string
           method?: string | null
           metric: string
@@ -993,6 +996,7 @@ export type Database = {
           unit_canonical?: string | null
           value: number
           value_canonical?: number | null
+          value_raw?: string | null
         }
         Update: {
           cell_addr?: string | null
@@ -1001,6 +1005,7 @@ export type Database = {
           created_at?: string
           evidence_date?: string | null
           experiment_id?: string
+          header_raw?: string | null
           id?: string
           method?: string | null
           metric?: string
@@ -1013,6 +1018,7 @@ export type Database = {
           unit_canonical?: string | null
           value?: number
           value_canonical?: number | null
+          value_raw?: string | null
         }
         Relationships: [
           {
