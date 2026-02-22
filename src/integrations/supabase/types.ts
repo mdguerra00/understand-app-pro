@@ -1394,11 +1394,13 @@ export type Database = {
           chunks_count: number | null
           chunks_used: string[] | null
           created_at: string | null
+          diagnostics: Json | null
           id: string
           latency_ms: number | null
           model_used: string | null
           query: string
           query_embedding: string | null
+          request_id: string | null
           response_summary: string | null
           tokens_input: number | null
           tokens_output: number | null
@@ -1408,11 +1410,13 @@ export type Database = {
           chunks_count?: number | null
           chunks_used?: string[] | null
           created_at?: string | null
+          diagnostics?: Json | null
           id?: string
           latency_ms?: number | null
           model_used?: string | null
           query: string
           query_embedding?: string | null
+          request_id?: string | null
           response_summary?: string | null
           tokens_input?: number | null
           tokens_output?: number | null
@@ -1422,11 +1426,13 @@ export type Database = {
           chunks_count?: number | null
           chunks_used?: string[] | null
           created_at?: string | null
+          diagnostics?: Json | null
           id?: string
           latency_ms?: number | null
           model_used?: string | null
           query?: string
           query_embedding?: string | null
+          request_id?: string | null
           response_summary?: string | null
           tokens_input?: number | null
           tokens_output?: number | null
