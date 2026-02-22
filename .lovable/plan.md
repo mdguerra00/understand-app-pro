@@ -1,125 +1,111 @@
 
-# Plano: 4 Correcoes de Gating no rag-answer
 
-## Correcoes
+# Fix: Global Constraint Gate Not Blocking (Co-occurrence + Diagnostics Pass-through)
 
-### 1. Global Constraint Gate (antes do roteamento)
+## Root Cause
 
-Inserir entre linha 2324 (apos `constraintsScope`) e linha 2326 (antes do routing):
+Two bugs prevent the gate from working:
 
-- Se `preConstraints.hasStrongConstraints === true`, chamar `quickEvidenceCheck(supabase, targetProjectIds, preConstraints)`
-- Se `feasible === false` -> return imediato `fail-closed-no-evidence` com `constraint_evidence_missing` / `routing`
-- Isso impede que queries com constraints fortes caiam em IDER, Comparative ou 3-step sem evidencia
+### Bug 1: `evidenceCheckPassed` not passed to 3-step diagnostics
+Line ~2978-2986 builds `stdDiag` using `makeDiagnosticsDefaults` which sets `evidenceCheckPassed: null`. The actual variable `evidenceCheckPassed` (set at line 2362) is never included. This makes it impossible to see what the gate decided.
 
-### 2. IDER: filtrar evidence graph por constraints
+### Bug 2: `quickEvidenceCheck` checks constraints independently
+The function checks each material and each additive separately. If "vitality" exists anywhere in the project AND "prata/silver/ag" exists anywhere else (even in unrelated documents), both pass and `feasible=true`. There is no requirement that material+additive co-occur in the same experiment or document.
 
-Na funcao `buildEvidenceGraph` (linhas 1367-1488):
-- Adicionar parametro `constraints: QueryConstraints | null`
-- Apos montar `expResults` (linha 1476), se `constraints?.hasStrongConstraints`, filtrar experimentos cujas conditions ou titulo contenham pelo menos um termo de material/aditivo
-- Se 0 experimentos sobreviverem ao filtro, retornar graph vazio (que aciona fail-closed no caller)
+For the query "prata na Vitality", the project likely has:
+- Chunks mentioning "Vitality" (the resin) -- passes material check
+- Chunks mentioning "silver" or "prata" or "ag" somewhere -- passes additive check
+- But NO experiment combining both
 
-Atualizar chamada em linha 2433 para passar `preConstraints`.
+## Fixes
 
-### 3. IDER: external leak programatico pre-sintese
+### Fix 1: Pass `evidenceCheckPassed` to ALL diagnostics calls
 
-Apos `buildEvidenceGraph` e antes de `synthesizeIDER` (entre linhas 2438 e 2468):
-- Buscar `project_files.id` do projeto
-- Comparar `doc_ids` do evidence graph contra project_files
-- Se algum doc_id nao pertence ao projeto -> fail-closed com `external_leak` / `evidence_graph` / `ider-fail-closed`
+In the 3-step `buildDiagnostics` call (~line 2978), add `evidenceCheckPassed` to the object. Same for any other path that omits it.
 
-### 4. Hard fail numerico no 3-step
+### Fix 2: Add co-occurrence check to `quickEvidenceCheck`
 
-No pipeline standard (linhas 2845-2850), mudar comportamento:
-- Se `verification.unmatched > 0` -> substituir resposta por mensagem fail-closed
-- Usar `fail_closed_reason: 'numeric_grounding_failed'`, `fail_closed_stage: 'verification'`, `pipeline: '3-step'` (manter enum)
-
-## Detalhes tecnicos
-
-### Correcao 1 - Insercao no main handler
+When BOTH `materials` and `additives` are non-empty, after the individual checks pass, add a co-occurrence verification:
 
 ```text
-// Apos linha 2324 (constraintsScope), antes do routing
-if (preConstraints.hasStrongConstraints) {
-  const gateProjectIds = validPrimary.length > 0 ? validPrimary : allowedProjectIds;
-  const { feasible, missing } = await quickEvidenceCheck(supabase, gateProjectIds, preConstraints);
-  if (!feasible) {
-    // RETURN IMEDIATO — nao cair em nenhum pipeline
-    const latencyMs = Date.now() - startTime;
-    const gateDiag = buildDiagnostics({
-      ...defaults,
-      pipeline: 'fail-closed-no-evidence',
-      evidenceCheckPassed: false,
-      failClosedTriggered: true,
-      failClosedReason: 'constraint_evidence_missing',
-      failClosedStage: 'routing',
-    });
-    // log + return com suggestions
-  }
-}
-```
-
-### Correcao 2 - buildEvidenceGraph com filtro
-
-```text
-async function buildEvidenceGraph(
-  supabase, projectIds, query, insightSeeds, constraints  // <-- novo param
-): Promise<EvidenceGraph> {
-  // ... logica existente ...
+// After individual checks pass (missing.length === 0):
+if (constraints.materials.length > 0 && constraints.additives.length > 0) {
+  // Check if ANY experiment has BOTH material AND additive terms
+  const materialTerms = constraints.materials; // e.g. ["vitality"]
+  const additiveTerms = termMap expansions;     // e.g. ["silver","prata","ag","nanopart"]
   
-  // APOS montar expResults (linha 1476):
-  let filteredResults = expResults;
-  if (constraints?.hasStrongConstraints) {
-    const constraintTerms = [
-      ...constraints.materials,
-      ...constraints.additives.flatMap(a => termMap[a] || [a]),
-    ];
-    filteredResults = expResults.filter(exp => {
-      const titleMatch = constraintTerms.some(t => exp.title.toLowerCase().includes(t));
-      const condMatch = exp.variants.some(v =>
-        Object.values(v.conditions).some(cv =>
-          constraintTerms.some(t => cv.toLowerCase().includes(t))
-        )
-      );
-      return titleMatch || condMatch;
-    });
-    diagnostics.push(`Constraint filter: ${expResults.length} -> ${filteredResults.length}`);
+  // Search experiments where title/conditions match material AND additive
+  const coOccurrence = await checkCoOccurrence(supabase, projectIds, materialTerms, additiveTerms);
+  
+  if (!coOccurrence) {
+    missing.push(`co-ocorrencia material+aditivo`);
+    // feasible becomes false
   }
-  // Usar filteredResults no return
 }
 ```
 
-### Correcao 3 - External leak check
+The co-occurrence check queries:
+1. `experiments` where title matches a material term AND title/conditions match an additive term
+2. `search_chunks` where chunk_text contains both a material term AND an additive term
+
+If neither returns results, co-occurrence fails and the gate blocks.
+
+### Fix 3: Ensure `evidenceCheckPassed` propagates to IDER and Comparative paths too
+
+Review all `buildDiagnostics` calls to ensure `evidenceCheckPassed` is always included (not relying on `makeDiagnosticsDefaults` null).
+
+## Expected behavior after fix
+
+For "prata na Vitality":
+- Individual checks: vitality found, silver/prata found
+- Co-occurrence check: no experiment has both vitality AND silver/prata
+- `feasible = false`, `missing = ["co-ocorrencia material+aditivo"]`
+- Gate blocks: `pipeline_selected = "fail-closed-no-evidence"`
+- `evidence_check_passed = false`
+- `fail_closed_reason = "constraint_evidence_missing"`
+
+## Files changed
+
+1. `supabase/functions/rag-answer/index.ts`:
+   - Add co-occurrence check inside `quickEvidenceCheck`
+   - Pass `evidenceCheckPassed` variable to 3-step (and all other) `buildDiagnostics` calls
+
+## Technical detail: co-occurrence query
 
 ```text
-// Entre evidence graph e synthesize (apos linha 2438)
-const projectFileIds = new Set<string>();
-const { data: pFiles } = await supabase
-  .from('project_files').select('id').in('project_id', iderProjectIds);
-for (const f of (pFiles || [])) projectFileIds.add(f.id);
+async function checkCoOccurrence(supabase, projectIds, materialTerms, additiveSearchTerms):
+  // Strategy 1: experiments table
+  for (mat of materialTerms):
+    const { data } = await supabase.from('experiments')
+      .select('id, title')
+      .in('project_id', projectIds)
+      .is('deleted_at', null)
+      .ilike('title', `%${mat}%`)
+      .limit(50);
+    
+    if (data?.length > 0):
+      // Check conditions of these experiments for additive terms
+      for (exp of data):
+        const { data: conds } = await supabase.from('experiment_conditions')
+          .select('value')
+          .eq('experiment_id', exp.id);
+        
+        const allText = [exp.title, ...conds.map(c => c.value)].join(' ').toLowerCase();
+        if (additiveSearchTerms.some(t => allText.includes(t))):
+          return true;  // co-occurrence found
 
-const externalDocs = evidenceGraph.experiments
-  .flatMap(e => e.doc_ids)
-  .filter(d => d && !projectFileIds.has(d));
+  // Strategy 2: search_chunks — both terms in same chunk
+  for (mat of materialTerms):
+    for (add of additiveSearchTerms):
+      const { data } = await supabase.from('search_chunks')
+        .select('id')
+        .in('project_id', projectIds)
+        .ilike('chunk_text', `%${mat}%`)
+        .ilike('chunk_text', `%${add}%`)
+        .limit(1);
+      if (data?.length > 0): return true;
 
-if (externalDocs.length > 0) {
-  // fail-closed external_leak, pipeline = 'ider-fail-closed'
-}
+  return false;  // no co-occurrence
 ```
 
-### Correcao 4 - 3-step hard fail
-
-```text
-// Linha 2847-2849: mudar de warning para hard fail
-if (!verification.verified && verification.unmatched > 0) {
-  finalResponse = fail-closed message com suggestions;
-  // Atualizar stdDiag com failClosedTriggered=true
-}
-```
-
-## Arquivos alterados
-
-1. `supabase/functions/rag-answer/index.ts` — 4 blocos de correcao
-
-## Enum de pipeline_selected (sem mudancas)
-
-Os valores existentes sao mantidos: `ider`, `ider-fail-closed`, `tabular-excel`, `tabular-excel-fail-closed`, `comparative`, `comparative-constrained`, `comparative-constrained-fail-closed`, `fail-closed-no-evidence`, `3-step`.
+This approach limits additional queries and short-circuits on first match found.
