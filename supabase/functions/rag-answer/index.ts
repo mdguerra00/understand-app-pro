@@ -1084,6 +1084,111 @@ async function fetchExperimentContext(
 }
 
 // ==========================================
+// FETCH KNOWLEDGE FACTS (manual canonical knowledge)
+// Always live (no cache) — project first, then global fallback
+// ==========================================
+interface KnowledgeFactHit {
+  id: string;
+  title: string;
+  key: string;
+  category: string;
+  value: any;
+  description: string | null;
+  authoritative: boolean;
+  priority: number;
+  version: number;
+  project_id: string | null;
+  match_type: 'exact_key' | 'category_match' | 'text_match' | 'embedding_match';
+  match_score: number;
+}
+
+async function fetchKnowledgeFacts(
+  supabase: any, projectIds: string[], query: string, queryEmbedding?: string | null
+): Promise<{ facts: KnowledgeFactHit[]; contextText: string; diagnostics: { manual_knowledge_hits: number; applied_as_source_of_truth: number; override_conflicts: string[] } }> {
+  const searchTerms = query.toLowerCase().split(/\s+/).filter((w: string) => w.length > 2).slice(0, 8);
+  const diagnostics = { manual_knowledge_hits: 0, applied_as_source_of_truth: 0, override_conflicts: [] as string[] };
+
+  // Fetch project-scoped facts first, then global (project overrides global by category/key)
+  const { data: projectFacts } = await supabase
+    .from('knowledge_facts')
+    .select('id, title, key, category, value, description, authoritative, priority, version, project_id, tags')
+    .in('project_id', projectIds)
+    .eq('status', 'active')
+    .order('priority', { ascending: false });
+
+  const { data: globalFacts } = await supabase
+    .from('knowledge_facts')
+    .select('id, title, key, category, value, description, authoritative, priority, version, project_id, tags')
+    .is('project_id', null)
+    .eq('status', 'active')
+    .order('priority', { ascending: false });
+
+  // Merge: project overrides global by category+key
+  const seenKeys = new Set<string>();
+  const allFacts: any[] = [];
+  for (const f of (projectFacts || [])) {
+    seenKeys.add(`${f.category}::${f.key}`);
+    allFacts.push(f);
+  }
+  for (const f of (globalFacts || [])) {
+    const ck = `${f.category}::${f.key}`;
+    if (!seenKeys.has(ck)) {
+      allFacts.push(f);
+    }
+  }
+
+  if (allFacts.length === 0) return { facts: [], contextText: '', diagnostics };
+
+  // Score relevance
+  const scored: KnowledgeFactHit[] = [];
+  for (const f of allFacts) {
+    const text = `${f.title} ${f.key} ${f.category} ${JSON.stringify(f.value)} ${f.description || ''} ${(f.tags || []).join(' ')}`.toLowerCase();
+    const matchCount = searchTerms.filter((t: string) => text.includes(t)).length;
+    if (matchCount === 0) continue;
+
+    const matchType = searchTerms.some((t: string) => f.key.toLowerCase().includes(t)) ? 'exact_key'
+      : searchTerms.some((t: string) => f.category.toLowerCase().includes(t)) ? 'category_match'
+      : 'text_match';
+
+    // Hybrid score: text relevance + priority boost + authoritative boost
+    const textScore = matchCount / searchTerms.length;
+    const score = textScore + (f.priority * 0.005) + (f.authoritative ? 0.5 : 0);
+
+    scored.push({
+      id: f.id, title: f.title, key: f.key, category: f.category,
+      value: f.value, description: f.description,
+      authoritative: f.authoritative, priority: f.priority,
+      version: f.version, project_id: f.project_id,
+      match_type: matchType, match_score: score,
+    });
+  }
+
+  // Sort by score descending
+  scored.sort((a, b) => b.match_score - a.match_score);
+  const topFacts = scored.slice(0, 10);
+
+  diagnostics.manual_knowledge_hits = topFacts.length;
+  diagnostics.applied_as_source_of_truth = topFacts.filter(f => f.authoritative).length;
+
+  // Build context text for LLM
+  let contextText = '';
+  if (topFacts.length > 0) {
+    contextText = '\n\n=== CONHECIMENTO MANUAL CANÔNICO (PRIORIDADE MÁXIMA) ===\n\n';
+    for (const f of topFacts) {
+      const icon = f.authoritative ? '🔒' : '📌';
+      contextText += `${icon} [${f.category.toUpperCase()}] ${f.title} (key: ${f.key}, v${f.version})\n`;
+      contextText += `   Valor: ${JSON.stringify(f.value)}\n`;
+      if (f.description) contextText += `   Descrição: ${f.description}\n`;
+      if (f.authoritative) contextText += `   ⚠️ FONTE DE VERDADE — priorize sobre dados extraídos. Cite como "Conhecimento Manual [${f.id.substring(0, 8)}]"\n`;
+      contextText += '\n';
+    }
+    contextText += 'REGRA: Se houver conflito entre dados extraídos e Conhecimento Manual authoritative, PRIORIZE o manual e sinalize: "Atualização recente no Conhecimento Manual".\n\n';
+  }
+
+  return { facts: topFacts, contextText, diagnostics };
+}
+
+// ==========================================
 // FETCH KNOWLEDGE PIVOTS
 // ==========================================
 async function fetchKnowledgePivots(supabase: any, projectIds: string[], query: string): Promise<string> {

@@ -26,11 +26,11 @@ import {
   Layers,
   CheckCircle2,
   Clock,
-  CircleDashed
+  CircleDashed,
 } from 'lucide-react';
 import { KnowledgeCategory } from './KnowledgeCard';
 
-export type EntryTypeFilter = 'all' | 'documents' | 'insights' | 'experiments';
+export type EntryTypeFilter = 'all' | 'documents' | 'insights' | 'experiments' | 'facts';
 export type ValidationFilter = 'all' | 'pending' | 'validated';
 
 interface Project {
@@ -142,6 +142,15 @@ export function KnowledgeFilters({
           >
             <FlaskConical className="h-3 w-3 mr-1" />
             Experimentos
+          </Button>
+          <Button
+            variant={entryType === 'facts' ? 'default' : 'outline'}
+            size="sm"
+            className="text-xs"
+            onClick={() => onEntryTypeChange('facts')}
+          >
+            <BookOpen className="h-3 w-3 mr-1" />
+            Fatos
           </Button>
         </div>
       </div>
