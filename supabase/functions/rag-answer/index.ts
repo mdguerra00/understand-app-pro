@@ -1901,8 +1901,11 @@ function extractConstraints(query: string): QueryConstraints {
     if (re.test(s)) properties.push(name);
   }
 
-  // Any detected constraint triggers the gate (was >= 2, now >= 1)
-  const hasStrongConstraints = (materials.length + additives.length + properties.length) >= 1;
+  // Strong constraints require at least 2 different constraint types present together
+  const hasStrongConstraints =
+    (materials.length > 0 && additives.length > 0) ||
+    (materials.length > 0 && properties.length > 0) ||
+    (additives.length > 0 && properties.length > 0);
 
   return { materials, additives, properties, hasStrongConstraints };
 }
@@ -2109,7 +2112,99 @@ async function quickEvidenceCheck(
     return checks.some(Boolean);
   }
 
-  // Check each constraint type
+  // === STRONG CONSTRAINTS: AND-only co-occurrence (skip individual checks) ===
+  if (constraints.hasStrongConstraints) {
+    const additiveTermMap: Record<string, string[]> = {
+      silver_nanoparticles: ['silver', 'prata', 'ag', 'nanopart'],
+      bomar: ['bomar'],
+      tegdma: ['tegdma'],
+      udma: ['udma'],
+      bisgma: ['bisgma', 'bis-gma'],
+    };
+
+    // Material + Additive co-occurrence
+    if (constraints.materials.length > 0 && constraints.additives.length > 0) {
+      const allAdditiveTerms: string[] = [];
+      for (const add of constraints.additives) {
+        const terms = additiveTermMap[add] || [add];
+        for (const t of terms) allAdditiveTerms.push(t);
+      }
+      try {
+        const coOccurs = await checkCoOccurrence(supabase, projectIds, constraints.materials, allAdditiveTerms);
+        if (!coOccurs) {
+          missing.push('co-ocorrencia material+aditivo');
+          console.log(`Co-occurrence check FAILED: materials=${constraints.materials.join(',')} additives=${allAdditiveTerms.join(',')}`);
+        } else {
+          console.log(`Co-occurrence check PASSED (material+additive)`);
+        }
+      } catch (coErr) {
+        missing.push('co-ocorrencia material+aditivo (erro na verificacao)');
+        console.error(`Co-occurrence check error (treating as FAILED):`, coErr);
+      }
+    }
+
+    // Material + Property co-occurrence
+    if (constraints.materials.length > 0 && constraints.properties.length > 0) {
+      const propTermMap: Record<string, string[]> = {
+        color: ['color', 'yellowing', 'delta_e', 'cor', 'amarel'],
+        flexural_strength: ['flexural_strength', 'flexural strength', 'resistência flexural'],
+        hardness: ['hardness', 'dureza', 'vickers'],
+        water_sorption: ['water_sorption', 'sorption', 'sorção'],
+        degree_of_conversion: ['degree_of_conversion', 'conversão', 'conversion'],
+        elastic_modulus: ['elastic_modulus', 'módulo', 'modulus'],
+        flexural_modulus: ['flexural_modulus', 'módulo flexural'],
+      };
+      const allPropTerms: string[] = [];
+      for (const prop of constraints.properties) {
+        const terms = propTermMap[prop] || [prop];
+        for (const t of terms) allPropTerms.push(t);
+      }
+      try {
+        const coOccurs = await checkCoOccurrence(supabase, projectIds, constraints.materials, allPropTerms);
+        if (!coOccurs) {
+          missing.push('co-ocorrencia material+propriedade');
+          console.log(`Co-occurrence check FAILED: materials=${constraints.materials.join(',')} properties=${allPropTerms.join(',')}`);
+        }
+      } catch (coErr) {
+        missing.push('co-ocorrencia material+propriedade (erro na verificacao)');
+      }
+    }
+
+    // Additive + Property co-occurrence
+    if (constraints.additives.length > 0 && constraints.properties.length > 0 && constraints.materials.length === 0) {
+      const allAddTerms: string[] = [];
+      for (const add of constraints.additives) {
+        const terms = additiveTermMap[add] || [add];
+        for (const t of terms) allAddTerms.push(t);
+      }
+      const propTermMap2: Record<string, string[]> = {
+        color: ['color', 'yellowing', 'delta_e', 'cor', 'amarel'],
+        flexural_strength: ['flexural_strength', 'flexural strength', 'resistência flexural'],
+        hardness: ['hardness', 'dureza', 'vickers'],
+        water_sorption: ['water_sorption', 'sorption', 'sorção'],
+        degree_of_conversion: ['degree_of_conversion', 'conversão', 'conversion'],
+        elastic_modulus: ['elastic_modulus', 'módulo', 'modulus'],
+        flexural_modulus: ['flexural_modulus', 'módulo flexural'],
+      };
+      const allPropTerms2: string[] = [];
+      for (const prop of constraints.properties) {
+        const terms = propTermMap2[prop] || [prop];
+        for (const t of terms) allPropTerms2.push(t);
+      }
+      try {
+        const coOccurs = await checkCoOccurrence(supabase, projectIds, allAddTerms, allPropTerms2);
+        if (!coOccurs) {
+          missing.push('co-ocorrencia aditivo+propriedade');
+        }
+      } catch (coErr) {
+        missing.push('co-ocorrencia aditivo+propriedade (erro na verificacao)');
+      }
+    }
+
+    return { feasible: missing.length === 0, missing };
+  }
+
+  // === WEAK CONSTRAINTS: individual OR checks (existing logic) ===
   const checkPromises: Promise<void>[] = [];
 
   for (const mat of constraints.materials) {
@@ -2120,7 +2215,6 @@ async function quickEvidenceCheck(
   }
 
   for (const add of constraints.additives) {
-    // Map additive key to search terms
     const termMap: Record<string, string[]> = {
       silver_nanoparticles: ['silver', 'prata', 'ag', 'nanopart'],
       bomar: ['bomar'],
@@ -2136,7 +2230,6 @@ async function quickEvidenceCheck(
   }
 
   for (const prop of constraints.properties) {
-    // For properties, check measurements.metric and search_chunks
     const propTermMap: Record<string, string[]> = {
       color: ['color', 'yellowing', 'delta_e', 'whiteness', 'amarel', 'cor'],
       flexural_strength: ['flexural_strength', 'flexural strength', 'resistência flexural'],
@@ -2148,7 +2241,6 @@ async function quickEvidenceCheck(
     };
     const terms = propTermMap[prop] || [prop];
     checkPromises.push((async () => {
-      // Check metric key in measurements
       let found = false;
       for (const t of terms) {
         const { data } = await supabase
@@ -2160,7 +2252,6 @@ async function quickEvidenceCheck(
         if (data && data.length > 0) { found = true; break; }
       }
       if (!found) {
-        // Fallback: check chunks
         found = await existsInProject(terms);
       }
       if (!found) missing.push(`propriedade="${prop}"`);
@@ -2168,37 +2259,6 @@ async function quickEvidenceCheck(
   }
 
   await Promise.all(checkPromises);
-
-  // Co-occurrence check: when BOTH materials and additives are detected,
-  // they MUST co-occur in the same experiment or chunk. This is mandatory (AND logic).
-  if (constraints.materials.length > 0 && constraints.additives.length > 0) {
-    try {
-      const additiveTermMap: Record<string, string[]> = {
-        silver_nanoparticles: ['silver', 'prata', 'ag', 'nanopart'],
-        bomar: ['bomar'],
-        tegdma: ['tegdma'],
-        udma: ['udma'],
-        bisgma: ['bisgma', 'bis-gma'],
-      };
-      const allAdditiveTerms: string[] = [];
-      for (const add of constraints.additives) {
-        const terms = additiveTermMap[add] || [add];
-        for (const t of terms) allAdditiveTerms.push(t);
-      }
-
-      const coOccurs = await checkCoOccurrence(supabase, projectIds, constraints.materials, allAdditiveTerms);
-      if (!coOccurs) {
-        missing.push('co-ocorrencia material+aditivo');
-        console.log(`Co-occurrence check FAILED: materials=${constraints.materials.join(',')} additives=${allAdditiveTerms.join(',')}`);
-      } else {
-        console.log(`Co-occurrence check PASSED`);
-      }
-    } catch (coErr) {
-      // Co-occurrence check failed — treat as NOT passed (fail-safe)
-      missing.push('co-ocorrencia material+aditivo (erro na verificacao)');
-      console.error(`Co-occurrence check error (treating as FAILED):`, coErr);
-    }
-  }
 
   return { feasible: missing.length === 0, missing };
 }
@@ -2238,11 +2298,24 @@ async function checkCoOccurrence(
     }
   }
 
-  // Strategy 2 REMOVED: chunk-level co-occurrence was causing false positives
-  // (chunks can mention both terms in a general context without being an actual experiment).
-  // Only experiment-level co-occurrence counts.
+  // Strategy 2: chunk-level co-occurrence (AND — both terms in SAME chunk)
+  for (const mat of materialTerms) {
+    for (const add of additiveSearchTerms) {
+      const { data: coChunks } = await supabase
+        .from('search_chunks')
+        .select('id')
+        .in('project_id', projectIds)
+        .ilike('chunk_text', `%${mat}%`)
+        .ilike('chunk_text', `%${add}%`)
+        .limit(1);
+      if (coChunks && coChunks.length > 0) {
+        console.log(`Chunk co-occurrence found: "${mat}" + "${add}"`);
+        return true;
+      }
+    }
+  }
 
-  return false; // no co-occurrence found in experiments
+  return false; // no co-occurrence found
 }
 
 // ==========================================
