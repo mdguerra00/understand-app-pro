@@ -2168,11 +2168,10 @@ async function quickEvidenceCheck(
 
   await Promise.all(checkPromises);
 
-  // Co-occurrence check: if BOTH materials and additives are present and individually found,
-  // verify they co-occur in the same experiment or document chunk
-  if (missing.length === 0 && constraints.materials.length > 0 && constraints.additives.length > 0) {
+  // Co-occurrence check: when BOTH materials and additives are detected,
+  // they MUST co-occur in the same experiment or chunk. This is mandatory (AND logic).
+  if (constraints.materials.length > 0 && constraints.additives.length > 0) {
     try {
-      // Build additive search terms from all detected additives
       const additiveTermMap: Record<string, string[]> = {
         silver_nanoparticles: ['silver', 'prata', 'ag', 'nanopart'],
         bomar: ['bomar'],
@@ -2194,7 +2193,9 @@ async function quickEvidenceCheck(
         console.log(`Co-occurrence check PASSED`);
       }
     } catch (coErr) {
-      console.error(`Co-occurrence check error (non-fatal, treating as passed):`, coErr);
+      // Co-occurrence check failed — treat as NOT passed (fail-safe)
+      missing.push('co-ocorrencia material+aditivo (erro na verificacao)');
+      console.error(`Co-occurrence check error (treating as FAILED):`, coErr);
     }
   }
 
@@ -3053,8 +3054,8 @@ serve(async (req) => {
     let stdFailReason: string | null = null;
     let stdFailStage: string | null = null;
 
-    // HARD FAIL: if verification finds unmatched numbers, block the response
-    if (!verification.verified && verification.unmatched > 0) {
+    // HARD FAIL: if verification finds ANY unmatched numbers, block the response
+    if (verification.unmatched > 0) {
       console.warn(`3-STEP HARD FAIL-CLOSED: ${verification.unmatched} ungrounded numbers`);
       const examples = verification.unmatched_examples.slice(0, 5).map(e => `"${e.number}" (…${e.context}…)`).join('\n- ');
       const constraintInfo = constraintsKeywordsHit.length > 0 ? `\n**Constraints detectadas**: ${constraintsKeywordsHit.join(', ')}` : '';
