@@ -2346,19 +2346,22 @@ function generateFailClosedSuggestions(
 // QUICK EVIDENCE CHECK (gating)
 // ==========================================
 type GateMatch = { type: "experiment" | "chunk"; id: string; source?: string };
-type GateResult = { feasible: boolean; missing: string[]; matched: GateMatch[]; constraintHits?: Record<string, number>; quickMaterialFound?: boolean; quickPropertyFound?: boolean; quickAdditiveFound?: boolean };
+type GateResult = { feasible: boolean; missing: string[]; matched: GateMatch[]; constraintHits?: Record<string, number>; quickMaterialFound?: boolean; quickPropertyFound?: boolean; quickAdditiveFound?: boolean; suggestedAliases?: AliasSuggestion[]; aliasLookupLatencyMs?: number; provisionalPasses?: string[] };
 
 function normalizeText(s: string): string {
   return s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 }
 
 async function quickEvidenceCheck(
-  supabase: any, projectIds: string[], constraints: QueryConstraints
+  supabase: any, projectIds: string[], constraints: QueryConstraints,
+  apiKey?: string, projectId?: string
 ): Promise<GateResult> {
   const missing: string[] = [];
   const matched: GateMatch[] = [];
   const suggestedAliases: AliasSuggestion[] = [];
+  const provisionalPasses: string[] = [];
   const aliasLookupStart = Date.now();
+  let unknownTermCount = 0;
 
   // Pre-fetch experiment IDs for the project once (shared across all checks)
   const { data: projExps } = await supabase
@@ -2459,6 +2462,67 @@ async function quickEvidenceCheck(
     return foundMatches;
   }
 
+  // Helper: attempt alias resolution for a term that failed hardcoded lookup
+  async function tryAliasFallback(
+    term: string, entityType: string
+  ): Promise<{ found: boolean; matches: GateMatch[]; provisional: boolean; reason?: string }> {
+    if (!apiKey || !projectId || unknownTermCount >= MAX_UNKNOWN_TERMS_PER_QUERY) {
+      return { found: false, matches: [], provisional: false, reason: 'alias_lookup_unavailable' };
+    }
+    unknownTermCount++;
+    const alias = await suggestAlias(supabase, term, entityType, projectId, apiKey);
+    if (!alias) return { found: false, matches: [], provisional: false, reason: 'no_alias_found' };
+    suggestedAliases.push(alias);
+
+    const topCandidate = alias.top_candidates[0];
+    if (!topCandidate) return { found: false, matches: [], provisional: false, reason: 'no_candidates' };
+
+    // Ambiguous → fail-closed immediately
+    if (alias.ambiguous) {
+      return { found: false, matches: [], provisional: false, reason: 'ambiguous_alias' };
+    }
+
+    // Approved match with score >= threshold → search project with canonical name
+    if (topCandidate.approved && topCandidate.score >= ALIAS_SUGGEST_THRESHOLD) {
+      const canonicalMatches = await existsInProject([topCandidate.canonical_name]);
+      if (canonicalMatches.length > 0) {
+        const hasStructural = canonicalMatches.some(m => m.source === 'title' || m.source === 'conditions' || m.source === 'metrics');
+        if (hasStructural && topCandidate.score >= ALIAS_AUTOPASS_THRESHOLD) {
+          // Provisional auto-pass: high score + structural evidence
+          alias.has_structural_evidence = true;
+          alias.provisional_pass = true;
+          provisionalPasses.push(term);
+          return { found: true, matches: canonicalMatches, provisional: true };
+        } else if (hasStructural) {
+          // Lower score but still structural → provisional pass
+          alias.has_structural_evidence = true;
+          alias.provisional_pass = true;
+          provisionalPasses.push(term);
+          return { found: true, matches: canonicalMatches, provisional: true };
+        }
+        // Has canonical match but only in chunks → not structural enough
+        alias.has_structural_evidence = false;
+      }
+    }
+
+    // Persist suggestion for admin review
+    if (topCandidate.score >= ALIAS_SUGGEST_THRESHOLD) {
+      try {
+        await supabase.from('entity_aliases').upsert({
+          entity_type: entityType,
+          alias: term,
+          alias_norm: normalizeTermWithUnits(term).normalized,
+          canonical_name: topCandidate.canonical_name,
+          confidence: topCandidate.score,
+          approved: false,
+          source: 'user_query_suggest',
+        }, { onConflict: 'entity_type,alias_norm', ignoreDuplicates: true });
+      } catch (e) { console.warn('Failed to persist alias suggestion:', e); }
+    }
+
+    return { found: false, matches: [], provisional: false, reason: 'suggested_alias_pending' };
+  }
+
   // === STRONG CONSTRAINTS: individual EXISTS checks (no co-occurrence at gate level) ===
   // Co-occurrence is delegated to the pipeline (IDER/comparative) which has full context.
   if (constraints.hasStrongConstraints) {
@@ -2486,7 +2550,7 @@ async function quickEvidenceCheck(
 
     const strongChecks: Promise<void>[] = [];
 
-    // Check materials exist individually
+    // Check materials exist individually (hardcoded → alias fallback)
     for (const mat of constraints.materials) {
       strongChecks.push((async () => {
         const found = await existsInProject([mat]);
@@ -2494,12 +2558,19 @@ async function quickEvidenceCheck(
           materialFound = true;
           matched.push(...found);
         } else {
-          missing.push(`material="${mat}"`);
+          // Alias fallback
+          const aliasResult = await tryAliasFallback(mat, 'material');
+          if (aliasResult.found) {
+            materialFound = true;
+            matched.push(...aliasResult.matches);
+          } else {
+            missing.push(`material="${mat}"${aliasResult.reason ? ` (${aliasResult.reason})` : ''}`);
+          }
         }
       })());
     }
 
-    // Check additives exist individually
+    // Check additives exist individually (hardcoded → alias fallback)
     for (const add of constraints.additives) {
       const terms = additiveTermMap[add] || [add];
       strongChecks.push((async () => {
@@ -2508,12 +2579,19 @@ async function quickEvidenceCheck(
           additiveFound = true;
           matched.push(...found);
         } else {
-          missing.push(`aditivo="${add}"`);
+          // Alias fallback
+          const aliasResult = await tryAliasFallback(add, 'additive');
+          if (aliasResult.found) {
+            additiveFound = true;
+            matched.push(...aliasResult.matches);
+          } else {
+            missing.push(`aditivo="${add}"${aliasResult.reason ? ` (${aliasResult.reason})` : ''}`);
+          }
         }
       })());
     }
 
-    // Check properties exist individually
+    // Check properties exist individually (hardcoded → alias fallback)
     for (const prop of constraints.properties) {
       const terms = propTermMap[prop] || [prop];
       strongChecks.push((async () => {
@@ -2542,13 +2620,21 @@ async function quickEvidenceCheck(
           propertyFound = true;
           matched.push(...found);
         } else {
-          missing.push(`propriedade="${prop}"`);
+          // Alias fallback for property
+          const aliasResult = await tryAliasFallback(prop, 'metric');
+          if (aliasResult.found) {
+            propertyFound = true;
+            matched.push(...aliasResult.matches);
+          } else {
+            missing.push(`propriedade="${prop}"${aliasResult.reason ? ` (${aliasResult.reason})` : ''}`);
+          }
         }
       })());
     }
 
     await Promise.all(strongChecks);
 
+    const aliasLookupLatencyMs = Date.now() - aliasLookupStart;
     const constraintHits = {
       hits_in_title: matched.filter(m => m.source === 'title').length,
       hits_in_conditions: matched.filter(m => m.source === 'conditions').length,
@@ -2558,10 +2644,11 @@ async function quickEvidenceCheck(
     };
 
     const feasible = missing.length === 0 && matched.length > 0;
-    console.log(`Strong gate result (individual EXISTS, no co-occurrence): feasible=${feasible}, matched=${matched.length}, missing=${missing.join(',')}, materialFound=${materialFound}, additiveFound=${additiveFound}, propertyFound=${propertyFound}, constraintHits=${JSON.stringify(constraintHits)}`);
+    console.log(`Strong gate result: feasible=${feasible}, matched=${matched.length}, missing=${missing.join(',')}, materialFound=${materialFound}, additiveFound=${additiveFound}, propertyFound=${propertyFound}, constraintHits=${JSON.stringify(constraintHits)}, suggestedAliases=${suggestedAliases.length}, provisionalPasses=${provisionalPasses.join(',')}, aliasLookupMs=${aliasLookupLatencyMs}`);
     return {
       feasible, missing, matched,
       constraintHits, quickMaterialFound: materialFound, quickAdditiveFound: additiveFound, quickPropertyFound: propertyFound,
+      suggestedAliases, aliasLookupLatencyMs, provisionalPasses,
     } as GateResult;
   }
 
@@ -2572,7 +2659,12 @@ async function quickEvidenceCheck(
     checkPromises.push((async () => {
       const foundMatches = await existsInProject([mat]);
       if (foundMatches.length === 0) {
-        missing.push(`material="${mat}"`);
+        const aliasResult = await tryAliasFallback(mat, 'material');
+        if (aliasResult.found) {
+          matched.push(...aliasResult.matches);
+        } else {
+          missing.push(`material="${mat}"${aliasResult.reason ? ` (${aliasResult.reason})` : ''}`);
+        }
       } else {
         matched.push(...foundMatches);
       }
@@ -2592,7 +2684,12 @@ async function quickEvidenceCheck(
     checkPromises.push((async () => {
       const foundMatches = await existsInProject(terms);
       if (foundMatches.length === 0) {
-        missing.push(`aditivo="${add}"`);
+        const aliasResult = await tryAliasFallback(add, 'additive');
+        if (aliasResult.found) {
+          matched.push(...aliasResult.matches);
+        } else {
+          missing.push(`aditivo="${add}"${aliasResult.reason ? ` (${aliasResult.reason})` : ''}`);
+        }
       } else {
         matched.push(...foundMatches);
       }
@@ -2636,7 +2733,12 @@ async function quickEvidenceCheck(
       if (!foundInMeasurements) {
         const foundMatches = await existsInProject(terms);
         if (foundMatches.length === 0) {
-          missing.push(`propriedade="${prop}"`);
+          const aliasResult = await tryAliasFallback(prop, 'metric');
+          if (aliasResult.found) {
+            matched.push(...aliasResult.matches);
+          } else {
+            missing.push(`propriedade="${prop}"${aliasResult.reason ? ` (${aliasResult.reason})` : ''}`);
+          }
         } else {
           matched.push(...foundMatches);
         }
@@ -2646,6 +2748,7 @@ async function quickEvidenceCheck(
 
   await Promise.all(checkPromises);
 
+  const aliasLookupLatencyMs = Date.now() - aliasLookupStart;
   const constraintHits = {
     hits_in_title: matched.filter(m => m.source === 'title').length,
     hits_in_conditions: matched.filter(m => m.source === 'conditions').length,
@@ -2655,8 +2758,8 @@ async function quickEvidenceCheck(
   };
 
   const weakFeasible = missing.length === 0 && matched.length > 0;
-  console.log(`Weak gate result: feasible=${weakFeasible}, matched=${matched.length}, missing=${missing.join(',')}, constraintHits=${JSON.stringify(constraintHits)}`);
-  return { feasible: weakFeasible, missing, matched, constraintHits };
+  console.log(`Weak gate result: feasible=${weakFeasible}, matched=${matched.length}, missing=${missing.join(',')}, constraintHits=${JSON.stringify(constraintHits)}, suggestedAliases=${suggestedAliases.length}, aliasLookupMs=${aliasLookupLatencyMs}`);
+  return { feasible: weakFeasible, missing, matched, constraintHits, suggestedAliases, aliasLookupLatencyMs, provisionalPasses };
 }
 
 // Co-occurrence: checks if material AND additive terms appear together
@@ -2907,7 +3010,7 @@ serve(async (req) => {
     if (hasAnyConstraints) {
       gateRan = true;
       const gateProjectIds = validPrimary.length > 0 ? validPrimary : allowedProjectIds;
-      const gateResult = await quickEvidenceCheck(supabase, gateProjectIds, preConstraints);
+      const gateResult = await quickEvidenceCheck(supabase, gateProjectIds, preConstraints, lovableApiKey, validPrimary[0]);
       evidenceCheckPassed = gateResult.feasible;
       evidenceMatched = gateResult.matched;
       gateMissingTerms = gateResult.missing;
@@ -2927,6 +3030,7 @@ serve(async (req) => {
           quickPropertyFound: gateResult.quickPropertyFound ?? null,
           quickAdditiveFound: gateResult.quickAdditiveFound ?? null,
           failClosedTriggered: true, failClosedReason: 'constraint_evidence_missing', failClosedStage: 'routing',
+          suggestedAliases: gateResult.suggestedAliases || [], aliasLookupLatencyMs: gateResult.aliasLookupLatencyMs || 0,
         });
           const constraintDesc = [
           ...preConstraints.materials.map(m => `material="${m}"`),
@@ -3258,7 +3362,7 @@ serve(async (req) => {
 
       if (constraints.hasStrongConstraints) {
         // GATING: check if evidence exists for these constraints
-        const compGate = await quickEvidenceCheck(supabase, comparativeProjectIds, constraints);
+        const compGate = await quickEvidenceCheck(supabase, comparativeProjectIds, constraints, lovableApiKey, validPrimary[0]);
         console.log(`Evidence check: feasible=${compGate.feasible}, matched=${compGate.matched.length}, missing=${compGate.missing.join(', ')}`);
 
         if (!compGate.feasible) {
