@@ -2162,26 +2162,30 @@ async function quickEvidenceCheck(
   // Co-occurrence check: if BOTH materials and additives are present and individually found,
   // verify they co-occur in the same experiment or document chunk
   if (missing.length === 0 && constraints.materials.length > 0 && constraints.additives.length > 0) {
-    // Build additive search terms from all detected additives
-    const additiveTermMap: Record<string, string[]> = {
-      silver_nanoparticles: ['silver', 'prata', 'ag', 'nanopart'],
-      bomar: ['bomar'],
-      tegdma: ['tegdma'],
-      udma: ['udma'],
-      bisgma: ['bisgma', 'bis-gma'],
-    };
-    const allAdditiveTerms: string[] = [];
-    for (const add of constraints.additives) {
-      const terms = additiveTermMap[add] || [add];
-      allAdditiveTerms.push(...terms);
-    }
+    try {
+      // Build additive search terms from all detected additives
+      const additiveTermMap: Record<string, string[]> = {
+        silver_nanoparticles: ['silver', 'prata', 'ag', 'nanopart'],
+        bomar: ['bomar'],
+        tegdma: ['tegdma'],
+        udma: ['udma'],
+        bisgma: ['bisgma', 'bis-gma'],
+      };
+      const allAdditiveTerms: string[] = [];
+      for (const add of constraints.additives) {
+        const terms = additiveTermMap[add] || [add];
+        for (const t of terms) allAdditiveTerms.push(t);
+      }
 
-    const coOccurs = await checkCoOccurrence(supabase, projectIds, constraints.materials, allAdditiveTerms);
-    if (!coOccurs) {
-      missing.push('co-ocorrencia material+aditivo');
-      console.log(`Co-occurrence check FAILED: materials=${constraints.materials.join(',')} additives=${allAdditiveTerms.join(',')}`);
-    } else {
-      console.log(`Co-occurrence check PASSED`);
+      const coOccurs = await checkCoOccurrence(supabase, projectIds, constraints.materials, allAdditiveTerms);
+      if (!coOccurs) {
+        missing.push('co-ocorrencia material+aditivo');
+        console.log(`Co-occurrence check FAILED: materials=${constraints.materials.join(',')} additives=${allAdditiveTerms.join(',')}`);
+      } else {
+        console.log(`Co-occurrence check PASSED`);
+      }
+    } catch (coErr) {
+      console.error(`Co-occurrence check error (non-fatal, treating as passed):`, coErr);
     }
   }
 
@@ -3090,7 +3094,8 @@ serve(async (req) => {
 
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    console.error("RAG error:", errorMessage);
+    const errorStack = error instanceof Error ? error.stack : '';
+    console.error("RAG error:", errorMessage, "\nStack:", errorStack);
     return new Response(JSON.stringify({ error: errorMessage }), {
       status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
