@@ -9,6 +9,251 @@ const corsHeaders = {
 type ContextMode = "project" | "global";
 
 // ==========================================
+// ALIAS SYSTEM: Configurable Constants
+// ==========================================
+const STRUCTURAL_WEIGHT = 1.0;
+const CHUNK_WEIGHT = 0.5;
+const CHUNK_EVIDENCE_THRESHOLD = 0.75;
+const ALIAS_AUTOPASS_THRESHOLD = 0.80;
+const ALIAS_SUGGEST_THRESHOLD = 0.70;
+const ALIAS_AMBIGUITY_DELTA = 0.05;
+const MAX_UNKNOWN_TERMS_PER_QUERY = 5;
+
+// ==========================================
+// normalizeTermWithUnits
+// ==========================================
+interface NormalizedTerm {
+  original: string;
+  normalized: string;
+  ruleApplied: string | null;
+}
+
+function normalizeTermWithUnits(term: string): NormalizedTerm {
+  const original = term;
+  let normalized = term.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+  let ruleApplied: string | null = null;
+
+  // Detect ranges — skip numeric conversion
+  if (/[\u2013\-]/.test(normalized) && /\d/.test(normalized) && /\d\s*[\u2013\-]\s*\d/.test(normalized)) {
+    return { original, normalized, ruleApplied: 'range_detected_skip' };
+  }
+  if (/\d\s+(a|to)\s+\d/i.test(normalized)) {
+    return { original, normalized, ruleApplied: 'range_detected_skip' };
+  }
+
+  // Size: X microns/um/micrometros -> X*1000 nm (only if explicit unit and not already nm)
+  const micronMatch = normalized.match(/(\d+(?:[.,]\d+)?)\s*(microns?|um|micrometros?|µm)/i);
+  if (micronMatch && !/nm/.test(normalized)) {
+    const val = parseFloat(micronMatch[1].replace(',', '.'));
+    normalized = normalized.replace(micronMatch[0], `${val * 1000} nm`);
+    ruleApplied = 'micron_to_nm';
+  }
+
+  // Viscosity: X Pa.s -> X*1000 mPa.s (only if explicit unit and not already mPa.s)
+  const viscMatch = normalized.match(/(\d+(?:[.,]\d+)?)\s*pa\.s/i);
+  if (viscMatch && !/mpa/i.test(normalized)) {
+    const val = parseFloat(viscMatch[1].replace(',', '.'));
+    normalized = normalized.replace(viscMatch[0], `${val * 1000} mpa.s`);
+    ruleApplied = 'pas_to_mpas';
+  }
+
+  return { original, normalized, ruleApplied };
+}
+
+// ==========================================
+// suggestAlias: cache + exact + trigram + vector
+// ==========================================
+interface AliasSuggestion {
+  term: string;
+  term_norm: string;
+  ruleApplied: string | null;
+  entity_type: string;
+  top_candidates: { canonical_name: string; score: number; approved: boolean }[];
+  ambiguous: boolean;
+  provisional_pass: boolean;
+  textual_evidence_sources: string[];
+  textual_evidence_weight_calculated: number;
+  has_structural_evidence: boolean;
+}
+
+async function suggestAlias(
+  supabase: any, term: string, entityType: string, projectId: string, apiKey: string
+): Promise<AliasSuggestion | null> {
+  const { original, normalized, ruleApplied } = normalizeTermWithUnits(term);
+
+  // 1) Check alias_cache
+  const { data: cached } = await supabase
+    .from('alias_cache')
+    .select('result')
+    .eq('project_id', projectId)
+    .eq('term_norm', normalized)
+    .eq('entity_type', entityType)
+    .gte('cached_at', new Date(Date.now() - 30 * 60 * 1000).toISOString())
+    .maybeSingle();
+
+  if (cached?.result) {
+    // Increment hit_count + last_hit_at
+    await supabase
+      .from('alias_cache')
+      .update({ hit_count: (cached.result.hit_count || 1) + 1, last_hit_at: new Date().toISOString() })
+      .eq('project_id', projectId)
+      .eq('term_norm', normalized)
+      .eq('entity_type', entityType);
+    return cached.result as AliasSuggestion;
+  }
+
+  // 2) Exact match in entity_aliases
+  const { data: exactMatch } = await supabase
+    .from('entity_aliases')
+    .select('canonical_name, confidence, approved')
+    .eq('alias_norm', normalized)
+    .eq('entity_type', entityType)
+    .eq('approved', true)
+    .is('deleted_at', null)
+    .maybeSingle();
+
+  if (exactMatch) {
+    const result: AliasSuggestion = {
+      term: original, term_norm: normalized, ruleApplied, entity_type: entityType,
+      top_candidates: [{ canonical_name: exactMatch.canonical_name, score: 1.0, approved: true }],
+      ambiguous: false, provisional_pass: false,
+      textual_evidence_sources: ['exact_alias_match'],
+      textual_evidence_weight_calculated: STRUCTURAL_WEIGHT,
+      has_structural_evidence: true,
+    };
+    // Save to cache
+    await supabase.from('alias_cache').upsert({
+      project_id: projectId, term_norm: normalized, entity_type: entityType,
+      result, cached_at: new Date().toISOString(),
+    }, { onConflict: 'project_id,term_norm,entity_type' });
+    return result;
+  }
+
+  // 3) Trigram similarity search
+  const { data: trigramResults } = await supabase
+    .from('entity_aliases')
+    .select('canonical_name, alias_norm, confidence, approved')
+    .eq('entity_type', entityType)
+    .is('deleted_at', null)
+    .limit(50);
+
+  // Compute trigram similarity manually (pg_trgm similarity not exposed via REST)
+  // Use a simple JS-based trigram for filtering
+  const scored = (trigramResults || []).map((r: any) => {
+    const sim = trigramSimilarity(normalized, r.alias_norm);
+    return { ...r, score: sim };
+  }).filter((r: any) => r.score > 0.4).sort((a: any, b: any) => b.score - a.score).slice(0, 3);
+
+  if (scored.length > 0 && scored[0].score >= 0.7) {
+    // Auto-match without embedding
+    const ambiguous = scored.length >= 2 && (scored[0].score - scored[1].score) < ALIAS_AMBIGUITY_DELTA;
+    const result: AliasSuggestion = {
+      term: original, term_norm: normalized, ruleApplied, entity_type: entityType,
+      top_candidates: scored.map((s: any) => ({ canonical_name: s.canonical_name, score: s.score, approved: s.approved })),
+      ambiguous, provisional_pass: false,
+      textual_evidence_sources: ['trigram_match'],
+      textual_evidence_weight_calculated: 0,
+      has_structural_evidence: false,
+    };
+    await supabase.from('alias_cache').upsert({
+      project_id: projectId, term_norm: normalized, entity_type: entityType,
+      result, cached_at: new Date().toISOString(),
+    }, { onConflict: 'project_id,term_norm,entity_type' });
+    return result;
+  }
+
+  if (scored.length > 0 && scored[0].score >= 0.55) {
+    // Candidates found via trigram, but need embedding for confirmation
+    // Fall through to embedding search below
+  }
+
+  // 4) Vector search via embedding
+  try {
+    const embResponse = await fetch("https://ai.gateway.lovable.dev/v1/embeddings", {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "text-embedding-3-small", input: normalized.substring(0, 2000) }),
+    });
+
+    if (embResponse.ok) {
+      const embData = await embResponse.json();
+      const embedding = embData.data?.[0]?.embedding;
+
+      if (embedding) {
+        const embStr = JSON.stringify(embedding);
+        // Vector search in entity_aliases
+        const { data: vectorResults } = await supabase.rpc('match_entity_aliases', {
+          query_embedding: embStr,
+          match_threshold: 0.3,
+          match_count: 3,
+          p_entity_type: entityType,
+        });
+
+        // If RPC doesn't exist, fallback to manual approach
+        if (!vectorResults) {
+          // Raw SQL alternative not available via REST, return trigram results or null
+          if (scored.length > 0) {
+            const ambiguous = scored.length >= 2 && (scored[0].score - scored[1].score) < ALIAS_AMBIGUITY_DELTA;
+            const result: AliasSuggestion = {
+              term: original, term_norm: normalized, ruleApplied, entity_type: entityType,
+              top_candidates: scored.map((s: any) => ({ canonical_name: s.canonical_name, score: s.score, approved: s.approved })),
+              ambiguous, provisional_pass: false,
+              textual_evidence_sources: ['trigram_fallback'],
+              textual_evidence_weight_calculated: 0,
+              has_structural_evidence: false,
+            };
+            await supabase.from('alias_cache').upsert({
+              project_id: projectId, term_norm: normalized, entity_type: entityType,
+              result, cached_at: new Date().toISOString(),
+            }, { onConflict: 'project_id,term_norm,entity_type' });
+            return result;
+          }
+          return null;
+        }
+
+        const candidates = (vectorResults || []).map((r: any) => ({
+          canonical_name: r.canonical_name, score: r.similarity, approved: r.approved,
+        }));
+
+        if (candidates.length > 0) {
+          const ambiguous = candidates.length >= 2 && (candidates[0].score - candidates[1].score) < ALIAS_AMBIGUITY_DELTA;
+          const result: AliasSuggestion = {
+            term: original, term_norm: normalized, ruleApplied, entity_type: entityType,
+            top_candidates: candidates,
+            ambiguous, provisional_pass: false,
+            textual_evidence_sources: ['vector_search'],
+            textual_evidence_weight_calculated: 0,
+            has_structural_evidence: false,
+          };
+          await supabase.from('alias_cache').upsert({
+            project_id: projectId, term_norm: normalized, entity_type: entityType,
+            result, cached_at: new Date().toISOString(),
+          }, { onConflict: 'project_id,term_norm,entity_type' });
+          return result;
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('suggestAlias embedding error:', e);
+  }
+
+  return null;
+}
+
+// Simple JS trigram similarity (Dice coefficient)
+function trigramSimilarity(a: string, b: string): number {
+  if (a === b) return 1.0;
+  if (a.length < 3 || b.length < 3) return 0;
+  const trigramsA = new Set<string>();
+  const trigramsB = new Set<string>();
+  for (let i = 0; i <= a.length - 3; i++) trigramsA.add(a.substring(i, i + 3));
+  for (let i = 0; i <= b.length - 3; i++) trigramsB.add(b.substring(i, i + 3));
+  let intersection = 0;
+  for (const t of trigramsA) { if (trigramsB.has(t)) intersection++; }
+  return (2 * intersection) / (trigramsA.size + trigramsB.size);
+}
+
+// ==========================================
 // TABULAR EXCEL INTENT DETECTOR (heuristic, no LLM)
 // ==========================================
 interface TabularIntent {
@@ -1956,7 +2201,7 @@ function extractConstraints(query: string): QueryConstraints {
 // ==========================================
 // UNIFIED DIAGNOSTICS BUILDER
 // ==========================================
-interface DiagnosticsInput {
+  interface DiagnosticsInput {
   requestId: string;
   pipeline: string;
   tabularIntent: boolean;
@@ -1986,10 +2231,17 @@ interface DiagnosticsInput {
   failClosedReason: string | null;
   failClosedStage: string | null;
   latencyMs: number;
+  // Alias system fields
+  suggestedAliases?: AliasSuggestion[];
+  aliasLookupLatencyMs?: number;
 }
 
 function buildDiagnostics(input: DiagnosticsInput): Record<string, any> {
   const v = input.verification;
+  const issueTypes = [...(v?.issue_types ?? [])];
+  if (input.aliasLookupLatencyMs && input.aliasLookupLatencyMs > 500) {
+    issueTypes.push('alias_lookup_slow');
+  }
   return {
     request_id: input.requestId,
     pipeline_selected: input.pipeline,
@@ -2019,12 +2271,15 @@ function buildDiagnostics(input: DiagnosticsInput): Record<string, any> {
     verification_numbers_extracted: v?.numbers_extracted ?? 0,
     verification_matched: v?.matched ?? 0,
     verification_unmatched: v?.unmatched ?? 0,
-    verification_issue_types: v?.issue_types ?? [],
+    verification_issue_types: issueTypes,
     verification_unmatched_examples: v?.unmatched_examples ?? [],
     fail_closed_triggered: input.failClosedTriggered,
     fail_closed_reason: input.failClosedReason,
     fail_closed_stage: input.failClosedStage,
     latency_ms: input.latencyMs,
+    // Alias system diagnostics
+    suggested_aliases: input.suggestedAliases || [],
+    alias_lookup_latency_ms: input.aliasLookupLatencyMs || 0,
   };
 }
 
@@ -2038,6 +2293,7 @@ function makeDiagnosticsDefaults(requestId: string, latencyMs: number): Diagnost
     insightSeedsCount: 0, experimentsCount: 0, variantsCount: 0, measurementsCount: 0,
     criticalDocs: [], chunksUsed: 0, auditIssues: [], verification: null,
     failClosedTriggered: false, failClosedReason: null, failClosedStage: null, latencyMs,
+    suggestedAliases: [], aliasLookupLatencyMs: 0,
   };
 }
 
@@ -2101,6 +2357,8 @@ async function quickEvidenceCheck(
 ): Promise<GateResult> {
   const missing: string[] = [];
   const matched: GateMatch[] = [];
+  const suggestedAliases: AliasSuggestion[] = [];
+  const aliasLookupStart = Date.now();
 
   // Pre-fetch experiment IDs for the project once (shared across all checks)
   const { data: projExps } = await supabase
