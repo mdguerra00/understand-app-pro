@@ -2139,7 +2139,8 @@ async function quickEvidenceCheck(
     return foundMatches;
   }
 
-  // === STRONG CONSTRAINTS: AND-only co-occurrence (skip individual checks) ===
+  // === STRONG CONSTRAINTS: individual EXISTS checks (no co-occurrence at gate level) ===
+  // Co-occurrence is delegated to the pipeline (IDER/comparative) which has full context.
   if (constraints.hasStrongConstraints) {
     const additiveTermMap: Record<string, string[]> = {
       silver_nanoparticles: ['silver', 'prata', 'agnp', 'nano prata', 'nanosilver', 'ag-np'],
@@ -2148,94 +2149,87 @@ async function quickEvidenceCheck(
       udma: ['udma'],
       bisgma: ['bisgma', 'bis-gma'],
     };
+    const propTermMap: Record<string, string[]> = {
+      color: ['color', 'yellowing', 'delta_e', 'cor', 'amarel'],
+      flexural_strength: ['flexural_strength', 'flexural strength', 'resistência flexural'],
+      hardness: ['hardness', 'dureza', 'vickers'],
+      water_sorption: ['water_sorption', 'sorption', 'sorção'],
+      degree_of_conversion: ['degree_of_conversion', 'conversão', 'conversion'],
+      elastic_modulus: ['elastic_modulus', 'módulo', 'modulus'],
+      flexural_modulus: ['flexural_modulus', 'módulo flexural'],
+    };
 
-    // Material + Additive co-occurrence
-    if (constraints.materials.length > 0 && constraints.additives.length > 0) {
-      const allAdditiveTerms: string[] = [];
-      for (const add of constraints.additives) {
-        const terms = additiveTermMap[add] || [add];
-        for (const t of terms) allAdditiveTerms.push(t);
-      }
-      try {
-        const coMatches = await checkCoOccurrence(supabase, projectIds, constraints.materials, allAdditiveTerms);
-        if (coMatches.length === 0) {
-          missing.push('co-ocorrencia material+aditivo');
-          console.log(`Co-occurrence check FAILED: materials=${constraints.materials.join(',')} additives=${allAdditiveTerms.join(',')}`);
+    let materialFound = false;
+    let additiveFound = false;
+    let propertyFound = false;
+
+    const strongChecks: Promise<void>[] = [];
+
+    // Check materials exist individually
+    for (const mat of constraints.materials) {
+      strongChecks.push((async () => {
+        const found = await existsInProject([mat]);
+        if (found.length > 0) {
+          materialFound = true;
+          matched.push(...found);
         } else {
-          matched.push(...coMatches);
-          console.log(`Co-occurrence check PASSED (material+additive): ${coMatches.map(m => m.id).join(',')}`);
+          missing.push(`material="${mat}"`);
         }
-      } catch (coErr) {
-        missing.push('co-ocorrencia material+aditivo (erro na verificacao)');
-        console.error(`Co-occurrence check error (treating as FAILED):`, coErr);
-      }
+      })());
     }
 
-    // Material + Property co-occurrence
-    if (constraints.materials.length > 0 && constraints.properties.length > 0) {
-      const propTermMap: Record<string, string[]> = {
-        color: ['color', 'yellowing', 'delta_e', 'cor', 'amarel'],
-        flexural_strength: ['flexural_strength', 'flexural strength', 'resistência flexural'],
-        hardness: ['hardness', 'dureza', 'vickers'],
-        water_sorption: ['water_sorption', 'sorption', 'sorção'],
-        degree_of_conversion: ['degree_of_conversion', 'conversão', 'conversion'],
-        elastic_modulus: ['elastic_modulus', 'módulo', 'modulus'],
-        flexural_modulus: ['flexural_modulus', 'módulo flexural'],
-      };
-      const allPropTerms: string[] = [];
-      for (const prop of constraints.properties) {
-        const terms = propTermMap[prop] || [prop];
-        for (const t of terms) allPropTerms.push(t);
-      }
-      try {
-        const coMatches = await checkCoOccurrence(supabase, projectIds, constraints.materials, allPropTerms);
-        if (coMatches.length === 0) {
-          missing.push('co-ocorrencia material+propriedade');
-          console.log(`Co-occurrence check FAILED: materials=${constraints.materials.join(',')} properties=${allPropTerms.join(',')}`);
+    // Check additives exist individually
+    for (const add of constraints.additives) {
+      const terms = additiveTermMap[add] || [add];
+      strongChecks.push((async () => {
+        const found = await existsInProject(terms);
+        if (found.length > 0) {
+          additiveFound = true;
+          matched.push(...found);
         } else {
-          matched.push(...coMatches);
+          missing.push(`aditivo="${add}"`);
         }
-      } catch (coErr) {
-        missing.push('co-ocorrencia material+propriedade (erro na verificacao)');
-      }
+      })());
     }
 
-    // Additive + Property co-occurrence
-    if (constraints.additives.length > 0 && constraints.properties.length > 0 && constraints.materials.length === 0) {
-      const allAddTerms: string[] = [];
-      for (const add of constraints.additives) {
-        const terms = additiveTermMap[add] || [add];
-        for (const t of terms) allAddTerms.push(t);
-      }
-      const propTermMap2: Record<string, string[]> = {
-        color: ['color', 'yellowing', 'delta_e', 'cor', 'amarel'],
-        flexural_strength: ['flexural_strength', 'flexural strength', 'resistência flexural'],
-        hardness: ['hardness', 'dureza', 'vickers'],
-        water_sorption: ['water_sorption', 'sorption', 'sorção'],
-        degree_of_conversion: ['degree_of_conversion', 'conversão', 'conversion'],
-        elastic_modulus: ['elastic_modulus', 'módulo', 'modulus'],
-        flexural_modulus: ['flexural_modulus', 'módulo flexural'],
-      };
-      const allPropTerms2: string[] = [];
-      for (const prop of constraints.properties) {
-        const terms = propTermMap2[prop] || [prop];
-        for (const t of terms) allPropTerms2.push(t);
-      }
-      try {
-        const coMatches = await checkCoOccurrence(supabase, projectIds, allAddTerms, allPropTerms2);
-        if (coMatches.length === 0) {
-          missing.push('co-ocorrencia aditivo+propriedade');
-        } else {
-          matched.push(...coMatches);
+    // Check properties exist individually
+    for (const prop of constraints.properties) {
+      const terms = propTermMap[prop] || [prop];
+      strongChecks.push((async () => {
+        // Try measurements first
+        for (const t of terms) {
+          const { data } = await supabase
+            .from('measurements')
+            .select('id, experiment_id')
+            .ilike('metric', `%${t}%`)
+            .limit(3);
+          if (data && data.length > 0) {
+            propertyFound = true;
+            for (const row of data) {
+              matched.push({ type: 'experiment', id: row.experiment_id });
+            }
+            return;
+          }
         }
-      } catch (coErr) {
-        missing.push('co-ocorrencia aditivo+propriedade (erro na verificacao)');
-      }
+        // Fallback to existsInProject
+        const found = await existsInProject(terms);
+        if (found.length > 0) {
+          propertyFound = true;
+          matched.push(...found);
+        } else {
+          missing.push(`propriedade="${prop}"`);
+        }
+      })());
     }
+
+    await Promise.all(strongChecks);
 
     const feasible = missing.length === 0 && matched.length > 0;
-    console.log(`Strong gate result: feasible=${feasible}, matched=${matched.length}, missing=${missing.join(',')}`);
-    return { feasible, missing, matched };
+    console.log(`Strong gate result (individual EXISTS, no co-occurrence): feasible=${feasible}, matched=${matched.length}, missing=${missing.join(',')}, materialFound=${materialFound}, additiveFound=${additiveFound}, propertyFound=${propertyFound}`);
+    return {
+      feasible, missing, matched,
+      _debug: { quick_material_found: materialFound, quick_additive_found: additiveFound, quick_property_found: propertyFound, quick_cooccurrence_checked: false },
+    } as GateResult;
   }
 
   // === WEAK CONSTRAINTS: individual OR checks — now also collecting matched IDs ===
@@ -2590,13 +2584,14 @@ serve(async (req) => {
           ...preConstraints.properties.map(p => `propriedade="${p}"`),
         ].join(', ');
         const suggestions = generateFailClosedSuggestions(query, preConstraints);
+        const gateDebug = (gateResult as any)._debug || {};
         const failMsg = `**EVIDÊNCIA INEXISTENTE NO PROJETO** para: ${constraintDesc}.\n\nNão encontrei nenhum experimento, condição ou trecho contendo ${gateResult.missing.join(' e ')} neste projeto.\n\n**Constraints detectadas**: ${constraintsKeywordsHit.join(', ')}\n\nPara responder, envie o Excel/PDF onde isso aparece ou indique o nome do experimento/aba.\n\n**Sugestões de investigação**:\n${suggestions}`;
 
         await supabase.from("rag_logs").insert({
           user_id: user.id, query, chunks_used: [], chunks_count: 0,
           response_summary: failMsg.substring(0, 500),
           model_used: `global-gate/fail-closed`, latency_ms: latencyMs,
-          request_id: requestId, diagnostics: { ...gateDiag, evidence_matched: gateResult.matched },
+          request_id: requestId, diagnostics: { ...gateDiag, evidence_matched: gateResult.matched, ...gateDebug },
         });
 
         return new Response(JSON.stringify({
