@@ -1912,6 +1912,7 @@ function extractConstraints(query: string): QueryConstraints {
 
   const additiveDict: Record<string, RegExp> = {
     silver_nanoparticles: /prata|silver|\bag\b|nanopart[ií]culas?/,
+    silica_nanoparticle: /s[ií]lica\s*0[\.,]?4\s*n?m|sio2\s*0[\.,]?4|nano\s*s[ií]lica|nano\s*silica/,
     bomar: /bomar/,
     tegdma: /tegdma/,
     udma: /\budma\b/,
@@ -1969,6 +1970,10 @@ interface DiagnosticsInput {
   evidenceCheckPassed: boolean | null;
   gateRan: boolean;
   gateMissingTerms: string[];
+  constraintHits: Record<string, number> | null;
+  quickMaterialFound: boolean | null;
+  quickPropertyFound: boolean | null;
+  quickAdditiveFound: boolean | null;
   insightSeedsCount: number;
   experimentsCount: number;
   variantsCount: number;
@@ -1999,6 +2004,10 @@ function buildDiagnostics(input: DiagnosticsInput): Record<string, any> {
     evidence_check_passed: input.evidenceCheckPassed,
     gate_ran: input.gateRan,
     gate_missing_terms: input.gateMissingTerms,
+    constraint_hits: input.constraintHits,
+    quick_material_found: input.quickMaterialFound,
+    quick_property_found: input.quickPropertyFound,
+    quick_additive_found: input.quickAdditiveFound,
     insight_seeds_count: input.insightSeedsCount,
     experiments_count: input.experimentsCount,
     variants_count: input.variantsCount,
@@ -2025,6 +2034,7 @@ function makeDiagnosticsDefaults(requestId: string, latencyMs: number): Diagnost
     constraints: null, constraintsKeywordsHit: [], constraintsScope: 'project',
     materialFilterApplied: false, additiveFilterApplied: false, evidenceCheckPassed: null,
     gateRan: false, gateMissingTerms: [],
+    constraintHits: null, quickMaterialFound: null, quickPropertyFound: null, quickAdditiveFound: null,
     insightSeedsCount: 0, experimentsCount: 0, variantsCount: 0, measurementsCount: 0,
     criticalDocs: [], chunksUsed: 0, auditIssues: [], verification: null,
     failClosedTriggered: false, failClosedReason: null, failClosedStage: null, latencyMs,
@@ -2079,8 +2089,12 @@ function generateFailClosedSuggestions(
 // ==========================================
 // QUICK EVIDENCE CHECK (gating)
 // ==========================================
-type GateMatch = { type: "experiment" | "chunk"; id: string };
-type GateResult = { feasible: boolean; missing: string[]; matched: GateMatch[] };
+type GateMatch = { type: "experiment" | "chunk"; id: string; source?: string };
+type GateResult = { feasible: boolean; missing: string[]; matched: GateMatch[]; constraintHits?: Record<string, number>; quickMaterialFound?: boolean; quickPropertyFound?: boolean; quickAdditiveFound?: boolean };
+
+function normalizeText(s: string): string {
+  return s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+}
 
 async function quickEvidenceCheck(
   supabase: any, projectIds: string[], constraints: QueryConstraints
@@ -2088,19 +2102,25 @@ async function quickEvidenceCheck(
   const missing: string[] = [];
   const matched: GateMatch[] = [];
 
+  // Pre-fetch experiment IDs for the project once (shared across all checks)
+  const { data: projExps } = await supabase
+    .from('experiments')
+    .select('id')
+    .in('project_id', projectIds)
+    .is('deleted_at', null);
+  const expIds = (projExps || []).map((e: any) => e.id);
+
   // Helper: check if ANY of the search terms appear in any of the target tables
   // Returns matched experiment IDs (up to 3) or empty array
   async function existsInProject(searchTerms: string[]): Promise<GateMatch[]> {
-    const ilikePatterns = searchTerms.map(t => `%${t}%`);
+    // Generate both original and unaccented variants for ILIKE
+    const allTerms = new Set<string>();
+    for (const t of searchTerms) {
+      allTerms.add(t.toLowerCase());
+      allTerms.add(normalizeText(t));
+    }
+    const ilikePatterns = Array.from(allTerms).map(t => `%${t}%`);
     const foundMatches: GateMatch[] = [];
-
-    // Pre-fetch experiment IDs for the project (needed for conditions + measurements checks)
-    const { data: projExps } = await supabase
-      .from('experiments')
-      .select('id')
-      .in('project_id', projectIds)
-      .is('deleted_at', null);
-    const expIds = (projExps || []).map((e: any) => e.id);
 
     // 1) experiment titles
     for (const pat of ilikePatterns) {
@@ -2115,7 +2135,7 @@ async function quickEvidenceCheck(
       if (data) {
         for (const row of data) {
           if (foundMatches.length < 3 && !foundMatches.some(m => m.id === row.id)) {
-            foundMatches.push({ type: 'experiment', id: row.id });
+            foundMatches.push({ type: 'experiment', id: row.id, source: 'title' });
           }
         }
       }
@@ -2135,7 +2155,7 @@ async function quickEvidenceCheck(
         if (data) {
           for (const row of data) {
             if (foundMatches.length < 3 && !foundMatches.some(m => m.id === row.experiment_id)) {
-              foundMatches.push({ type: 'experiment', id: row.experiment_id });
+              foundMatches.push({ type: 'experiment', id: row.experiment_id, source: 'conditions' });
             }
           }
         }
@@ -2155,7 +2175,7 @@ async function quickEvidenceCheck(
       if (data) {
         for (const row of data) {
           if (foundMatches.length < 3 && !foundMatches.some(m => m.id === row.id)) {
-            foundMatches.push({ type: 'chunk', id: row.id });
+            foundMatches.push({ type: 'chunk', id: row.id, source: 'chunks' });
           }
         }
       }
@@ -2173,7 +2193,7 @@ async function quickEvidenceCheck(
           .ilike('source_excerpt', pat)
           .limit(1);
         if (data && data.length > 0) {
-          foundMatches.push({ type: 'experiment', id: data[0].id });
+          foundMatches.push({ type: 'experiment', id: data[0].id, source: 'excerpt' });
         }
       }
     }
@@ -2186,19 +2206,20 @@ async function quickEvidenceCheck(
   if (constraints.hasStrongConstraints) {
     const additiveTermMap: Record<string, string[]> = {
       silver_nanoparticles: ['silver', 'prata', 'agnp', 'nano prata', 'nanosilver', 'ag-np'],
+      silica_nanoparticle: ['silica 0.4', 'silica 0,4', 'sílica 0.4', 'sio2 0.4', 'nano silica', 'nano sílica', 'silica 0.4nm'],
       bomar: ['bomar'],
       tegdma: ['tegdma'],
       udma: ['udma'],
       bisgma: ['bisgma', 'bis-gma'],
     };
     const propTermMap: Record<string, string[]> = {
-      color: ['color', 'yellowing', 'delta_e', 'cor', 'amarel'],
-      flexural_strength: ['flexural_strength', 'flexural strength', 'resistência flexural'],
+      color: ['color', 'yellowing', 'delta_e', 'cor', 'amarel', 'e_reference', 'e_05_uv', 'e_15_hals', 'e_30_hals', 'erro_relativo_estimado_nos_valores_de_cor'],
+      flexural_strength: ['flexural_strength', 'flexural strength', 'resistencia flexural', 'resistncia_flexural', 'resistncia_flexural_rf', 'resistncia_flexural_com_carga', 'resistncia_flexural_resina_base', 'flexural_strength_control', 'flexural_strength_ct_0', 'flexural_strength_tp_45', 'flexural_strength_and', 'rf'],
       hardness: ['hardness', 'dureza', 'vickers'],
       water_sorption: ['water_sorption', 'sorption', 'sorção'],
       degree_of_conversion: ['degree_of_conversion', 'conversão', 'conversion'],
-      elastic_modulus: ['elastic_modulus', 'módulo', 'modulus'],
-      flexural_modulus: ['flexural_modulus', 'módulo flexural'],
+      elastic_modulus: ['elastic_modulus', 'módulo elástico', 'elastic modulus'],
+      flexural_modulus: ['flexural_modulus', 'flexural modulus', 'modulo flexural', 'mdulo_flexural', 'mdulo_flexural_mf', 'mdulo_de_flexo', 'mf'],
     };
 
     let materialFound = false;
@@ -2238,19 +2259,23 @@ async function quickEvidenceCheck(
     for (const prop of constraints.properties) {
       const terms = propTermMap[prop] || [prop];
       strongChecks.push((async () => {
-        // Try measurements first
-        for (const t of terms) {
-          const { data } = await supabase
-            .from('measurements')
-            .select('id, experiment_id')
-            .ilike('metric', `%${t}%`)
-            .limit(3);
-          if (data && data.length > 0) {
-            propertyFound = true;
-            for (const row of data) {
-              matched.push({ type: 'experiment', id: row.experiment_id });
+        // Try measurements first (scoped to project experiments)
+        if (expIds.length > 0) {
+          for (const t of terms) {
+            const normalizedT = normalizeText(t);
+            const { data } = await supabase
+              .from('measurements')
+              .select('id, experiment_id')
+              .in('experiment_id', expIds)
+              .ilike('metric', `%${normalizedT}%`)
+              .limit(3);
+            if (data && data.length > 0) {
+              propertyFound = true;
+              for (const row of data) {
+                matched.push({ type: 'experiment', id: row.experiment_id, source: 'metrics' });
+              }
+              return;
             }
-            return;
           }
         }
         // Fallback to existsInProject
@@ -2266,11 +2291,19 @@ async function quickEvidenceCheck(
 
     await Promise.all(strongChecks);
 
+    const constraintHits = {
+      hits_in_title: matched.filter(m => m.source === 'title').length,
+      hits_in_conditions: matched.filter(m => m.source === 'conditions').length,
+      hits_in_excerpt: matched.filter(m => m.source === 'excerpt').length,
+      hits_in_metrics: matched.filter(m => m.source === 'metrics').length,
+      hits_in_chunks: matched.filter(m => m.source === 'chunks').length,
+    };
+
     const feasible = missing.length === 0 && matched.length > 0;
-    console.log(`Strong gate result (individual EXISTS, no co-occurrence): feasible=${feasible}, matched=${matched.length}, missing=${missing.join(',')}, materialFound=${materialFound}, additiveFound=${additiveFound}, propertyFound=${propertyFound}`);
+    console.log(`Strong gate result (individual EXISTS, no co-occurrence): feasible=${feasible}, matched=${matched.length}, missing=${missing.join(',')}, materialFound=${materialFound}, additiveFound=${additiveFound}, propertyFound=${propertyFound}, constraintHits=${JSON.stringify(constraintHits)}`);
     return {
       feasible, missing, matched,
-      _debug: { quick_material_found: materialFound, quick_additive_found: additiveFound, quick_property_found: propertyFound, quick_cooccurrence_checked: false },
+      constraintHits, quickMaterialFound: materialFound, quickAdditiveFound: additiveFound, quickPropertyFound: propertyFound,
     } as GateResult;
   }
 
@@ -2291,6 +2324,7 @@ async function quickEvidenceCheck(
   for (const add of constraints.additives) {
     const termMap: Record<string, string[]> = {
       silver_nanoparticles: ['silver', 'prata', 'agnp', 'nano prata', 'nanosilver', 'ag-np'],
+      silica_nanoparticle: ['silica 0.4', 'silica 0,4', 'sílica 0.4', 'sio2 0.4', 'nano silica', 'nano sílica', 'silica 0.4nm'],
       bomar: ['bomar'],
       tegdma: ['tegdma'],
       udma: ['udma'],
@@ -2309,32 +2343,36 @@ async function quickEvidenceCheck(
 
   for (const prop of constraints.properties) {
     const propTermMap: Record<string, string[]> = {
-      color: ['color', 'yellowing', 'delta_e', 'whiteness', 'amarel', 'cor'],
-      flexural_strength: ['flexural_strength', 'flexural strength', 'resistência flexural'],
+      color: ['color', 'yellowing', 'delta_e', 'whiteness', 'amarel', 'cor', 'e_reference', 'e_05_uv', 'e_15_hals', 'e_30_hals', 'erro_relativo_estimado_nos_valores_de_cor'],
+      flexural_strength: ['flexural_strength', 'flexural strength', 'resistencia flexural', 'resistncia_flexural', 'resistncia_flexural_rf', 'resistncia_flexural_com_carga', 'resistncia_flexural_resina_base', 'flexural_strength_control', 'flexural_strength_ct_0', 'flexural_strength_tp_45', 'flexural_strength_and', 'rf'],
       hardness: ['hardness', 'dureza', 'vickers'],
       water_sorption: ['water_sorption', 'sorption', 'sorção'],
       degree_of_conversion: ['degree_of_conversion', 'conversão', 'conversion'],
-      elastic_modulus: ['elastic_modulus', 'módulo', 'modulus'],
-      flexural_modulus: ['flexural_modulus', 'módulo flexural'],
+      elastic_modulus: ['elastic_modulus', 'módulo elástico', 'elastic modulus'],
+      flexural_modulus: ['flexural_modulus', 'flexural modulus', 'modulo flexural', 'mdulo_flexural', 'mdulo_flexural_mf', 'mdulo_de_flexo', 'mf'],
     };
     const terms = propTermMap[prop] || [prop];
     checkPromises.push((async () => {
-      // Try measurements first
+      // Try measurements first (scoped to project experiments)
       let foundInMeasurements = false;
-      for (const t of terms) {
-        const { data } = await supabase
-          .from('measurements')
-          .select('id, experiment_id')
-          .ilike('metric', `%${t}%`)
-          .limit(3);
-        if (data && data.length > 0) {
-          foundInMeasurements = true;
-          for (const row of data) {
-            if (matched.length < 10) {
-              matched.push({ type: 'experiment', id: row.experiment_id });
+      if (expIds.length > 0) {
+        for (const t of terms) {
+          const normalizedT = normalizeText(t);
+          const { data } = await supabase
+            .from('measurements')
+            .select('id, experiment_id')
+            .in('experiment_id', expIds)
+            .ilike('metric', `%${normalizedT}%`)
+            .limit(3);
+          if (data && data.length > 0) {
+            foundInMeasurements = true;
+            for (const row of data) {
+              if (matched.length < 10) {
+                matched.push({ type: 'experiment', id: row.experiment_id, source: 'metrics' });
+              }
             }
+            break;
           }
-          break;
         }
       }
       if (!foundInMeasurements) {
@@ -2350,9 +2388,17 @@ async function quickEvidenceCheck(
 
   await Promise.all(checkPromises);
 
+  const constraintHits = {
+    hits_in_title: matched.filter(m => m.source === 'title').length,
+    hits_in_conditions: matched.filter(m => m.source === 'conditions').length,
+    hits_in_excerpt: matched.filter(m => m.source === 'excerpt').length,
+    hits_in_metrics: matched.filter(m => m.source === 'metrics').length,
+    hits_in_chunks: matched.filter(m => m.source === 'chunks').length,
+  };
+
   const weakFeasible = missing.length === 0 && matched.length > 0;
-  console.log(`Weak gate result: feasible=${weakFeasible}, matched=${matched.length}, missing=${missing.join(',')}`);
-  return { feasible: weakFeasible, missing, matched };
+  console.log(`Weak gate result: feasible=${weakFeasible}, matched=${matched.length}, missing=${missing.join(',')}, constraintHits=${JSON.stringify(constraintHits)}`);
+  return { feasible: weakFeasible, missing, matched, constraintHits };
 }
 
 // Co-occurrence: checks if material AND additive terms appear together
@@ -2618,6 +2664,10 @@ serve(async (req) => {
           constraints: preConstraints, constraintsKeywordsHit, constraintsScope,
           evidenceCheckPassed: false,
           gateRan: true, gateMissingTerms: gateResult.missing,
+          constraintHits: gateResult.constraintHits || null,
+          quickMaterialFound: gateResult.quickMaterialFound ?? null,
+          quickPropertyFound: gateResult.quickPropertyFound ?? null,
+          quickAdditiveFound: gateResult.quickAdditiveFound ?? null,
           failClosedTriggered: true, failClosedReason: 'constraint_evidence_missing', failClosedStage: 'routing',
         });
           const constraintDesc = [
@@ -2626,14 +2676,13 @@ serve(async (req) => {
           ...preConstraints.properties.map(p => `propriedade="${p}"`),
         ].join(', ');
         const suggestions = generateFailClosedSuggestions(query, preConstraints);
-        const gateDebug = (gateResult as any)._debug || {};
         const failMsg = `**EVIDÊNCIA INEXISTENTE NO PROJETO** para: ${constraintDesc}.\n\nNão encontrei nenhum experimento, condição ou trecho contendo ${gateResult.missing.join(' e ')} neste projeto.\n\n**Constraints detectadas**: ${constraintsKeywordsHit.join(', ')}\n\nPara responder, envie o Excel/PDF onde isso aparece ou indique o nome do experimento/aba.\n\n**Sugestões de investigação**:\n${suggestions}`;
 
         await supabase.from("rag_logs").insert({
           user_id: user.id, query, chunks_used: [], chunks_count: 0,
           response_summary: failMsg.substring(0, 500),
           model_used: `global-gate/fail-closed`, latency_ms: latencyMs,
-          request_id: requestId, diagnostics: { ...gateDiag, evidence_matched: gateResult.matched, ...gateDebug },
+          request_id: requestId, diagnostics: { ...gateDiag, evidence_matched: gateResult.matched },
         });
 
         return new Response(JSON.stringify({
