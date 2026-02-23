@@ -229,6 +229,51 @@ serve(async (req) => {
       metadata.category = insight.category;
       metadata.confidence = insight.confidence;
     }
+    else if (source_type === "manual_knowledge") {
+      const { data: fact, error } = await supabase
+        .from("knowledge_facts")
+        .select("id, title, key, category, value, description, authoritative, priority, project_id, tags")
+        .eq("id", source_id)
+        .single();
+
+      if (error || !fact) throw new Error(`Knowledge fact not found: ${source_id}`);
+      if (fact.status === 'archived') {
+        // Delete existing chunks for archived facts
+        await supabase.from("search_chunks").delete()
+          .eq("source_type", "manual_knowledge").eq("source_id", source_id);
+        
+        return new Response(JSON.stringify({ success: true, chunks_created: 0, note: "archived_fact_removed" }),
+          { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+
+      title = fact.title;
+      content = `[FATO MANUAL CANÔNICO] ${fact.title}\nCategoria: ${fact.category}\nKey: ${fact.key}\n\n${JSON.stringify(fact.value, null, 2)}\n\n${fact.description || ""}`;
+      metadata.title = fact.title;
+      metadata.category = fact.category;
+      metadata.fact_id = fact.id;
+      metadata.priority = fact.priority;
+      metadata.authoritative = fact.authoritative;
+      metadata.tags = fact.tags;
+
+      // Use the fact's actual project_id (may differ from the passed one for globals)
+      if (fact.project_id) {
+        const { data: proj } = await supabase.from("projects").select("name").eq("id", fact.project_id).single();
+        projectName = proj?.name || "Projeto";
+      } else {
+        projectName = "Global";
+      }
+
+      // Generate embedding and store on the fact itself
+      if (lovableApiKey) {
+        const embText = `${fact.title} ${fact.key} ${JSON.stringify(fact.value)} ${fact.description || ""} ${fact.category}`;
+        const embedding = await generateEmbedding(embText, lovableApiKey);
+        if (embedding) {
+          await supabase.from("knowledge_facts")
+            .update({ embedding: JSON.stringify(embedding) })
+            .eq("id", fact.id);
+        }
+      }
+    }
     else {
       throw new Error(`Unsupported source type: ${source_type}`);
     }

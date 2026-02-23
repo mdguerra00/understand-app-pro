@@ -907,6 +907,150 @@ export type Database = {
           },
         ]
       }
+      knowledge_facts: {
+        Row: {
+          authoritative: boolean | null
+          category: string
+          created_at: string
+          created_by: string
+          description: string | null
+          embedding: string | null
+          id: string
+          key: string
+          priority: number | null
+          project_id: string | null
+          status: string | null
+          tags: string[] | null
+          title: string
+          updated_at: string
+          updated_by: string | null
+          value: Json
+          version: number | null
+        }
+        Insert: {
+          authoritative?: boolean | null
+          category: string
+          created_at?: string
+          created_by: string
+          description?: string | null
+          embedding?: string | null
+          id?: string
+          key: string
+          priority?: number | null
+          project_id?: string | null
+          status?: string | null
+          tags?: string[] | null
+          title: string
+          updated_at?: string
+          updated_by?: string | null
+          value: Json
+          version?: number | null
+        }
+        Update: {
+          authoritative?: boolean | null
+          category?: string
+          created_at?: string
+          created_by?: string
+          description?: string | null
+          embedding?: string | null
+          id?: string
+          key?: string
+          priority?: number | null
+          project_id?: string | null
+          status?: string | null
+          tags?: string[] | null
+          title?: string
+          updated_at?: string
+          updated_by?: string | null
+          value?: Json
+          version?: number | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "knowledge_facts_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      knowledge_facts_logs: {
+        Row: {
+          action: string
+          details: Json | null
+          fact_id: string
+          id: number
+          timestamp: string
+          user_id: string | null
+        }
+        Insert: {
+          action: string
+          details?: Json | null
+          fact_id: string
+          id?: number
+          timestamp?: string
+          user_id?: string | null
+        }
+        Update: {
+          action?: string
+          details?: Json | null
+          fact_id?: string
+          id?: number
+          timestamp?: string
+          user_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "knowledge_facts_logs_fact_id_fkey"
+            columns: ["fact_id"]
+            isOneToOne: false
+            referencedRelation: "knowledge_facts"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      knowledge_facts_versions: {
+        Row: {
+          change_reason: string | null
+          changed_at: string
+          changed_by: string | null
+          fact_id: string
+          id: number
+          old_title: string
+          old_value: Json
+          version: number
+        }
+        Insert: {
+          change_reason?: string | null
+          changed_at?: string
+          changed_by?: string | null
+          fact_id: string
+          id?: number
+          old_title: string
+          old_value: Json
+          version: number
+        }
+        Update: {
+          change_reason?: string | null
+          changed_at?: string
+          changed_by?: string | null
+          fact_id?: string
+          id?: number
+          old_title?: string
+          old_value?: Json
+          version?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "knowledge_facts_versions_fact_id_fkey"
+            columns: ["fact_id"]
+            isOneToOne: false
+            referencedRelation: "knowledge_facts"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       knowledge_items: {
         Row: {
           auto_validated: boolean | null

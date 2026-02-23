@@ -16,6 +16,7 @@ import { KnowledgeFilters, EntryTypeFilter, ValidationFilter } from '@/component
 import { KnowledgeDetailModal } from '@/components/knowledge/KnowledgeDetailModal';
 import { DocumentDetailModal } from '@/components/knowledge/DocumentDetailModal';
 import { ExperimentDetailModal } from '@/components/knowledge/ExperimentDetailModal';
+import { FactsList } from '@/components/knowledge/FactsList';
 import { ExtractionStatus } from '@/components/knowledge/ExtractionStatus';
 import {
   Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger,
@@ -348,6 +349,13 @@ export default function Knowledge() {
         </div>
       </div>
 
+      {/* Facts Section */}
+      {(entryType === 'all' || entryType === 'facts') && (
+        <FactsList projects={projects || []} />
+      )}
+
+      {entryType !== 'facts' && (
+      <>
       <ExtractionStatus />
 
       <div className="flex flex-col sm:flex-row gap-4">
@@ -425,6 +433,8 @@ export default function Knowledge() {
       <KnowledgeDetailModal item={selectedInsight} open={insightDetailOpen} onOpenChange={setInsightDetailOpen} onUpdate={refetchInsights} />
       <DocumentDetailModal item={selectedDocument} open={documentDetailOpen} onOpenChange={setDocumentDetailOpen} />
       <ExperimentDetailModal item={selectedExperiment} open={experimentDetailOpen} onOpenChange={setExperimentDetailOpen} />
+      </>
+      )}
     </div>
   );
 }
