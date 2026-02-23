@@ -1481,7 +1481,7 @@ async function buildEvidenceGraph(
   let finalExpResults = expResults;
   if (constraints?.hasStrongConstraints) {
     const addTermMap: Record<string, string[]> = {
-      silver_nanoparticles: ['silver', 'prata', 'ag', 'nanopart'],
+      silver_nanoparticles: ['silver', 'prata', 'agnp', 'nano prata', 'nanosilver', 'ag-np'],
       bomar: ['bomar'],
       tegdma: ['tegdma'],
       udma: ['udma'],
@@ -2115,7 +2115,7 @@ async function quickEvidenceCheck(
   // === STRONG CONSTRAINTS: AND-only co-occurrence (skip individual checks) ===
   if (constraints.hasStrongConstraints) {
     const additiveTermMap: Record<string, string[]> = {
-      silver_nanoparticles: ['silver', 'prata', 'ag', 'nanopart'],
+      silver_nanoparticles: ['silver', 'prata', 'agnp', 'nano prata', 'nanosilver', 'ag-np'],
       bomar: ['bomar'],
       tegdma: ['tegdma'],
       udma: ['udma'],
@@ -2216,7 +2216,7 @@ async function quickEvidenceCheck(
 
   for (const add of constraints.additives) {
     const termMap: Record<string, string[]> = {
-      silver_nanoparticles: ['silver', 'prata', 'ag', 'nanopart'],
+      silver_nanoparticles: ['silver', 'prata', 'agnp', 'nano prata', 'nanosilver', 'ag-np'],
       bomar: ['bomar'],
       tegdma: ['tegdma'],
       udma: ['udma'],
@@ -2298,24 +2298,11 @@ async function checkCoOccurrence(
     }
   }
 
-  // Strategy 2: chunk-level co-occurrence (AND — both terms in SAME chunk)
-  for (const mat of materialTerms) {
-    for (const add of additiveSearchTerms) {
-      const { data: coChunks } = await supabase
-        .from('search_chunks')
-        .select('id')
-        .in('project_id', projectIds)
-        .ilike('chunk_text', `%${mat}%`)
-        .ilike('chunk_text', `%${add}%`)
-        .limit(1);
-      if (coChunks && coChunks.length > 0) {
-        console.log(`Chunk co-occurrence found: "${mat}" + "${add}"`);
-        return true;
-      }
-    }
-  }
+  // Strategy 2 REMOVED: chunk-level co-occurrence causes false positives
+  // (literature review chunks mention terms together without actual experimental data).
+  // Only experiment-level co-occurrence counts as real evidence.
 
-  return false; // no co-occurrence found
+  return false; // no co-occurrence found in experiments
 }
 
 // ==========================================
@@ -2368,7 +2355,7 @@ async function runComparativeConstrained(
 
       // Check additives
       const additiveTerms: Record<string, string[]> = {
-        silver_nanoparticles: ['silver', 'prata', 'ag', 'nanopart'],
+        silver_nanoparticles: ['silver', 'prata', 'agnp', 'nano prata', 'nanosilver', 'ag-np'],
         bomar: ['bomar'], tegdma: ['tegdma'], udma: ['udma'], bisgma: ['bisgma', 'bis-gma'],
       };
       for (const add of constraints.additives) {
