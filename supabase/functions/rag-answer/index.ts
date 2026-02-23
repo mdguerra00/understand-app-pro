@@ -1901,11 +1901,9 @@ function extractConstraints(query: string): QueryConstraints {
     if (re.test(s)) properties.push(name);
   }
 
-  // Strong constraints require at least 2 different constraint types present together
-  const hasStrongConstraints =
-    (materials.length > 0 && additives.length > 0) ||
-    (materials.length > 0 && properties.length > 0) ||
-    (additives.length > 0 && properties.length > 0);
+  // Strong constraints require at least 2 different non-empty constraint types
+  const nonEmptyCount = (materials.length > 0 ? 1 : 0) + (additives.length > 0 ? 1 : 0) + (properties.length > 0 ? 1 : 0);
+  const hasStrongConstraints = nonEmptyCount >= 2;
 
   return { materials, additives, properties, hasStrongConstraints };
 }
@@ -2042,78 +2040,96 @@ async function quickEvidenceCheck(
   const matched: GateMatch[] = [];
 
   // Helper: check if ANY of the search terms appear in any of the target tables
-  async function existsInProject(searchTerms: string[]): Promise<boolean> {
+  // Returns matched experiment IDs (up to 3) or empty array
+  async function existsInProject(searchTerms: string[]): Promise<GateMatch[]> {
     const ilikePatterns = searchTerms.map(t => `%${t}%`);
+    const foundMatches: GateMatch[] = [];
 
     // Pre-fetch experiment IDs for the project (needed for conditions + measurements checks)
     const { data: projExps } = await supabase
       .from('experiments')
       .select('id')
       .in('project_id', projectIds)
-      .is('deleted_at', null)
-      .limit(500);
+      .is('deleted_at', null);
     const expIds = (projExps || []).map((e: any) => e.id);
 
-    // Run 4 queries in parallel, each with LIMIT 1
-    const checks = await Promise.all([
-      // 1) experiment_conditions
-      (async () => {
-        if (expIds.length === 0) return false;
-        for (const pat of ilikePatterns) {
-          const { data } = await supabase
-            .from('experiment_conditions')
-            .select('id')
-            .in('experiment_id', expIds)
-            .ilike('value', pat)
-            .limit(1);
-          if (data && data.length > 0) return true;
+    // 1) experiment titles
+    for (const pat of ilikePatterns) {
+      if (foundMatches.length >= 3) break;
+      const { data } = await supabase
+        .from('experiments')
+        .select('id')
+        .in('project_id', projectIds)
+        .is('deleted_at', null)
+        .ilike('title', pat)
+        .limit(3);
+      if (data) {
+        for (const row of data) {
+          if (foundMatches.length < 3 && !foundMatches.some(m => m.id === row.id)) {
+            foundMatches.push({ type: 'experiment', id: row.id });
+          }
         }
-        return false;
-      })(),
-      // 2) experiments title/objective/hypothesis
-      (async () => {
-        for (const pat of ilikePatterns) {
-          const { data } = await supabase
-            .from('experiments')
-            .select('id')
-            .in('project_id', projectIds)
-            .is('deleted_at', null)
-            .or(`title.ilike.${pat},objective.ilike.${pat},hypothesis.ilike.${pat}`)
-            .limit(1);
-          if (data && data.length > 0) return true;
-        }
-        return false;
-      })(),
-      // 3) search_chunks
-      (async () => {
-        for (const pat of ilikePatterns) {
-          const { data } = await supabase
-            .from('search_chunks')
-            .select('id')
-            .in('project_id', projectIds)
-            .ilike('chunk_text', pat)
-            .limit(1);
-          if (data && data.length > 0) return true;
-        }
-        return false;
-      })(),
-      // 4) measurements source_excerpt
-      (async () => {
-        if (expIds.length === 0) return false;
-        for (const pat of ilikePatterns) {
-          const { data } = await supabase
-            .from('measurements')
-            .select('id')
-            .in('experiment_id', expIds)
-            .ilike('source_excerpt', pat)
-            .limit(1);
-          if (data && data.length > 0) return true;
-        }
-        return false;
-      })(),
-    ]);
+      }
+    }
+    if (foundMatches.length > 0) return foundMatches;
 
-    return checks.some(Boolean);
+    // 2) experiment_conditions value
+    if (expIds.length > 0) {
+      for (const pat of ilikePatterns) {
+        if (foundMatches.length >= 3) break;
+        const { data } = await supabase
+          .from('experiment_conditions')
+          .select('experiment_id')
+          .in('experiment_id', expIds)
+          .ilike('value', pat)
+          .limit(3);
+        if (data) {
+          for (const row of data) {
+            if (foundMatches.length < 3 && !foundMatches.some(m => m.id === row.experiment_id)) {
+              foundMatches.push({ type: 'experiment', id: row.experiment_id });
+            }
+          }
+        }
+      }
+    }
+    if (foundMatches.length > 0) return foundMatches;
+
+    // 3) search_chunks
+    for (const pat of ilikePatterns) {
+      if (foundMatches.length >= 3) break;
+      const { data } = await supabase
+        .from('search_chunks')
+        .select('id')
+        .in('project_id', projectIds)
+        .ilike('chunk_text', pat)
+        .limit(3);
+      if (data) {
+        for (const row of data) {
+          if (foundMatches.length < 3 && !foundMatches.some(m => m.id === row.id)) {
+            foundMatches.push({ type: 'chunk', id: row.id });
+          }
+        }
+      }
+    }
+    if (foundMatches.length > 0) return foundMatches;
+
+    // 4) measurements source_excerpt
+    if (expIds.length > 0) {
+      for (const pat of ilikePatterns) {
+        if (foundMatches.length >= 3) break;
+        const { data } = await supabase
+          .from('measurements')
+          .select('id')
+          .in('experiment_id', expIds)
+          .ilike('source_excerpt', pat)
+          .limit(1);
+        if (data && data.length > 0) {
+          foundMatches.push({ type: 'experiment', id: data[0].id });
+        }
+      }
+    }
+
+    return foundMatches;
   }
 
   // === STRONG CONSTRAINTS: AND-only co-occurrence (skip individual checks) ===
@@ -2215,13 +2231,17 @@ async function quickEvidenceCheck(
     return { feasible, missing, matched };
   }
 
-  // === WEAK CONSTRAINTS: individual OR checks (existing logic) ===
+  // === WEAK CONSTRAINTS: individual OR checks — now also collecting matched IDs ===
   const checkPromises: Promise<void>[] = [];
 
   for (const mat of constraints.materials) {
     checkPromises.push((async () => {
-      const found = await existsInProject([mat]);
-      if (!found) missing.push(`material="${mat}"`);
+      const foundMatches = await existsInProject([mat]);
+      if (foundMatches.length === 0) {
+        missing.push(`material="${mat}"`);
+      } else {
+        matched.push(...foundMatches);
+      }
     })());
   }
 
@@ -2235,8 +2255,12 @@ async function quickEvidenceCheck(
     };
     const terms = termMap[add] || [add];
     checkPromises.push((async () => {
-      const found = await existsInProject(terms);
-      if (!found) missing.push(`aditivo="${add}"`);
+      const foundMatches = await existsInProject(terms);
+      if (foundMatches.length === 0) {
+        missing.push(`aditivo="${add}"`);
+      } else {
+        matched.push(...foundMatches);
+      }
     })());
   }
 
@@ -2252,26 +2276,39 @@ async function quickEvidenceCheck(
     };
     const terms = propTermMap[prop] || [prop];
     checkPromises.push((async () => {
-      let found = false;
+      // Try measurements first
+      let foundInMeasurements = false;
       for (const t of terms) {
         const { data } = await supabase
           .from('measurements')
-          .select('id, experiments!inner(project_id)')
-          .in('experiments.project_id', projectIds)
+          .select('id, experiment_id')
           .ilike('metric', `%${t}%`)
-          .limit(1);
-        if (data && data.length > 0) { found = true; break; }
+          .limit(3);
+        if (data && data.length > 0) {
+          foundInMeasurements = true;
+          for (const row of data) {
+            if (matched.length < 10) {
+              matched.push({ type: 'experiment', id: row.experiment_id });
+            }
+          }
+          break;
+        }
       }
-      if (!found) {
-        found = await existsInProject(terms);
+      if (!foundInMeasurements) {
+        const foundMatches = await existsInProject(terms);
+        if (foundMatches.length === 0) {
+          missing.push(`propriedade="${prop}"`);
+        } else {
+          matched.push(...foundMatches);
+        }
       }
-      if (!found) missing.push(`propriedade="${prop}"`);
     })());
   }
 
   await Promise.all(checkPromises);
 
-  const weakFeasible = missing.length === 0;
+  const weakFeasible = missing.length === 0 && matched.length > 0;
+  console.log(`Weak gate result: feasible=${weakFeasible}, matched=${matched.length}, missing=${missing.join(',')}`);
   return { feasible: weakFeasible, missing, matched };
 }
 
