@@ -1260,9 +1260,44 @@ function detectIDERIntent(query: string): IDERIntent {
     ],
   };
 
+  // Causal/effect patterns: "como X afeta Y", "efeito de X em Y", etc.
+  const causalPatterns = [
+    // PT causal
+    /como\s+(?:o|a|os|as)?\s*\w+\s+afeta/i,
+    /como\s+(?:o|a|os|as)?\s*\w+\s+influencia/i,
+    /como\s+(?:o|a|os|as)?\s*\w+\s+impacta/i,
+    /como\s+(?:o|a|os|as)?\s*\w+\s+altera/i,
+    /como\s+(?:o|a|os|as)?\s*\w+\s+muda/i,
+    /como\s+(?:o|a|os|as)?\s*\w+\s+modifica/i,
+    /efeito\s+d[oae]\s/i,
+    /influência\s+d[oae]\s/i,
+    /impacto\s+d[oae]\s/i,
+    /papel\s+d[oae]\s/i,
+    /relação\s+entre\s/i,
+    /correlação\s+entre\s/i,
+    // EN causal
+    /how\s+does?\s+\w+\s+affect/i,
+    /how\s+does?\s+\w+\s+influence/i,
+    /how\s+does?\s+\w+\s+impact/i,
+    /effect\s+of\s/i,
+    /influence\s+of\s/i,
+    /impact\s+of\s/i,
+    /role\s+of\s/i,
+    /relationship\s+between\s/i,
+    /correlation\s+between\s/i,
+  ];
+
   const allTerms = [...interpretiveTerms.pt, ...interpretiveTerms.en];
   for (const term of allTerms) {
     if (q.includes(term)) result.interpretiveKeywords.push(term);
+  }
+
+  // Check causal patterns
+  for (const pat of causalPatterns) {
+    const match = q.match(pat);
+    if (match) {
+      result.interpretiveKeywords.push(`causal:${match[0].trim()}`);
+    }
   }
 
   // Experiment/table context + interpretive intent
@@ -3041,9 +3076,112 @@ serve(async (req) => {
     }
 
     // ==========================================
-    // BLOCK 3-STEP FALLBACK for strong constraints
+    // BLOCK 3-STEP FALLBACK for strong constraints → try IDER as last resort
     // ==========================================
     if (preConstraints.hasStrongConstraints) {
+      // If gate passed (evidence exists) but no pipeline matched, force IDER
+      if (evidenceCheckPassed) {
+        console.log('Strong constraints: no pipeline matched but gate passed. Forcing IDER as fallback.');
+        const iderProjectIds = validPrimary.length > 0 ? validPrimary : allowedProjectIds;
+
+        const insightSeeds = await retrieveInsightsCandidates(supabase, iderProjectIds, query);
+        const evidenceGraph = await buildEvidenceGraph(supabase, iderProjectIds, query, insightSeeds, preConstraints);
+        const totalMetrics = evidenceGraph.experiments.reduce((s, e) => s + e.variants.reduce((vs, v) => vs + Object.keys(v.metrics).length, 0), 0);
+        const totalVariants = evidenceGraph.experiments.reduce((s, e) => s + e.variants.length, 0);
+
+        if (evidenceGraph.experiments.length > 0 && totalMetrics > 0) {
+          console.log(`Forced IDER: ${evidenceGraph.experiments.length} experiments, ${totalMetrics} metrics`);
+
+          // EXTERNAL LEAK CHECK
+          const { data: pFiles } = await supabase
+            .from('project_files').select('id').in('project_id', iderProjectIds);
+          const projectFileIds = new Set((pFiles || []).map((f: any) => f.id));
+          const externalDocs = evidenceGraph.experiments
+            .flatMap(e => e.doc_ids)
+            .filter(d => d && !projectFileIds.has(d));
+
+          if (externalDocs.length === 0) {
+            const criticalDocs = selectCriticalDocs(evidenceGraph, insightSeeds);
+            const deepReadPack = await deepReadCriticalDocs(supabase, criticalDocs, query);
+            const { response: iderResponse } = await synthesizeIDER(query, evidenceGraph, deepReadPack, insightSeeds, lovableApiKey);
+            const auditIssues = await auditIDER(iderResponse, evidenceGraph, lovableApiKey);
+            const iderVerification = verifyIDERNumbers(iderResponse, evidenceGraph);
+
+            let finalIDERResponse = iderResponse;
+            let iderPipeline = 'ider-forced';
+            let iderFailClosed = false;
+            let iderFailReason: string | null = null;
+            let iderFailStage: string | null = null;
+
+            if (!iderVerification.verified) {
+              const examples = iderVerification.unmatched_examples.slice(0, 5).map(e => `"${e.number}" (…${e.context}…)`).join('\n- ');
+              const suggestions = generateFailClosedSuggestions(query, preConstraints, evidenceGraph);
+              finalIDERResponse = `**VERIFICAÇÃO FALHOU**: ${iderVerification.unmatched} número(s) não correspondem a medições.\n\n**Números sem evidência**:\n- ${examples}\n\n**Sugestões**:\n${suggestions}`;
+              iderPipeline = 'ider-forced-fail-closed';
+              iderFailClosed = true;
+              iderFailReason = 'numeric_grounding_failed';
+              iderFailStage = 'verification';
+            }
+
+            if (!iderFailClosed && auditIssues.length > 0) {
+              const severeIssues = auditIssues.filter(i => i.type === 'cross_variant_mix' || i.type === 'external_leak');
+              if (severeIssues.length > 0) {
+                const issueDetails = severeIssues.map(i => `- **[${i.type}]** ${i.detail}`).join('\n');
+                const suggestions = generateFailClosedSuggestions(query, preConstraints, evidenceGraph);
+                finalIDERResponse = `**AUDITORIA FALHOU**:\n${issueDetails}\n\n**Sugestões**:\n${suggestions}`;
+                iderPipeline = 'ider-forced-fail-closed';
+                iderFailClosed = true;
+                iderFailReason = severeIssues[0].type as string;
+                iderFailStage = 'audit';
+              }
+            }
+
+            const latencyMs = Date.now() - startTime;
+            const iderDiag = buildDiagnostics({
+              ...makeDiagnosticsDefaults(requestId, latencyMs),
+              pipeline: iderPipeline,
+              tabularIntent: tabularIntent.isExcelTableQuery, iderIntent: true, comparativeIntent: isComparative,
+              constraints: preConstraints, constraintsKeywordsHit, constraintsScope,
+              insightSeedsCount: insightSeeds.length,
+              experimentsCount: evidenceGraph.experiments.length,
+              variantsCount: totalVariants, measurementsCount: totalMetrics,
+              criticalDocs: criticalDocs.map(d => d.doc_id),
+              auditIssues,
+              verification: iderVerification,
+              evidenceCheckPassed: true,
+              gateRan, gateMissingTerms,
+              failClosedTriggered: iderFailClosed, failClosedReason: iderFailReason, failClosedStage: iderFailStage,
+            });
+
+            await supabase.from("rag_logs").insert({
+              user_id: user.id, query, chunks_used: [], chunks_count: 0,
+              response_summary: finalIDERResponse.substring(0, 500),
+              model_used: `ider-forced/${contextMode}/gemini-3-flash`, latency_ms: latencyMs,
+              request_id: requestId, diagnostics: iderDiag,
+            });
+
+            const iderSources = evidenceGraph.experiments.flatMap((exp, ei) =>
+              exp.variants.flatMap(v =>
+                Object.entries(v.metrics).map(([metricKey, m], mi) => ({
+                  citation: `E${ei + 1}-M${mi + 1}`, type: 'measurement',
+                  id: m.measurement_id, title: `${exp.title} — ${metricKey}`,
+                  project: projectName || 'Projeto',
+                  excerpt: m.excerpt?.substring(0, 200) || `${m.value} ${m.unit}`,
+                }))
+              )
+            );
+
+            return new Response(JSON.stringify({
+              response: finalIDERResponse, sources: iderSources,
+              chunks_used: 0, context_mode: contextMode, project_name: projectName,
+              pipeline: iderPipeline, latency_ms: latencyMs,
+              _diagnostics: iderDiag,
+            }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+          }
+        }
+      }
+
+      // Final fail-closed: no structured pipeline could handle it
       const latencyMs = Date.now() - startTime;
       const blockDiag = buildDiagnostics({
         ...makeDiagnosticsDefaults(requestId, latencyMs),
