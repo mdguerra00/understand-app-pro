@@ -25,12 +25,13 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
-import { Loader2, Shield, ShieldAlert, Users, ScrollText, UserPlus, MoreHorizontal, KeyRound, FolderKanban, UserX, UserCheck, Search } from 'lucide-react';
+import { Loader2, Shield, ShieldAlert, Users, ScrollText, UserPlus, MoreHorizontal, KeyRound, FolderKanban, UserX, UserCheck, Search, BookText } from 'lucide-react';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import { CreateUserModal } from '@/components/admin/CreateUserModal';
 import { UserProjectAccessModal } from '@/components/admin/UserProjectAccessModal';
+import { AliasApprovalTab } from '@/components/admin/AliasApprovalTab';
 
 interface UserWithRole {
   id: string;
@@ -330,6 +331,7 @@ export default function Admin() {
         <TabsList>
           <TabsTrigger value="users" className="gap-2"><Users className="h-4 w-4" />Usuários</TabsTrigger>
           <TabsTrigger value="audit" className="gap-2"><ScrollText className="h-4 w-4" />Auditoria</TabsTrigger>
+          <TabsTrigger value="aliases" className="gap-2"><BookText className="h-4 w-4" />Aliases</TabsTrigger>
         </TabsList>
 
         <TabsContent value="users">
@@ -495,6 +497,10 @@ export default function Admin() {
               </Table>
             </div>
           )}
+        </TabsContent>
+
+        <TabsContent value="aliases">
+          <AliasApprovalTab />
         </TabsContent>
       </Tabs>
 

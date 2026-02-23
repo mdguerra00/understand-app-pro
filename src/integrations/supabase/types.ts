@@ -14,6 +14,36 @@ export type Database = {
   }
   public: {
     Tables: {
+      alias_cache: {
+        Row: {
+          cached_at: string
+          entity_type: string
+          hit_count: number
+          last_hit_at: string
+          project_id: string
+          result: Json
+          term_norm: string
+        }
+        Insert: {
+          cached_at?: string
+          entity_type: string
+          hit_count?: number
+          last_hit_at?: string
+          project_id: string
+          result: Json
+          term_norm: string
+        }
+        Update: {
+          cached_at?: string
+          entity_type?: string
+          hit_count?: number
+          last_hit_at?: string
+          project_id?: string
+          result?: Json
+          term_norm?: string
+        }
+        Relationships: []
+      }
       assistant_conversations: {
         Row: {
           created_at: string
@@ -488,6 +518,63 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
+      entity_aliases: {
+        Row: {
+          alias: string
+          alias_norm: string
+          approved: boolean
+          approved_at: string | null
+          approved_by: string | null
+          canonical_name: string
+          confidence: number
+          created_at: string
+          deleted_at: string | null
+          embedding: string | null
+          entity_type: string
+          id: string
+          rejected_at: string | null
+          rejected_by: string | null
+          rejection_reason: string | null
+          source: string
+        }
+        Insert: {
+          alias: string
+          alias_norm: string
+          approved?: boolean
+          approved_at?: string | null
+          approved_by?: string | null
+          canonical_name: string
+          confidence?: number
+          created_at?: string
+          deleted_at?: string | null
+          embedding?: string | null
+          entity_type: string
+          id?: string
+          rejected_at?: string | null
+          rejected_by?: string | null
+          rejection_reason?: string | null
+          source?: string
+        }
+        Update: {
+          alias?: string
+          alias_norm?: string
+          approved?: boolean
+          approved_at?: string | null
+          approved_by?: string | null
+          canonical_name?: string
+          confidence?: number
+          created_at?: string
+          deleted_at?: string | null
+          embedding?: string | null
+          entity_type?: string
+          id?: string
+          rejected_at?: string | null
+          rejected_by?: string | null
+          rejection_reason?: string | null
+          source?: string
+        }
+        Relationships: []
       }
       experiment_citations: {
         Row: {
@@ -1073,6 +1160,30 @@ export type Database = {
           id?: string
           unit?: string
           unit_aliases?: string[] | null
+        }
+        Relationships: []
+      }
+      migration_logs: {
+        Row: {
+          context: Json | null
+          created_at: string
+          id: number
+          message: string
+          severity: string
+        }
+        Insert: {
+          context?: Json | null
+          created_at?: string
+          id?: number
+          message: string
+          severity?: string
+        }
+        Update: {
+          context?: Json | null
+          created_at?: string
+          id?: number
+          message?: string
+          severity?: string
         }
         Relationships: []
       }
@@ -2061,6 +2172,8 @@ export type Database = {
           source_type: string
         }[]
       }
+      show_limit: { Args: never; Returns: number }
+      show_trgm: { Args: { "": string }; Returns: string[] }
     }
     Enums: {
       app_role: "admin" | "user"
