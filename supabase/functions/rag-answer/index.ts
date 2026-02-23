@@ -2032,10 +2032,14 @@ function generateFailClosedSuggestions(
 // ==========================================
 // QUICK EVIDENCE CHECK (gating)
 // ==========================================
+type GateMatch = { type: "experiment" | "chunk"; id: string };
+type GateResult = { feasible: boolean; missing: string[]; matched: GateMatch[] };
+
 async function quickEvidenceCheck(
   supabase: any, projectIds: string[], constraints: QueryConstraints
-): Promise<{ feasible: boolean; missing: string[] }> {
+): Promise<GateResult> {
   const missing: string[] = [];
+  const matched: GateMatch[] = [];
 
   // Helper: check if ANY of the search terms appear in any of the target tables
   async function existsInProject(searchTerms: string[]): Promise<boolean> {
@@ -2130,12 +2134,13 @@ async function quickEvidenceCheck(
         for (const t of terms) allAdditiveTerms.push(t);
       }
       try {
-        const coOccurs = await checkCoOccurrence(supabase, projectIds, constraints.materials, allAdditiveTerms);
-        if (!coOccurs) {
+        const coMatches = await checkCoOccurrence(supabase, projectIds, constraints.materials, allAdditiveTerms);
+        if (coMatches.length === 0) {
           missing.push('co-ocorrencia material+aditivo');
           console.log(`Co-occurrence check FAILED: materials=${constraints.materials.join(',')} additives=${allAdditiveTerms.join(',')}`);
         } else {
-          console.log(`Co-occurrence check PASSED (material+additive)`);
+          matched.push(...coMatches);
+          console.log(`Co-occurrence check PASSED (material+additive): ${coMatches.map(m => m.id).join(',')}`);
         }
       } catch (coErr) {
         missing.push('co-ocorrencia material+aditivo (erro na verificacao)');
@@ -2160,10 +2165,12 @@ async function quickEvidenceCheck(
         for (const t of terms) allPropTerms.push(t);
       }
       try {
-        const coOccurs = await checkCoOccurrence(supabase, projectIds, constraints.materials, allPropTerms);
-        if (!coOccurs) {
+        const coMatches = await checkCoOccurrence(supabase, projectIds, constraints.materials, allPropTerms);
+        if (coMatches.length === 0) {
           missing.push('co-ocorrencia material+propriedade');
           console.log(`Co-occurrence check FAILED: materials=${constraints.materials.join(',')} properties=${allPropTerms.join(',')}`);
+        } else {
+          matched.push(...coMatches);
         }
       } catch (coErr) {
         missing.push('co-ocorrencia material+propriedade (erro na verificacao)');
@@ -2192,16 +2199,20 @@ async function quickEvidenceCheck(
         for (const t of terms) allPropTerms2.push(t);
       }
       try {
-        const coOccurs = await checkCoOccurrence(supabase, projectIds, allAddTerms, allPropTerms2);
-        if (!coOccurs) {
+        const coMatches = await checkCoOccurrence(supabase, projectIds, allAddTerms, allPropTerms2);
+        if (coMatches.length === 0) {
           missing.push('co-ocorrencia aditivo+propriedade');
+        } else {
+          matched.push(...coMatches);
         }
       } catch (coErr) {
         missing.push('co-ocorrencia aditivo+propriedade (erro na verificacao)');
       }
     }
 
-    return { feasible: missing.length === 0, missing };
+    const feasible = missing.length === 0 && matched.length > 0;
+    console.log(`Strong gate result: feasible=${feasible}, matched=${matched.length}, missing=${missing.join(',')}`);
+    return { feasible, missing, matched };
   }
 
   // === WEAK CONSTRAINTS: individual OR checks (existing logic) ===
@@ -2260,16 +2271,20 @@ async function quickEvidenceCheck(
 
   await Promise.all(checkPromises);
 
-  return { feasible: missing.length === 0, missing };
+  const weakFeasible = missing.length === 0;
+  return { feasible: weakFeasible, missing, matched };
 }
 
 // Co-occurrence: checks if material AND additive terms appear together
 // in the same experiment (title+conditions) or the same search chunk
 async function checkCoOccurrence(
   supabase: any, projectIds: string[], materialTerms: string[], additiveSearchTerms: string[]
-): Promise<boolean> {
+): Promise<GateMatch[]> {
+  const matched: GateMatch[] = [];
+
   // Strategy 1: experiments table — find experiments matching a material, then check conditions for additive
   for (const mat of materialTerms) {
+    if (matched.length >= 5) break;
     const { data: exps } = await supabase
       .from('experiments')
       .select('id, title')
@@ -2280,9 +2295,13 @@ async function checkCoOccurrence(
 
     if (exps && exps.length > 0) {
       for (const exp of exps) {
+        if (matched.length >= 5) break;
         // Check if title itself contains an additive term
         const titleLower = (exp.title || '').toLowerCase();
-        if (additiveSearchTerms.some(t => titleLower.includes(t))) return true;
+        if (additiveSearchTerms.some(t => titleLower.includes(t))) {
+          matched.push({ type: 'experiment', id: exp.id });
+          continue;
+        }
 
         // Check conditions
         const { data: conds } = await supabase
@@ -2292,17 +2311,15 @@ async function checkCoOccurrence(
 
         if (conds && conds.length > 0) {
           const allText = [exp.title, ...conds.map((c: any) => c.value)].join(' ').toLowerCase();
-          if (additiveSearchTerms.some(t => allText.includes(t))) return true;
+          if (additiveSearchTerms.some(t => allText.includes(t))) {
+            matched.push({ type: 'experiment', id: exp.id });
+          }
         }
       }
     }
   }
 
-  // Strategy 2 REMOVED: chunk-level co-occurrence causes false positives
-  // (literature review chunks mention terms together without actual experimental data).
-  // Only experiment-level co-occurrence counts as real evidence.
-
-  return false; // no co-occurrence found in experiments
+  return matched;
 }
 
 // ==========================================
@@ -2499,13 +2516,15 @@ serve(async (req) => {
     // GLOBAL CONSTRAINT GATE (before routing)
     // ==========================================
     let evidenceCheckPassed: boolean | null = null;
+    let evidenceMatched: GateMatch[] = [];
     if (preConstraints.hasStrongConstraints) {
       const gateProjectIds = validPrimary.length > 0 ? validPrimary : allowedProjectIds;
-      const { feasible, missing } = await quickEvidenceCheck(supabase, gateProjectIds, preConstraints);
-      evidenceCheckPassed = feasible;
-      console.log(`Global constraint gate: feasible=${feasible}, missing=${missing.join(', ')}`);
+      const gateResult = await quickEvidenceCheck(supabase, gateProjectIds, preConstraints);
+      evidenceCheckPassed = gateResult.feasible;
+      evidenceMatched = gateResult.matched;
+      console.log(`Global constraint gate: feasible=${gateResult.feasible}, matched=${gateResult.matched.length}, missing=${gateResult.missing.join(', ')}`);
 
-      if (!feasible) {
+      if (!gateResult.feasible) {
         const latencyMs = Date.now() - startTime;
         const gateDiag = buildDiagnostics({
           ...makeDiagnosticsDefaults(requestId, latencyMs),
@@ -2515,19 +2534,19 @@ serve(async (req) => {
           evidenceCheckPassed: false,
           failClosedTriggered: true, failClosedReason: 'constraint_evidence_missing', failClosedStage: 'routing',
         });
-        const constraintDesc = [
+          const constraintDesc = [
           ...preConstraints.materials.map(m => `material="${m}"`),
           ...preConstraints.additives.map(a => `aditivo="${a}"`),
           ...preConstraints.properties.map(p => `propriedade="${p}"`),
         ].join(', ');
         const suggestions = generateFailClosedSuggestions(query, preConstraints);
-        const failMsg = `**EVIDÊNCIA INEXISTENTE NO PROJETO** para: ${constraintDesc}.\n\nNão encontrei nenhum experimento, condição ou trecho contendo ${missing.join(' e ')} neste projeto.\n\n**Constraints detectadas**: ${constraintsKeywordsHit.join(', ')}\n\nPara responder, envie o Excel/PDF onde isso aparece ou indique o nome do experimento/aba.\n\n**Sugestões de investigação**:\n${suggestions}`;
+        const failMsg = `**EVIDÊNCIA INEXISTENTE NO PROJETO** para: ${constraintDesc}.\n\nNão encontrei nenhum experimento, condição ou trecho contendo ${gateResult.missing.join(' e ')} neste projeto.\n\n**Constraints detectadas**: ${constraintsKeywordsHit.join(', ')}\n\nPara responder, envie o Excel/PDF onde isso aparece ou indique o nome do experimento/aba.\n\n**Sugestões de investigação**:\n${suggestions}`;
 
         await supabase.from("rag_logs").insert({
           user_id: user.id, query, chunks_used: [], chunks_count: 0,
           response_summary: failMsg.substring(0, 500),
           model_used: `global-gate/fail-closed`, latency_ms: latencyMs,
-          request_id: requestId, diagnostics: gateDiag,
+          request_id: requestId, diagnostics: { ...gateDiag, evidence_matched: gateResult.matched },
         });
 
         return new Response(JSON.stringify({
@@ -2845,10 +2864,10 @@ serve(async (req) => {
 
       if (constraints.hasStrongConstraints) {
         // GATING: check if evidence exists for these constraints
-        const { feasible, missing } = await quickEvidenceCheck(supabase, comparativeProjectIds, constraints);
-        console.log(`Evidence check: feasible=${feasible}, missing=${missing.join(', ')}`);
+        const compGate = await quickEvidenceCheck(supabase, comparativeProjectIds, constraints);
+        console.log(`Evidence check: feasible=${compGate.feasible}, matched=${compGate.matched.length}, missing=${compGate.missing.join(', ')}`);
 
-        if (!feasible) {
+        if (!compGate.feasible) {
           // FAIL-CLOSED: no evidence for strong constraints
           const latencyMs = Date.now() - startTime;
           const compFailDiag = buildDiagnostics({
@@ -2865,13 +2884,13 @@ serve(async (req) => {
             ...constraints.properties.map(p => `propriedade="${p}"`),
           ].join(', ');
           const suggestions = generateFailClosedSuggestions(query, constraints);
-          const failMsg = `**EVIDÊNCIA INEXISTENTE NO PROJETO** para: ${constraintDesc}.\n\nNão encontrei nenhum experimento, condição ou trecho contendo ${missing.join(' e ')} neste projeto.\n\n**Constraints detectadas**: ${constraintsKeywordsHit.join(', ')}\n\nPara responder, envie o Excel/PDF onde isso aparece ou indique o nome do experimento/aba.\n\n**Sugestões de investigação**:\n${suggestions}`;
+          const failMsg = `**EVIDÊNCIA INEXISTENTE NO PROJETO** para: ${constraintDesc}.\n\nNão encontrei nenhum experimento, condição ou trecho contendo ${compGate.missing.join(' e ')} neste projeto.\n\n**Constraints detectadas**: ${constraintsKeywordsHit.join(', ')}\n\nPara responder, envie o Excel/PDF onde isso aparece ou indique o nome do experimento/aba.\n\n**Sugestões de investigação**:\n${suggestions}`;
 
           await supabase.from("rag_logs").insert({
             user_id: user.id, query, chunks_used: [], chunks_count: 0,
             response_summary: failMsg.substring(0, 500),
             model_used: `fail-closed-no-evidence/${contextMode}`, latency_ms: latencyMs,
-            request_id: requestId, diagnostics: compFailDiag,
+            request_id: requestId, diagnostics: { ...compFailDiag, evidence_matched: compGate.matched },
           });
 
           return new Response(JSON.stringify({
