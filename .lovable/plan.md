@@ -1,111 +1,100 @@
 
 
-# Fix: Global Constraint Gate Not Blocking (Co-occurrence + Diagnostics Pass-through)
+# Fix: quickEvidenceCheck False Positives + hasStrongConstraints Definition
 
-## Root Cause
+## Problem Summary
 
-Two bugs prevent the gate from working:
+Two bugs cause the constraint gate to let through queries it should block:
 
-### Bug 1: `evidenceCheckPassed` not passed to 3-step diagnostics
-Line ~2978-2986 builds `stdDiag` using `makeDiagnosticsDefaults` which sets `evidenceCheckPassed: null`. The actual variable `evidenceCheckPassed` (set at line 2362) is never included. This makes it impossible to see what the gate decided.
+1. **`hasStrongConstraints` triggers on a single constraint** (e.g., just `silver_nanoparticles` alone makes it `true` because the threshold is `>= 1`). With only an additive and no material, the co-occurrence check is skipped entirely (it requires both), so individual OR checks pass and `feasible=true`.
 
-### Bug 2: `quickEvidenceCheck` checks constraints independently
-The function checks each material and each additive separately. If "vitality" exists anywhere in the project AND "prata/silver/ag" exists anywhere else (even in unrelated documents), both pass and `feasible=true`. There is no requirement that material+additive co-occur in the same experiment or document.
-
-For the query "prata na Vitality", the project likely has:
-- Chunks mentioning "Vitality" (the resin) -- passes material check
-- Chunks mentioning "silver" or "prata" or "ag" somewhere -- passes additive check
-- But NO experiment combining both
+2. **Individual checks use OR logic**: `existsInProject` checks each material and each additive independently. "Vitality" found somewhere? Pass. "Silver" found somewhere else? Pass. Both pass individually, `missing=[]`, even though they never appear together.
 
 ## Fixes
 
-### Fix 1: Pass `evidenceCheckPassed` to ALL diagnostics calls
+### Fix 1: Correct `hasStrongConstraints` definition
 
-In the 3-step `buildDiagnostics` call (~line 2978), add `evidenceCheckPassed` to the object. Same for any other path that omits it.
+Change from `>= 1` (any single constraint) to requiring at least material+additive together:
 
-### Fix 2: Add co-occurrence check to `quickEvidenceCheck`
-
-When BOTH `materials` and `additives` are non-empty, after the individual checks pass, add a co-occurrence verification:
-
-```text
-// After individual checks pass (missing.length === 0):
-if (constraints.materials.length > 0 && constraints.additives.length > 0) {
-  // Check if ANY experiment has BOTH material AND additive terms
-  const materialTerms = constraints.materials; // e.g. ["vitality"]
-  const additiveTerms = termMap expansions;     // e.g. ["silver","prata","ag","nanopart"]
-  
-  // Search experiments where title/conditions match material AND additive
-  const coOccurrence = await checkCoOccurrence(supabase, projectIds, materialTerms, additiveTerms);
-  
-  if (!coOccurrence) {
-    missing.push(`co-ocorrencia material+aditivo`);
-    // feasible becomes false
-  }
-}
+```typescript
+const hasStrongConstraints =
+  (materials.length > 0 && additives.length > 0) ||
+  (materials.length > 0 && properties.length > 0) ||
+  (additives.length > 0 && properties.length > 0);
 ```
 
-The co-occurrence check queries:
-1. `experiments` where title matches a material term AND title/conditions match an additive term
-2. `search_chunks` where chunk_text contains both a material term AND an additive term
+This means a single isolated additive (like `silver_nanoparticles` alone) will NOT trigger `hasStrongConstraints`. The gate only activates when there are at least 2 different constraint types present.
 
-If neither returns results, co-occurrence fails and the gate blocks.
+### Fix 2: Replace `quickEvidenceCheck` with AND-based co-occurrence logic
 
-### Fix 3: Ensure `evidenceCheckPassed` propagates to IDER and Comparative paths too
+The current function has two stages that conflict:
+- Stage 1 (lines 2112-2168): Individual OR checks per constraint type -- these always pass if the term exists anywhere
+- Stage 2 (lines 2174-2201): Co-occurrence AND check -- only runs when both materials AND additives are present
 
-Review all `buildDiagnostics` calls to ensure `evidenceCheckPassed` is always included (not relying on `makeDiagnosticsDefaults` null).
+**The fix**: Replace the entire function body with a unified AND-based approach:
 
-## Expected behavior after fix
+1. When `hasStrongConstraints=true`, skip individual checks entirely
+2. Go straight to co-occurrence: material+additive must appear together in the SAME experiment (title/conditions) or the SAME chunk
+3. If co-occurrence fails, `feasible=false` immediately
+4. For single-type constraints (shouldn't trigger strong gate after Fix 1), keep the existing `existsInProject` checks as fallback
 
-For "prata na Vitality":
-- Individual checks: vitality found, silver/prata found
-- Co-occurrence check: no experiment has both vitality AND silver/prata
-- `feasible = false`, `missing = ["co-ocorrencia material+aditivo"]`
-- Gate blocks: `pipeline_selected = "fail-closed-no-evidence"`
-- `evidence_check_passed = false`
-- `fail_closed_reason = "constraint_evidence_missing"`
+**New `quickEvidenceCheck` logic:**
 
-## Files changed
+```text
+if hasStrongConstraints:
+  // ONLY co-occurrence matters -- skip individual checks
+  if materials.length > 0 AND additives.length > 0:
+    coOccurs = checkCoOccurrence(...)
+    if !coOccurs: return { feasible: false, missing: ["co-ocorrencia material+aditivo"] }
+  
+  if materials.length > 0 AND properties.length > 0:
+    // check material+property co-occur in same experiment/measurement
+    ...similar logic...
+  
+  return { feasible: true, missing: [] }
+else:
+  // Weak constraints -- individual checks (existing logic)
+  ...
+```
+
+### Fix 3: Ensure `checkCoOccurrence` also checks chunk-level (re-add Strategy 2 with stricter matching)
+
+The previous fix removed chunk-level co-occurrence entirely. We should re-add it but with stricter matching -- both terms must appear in the same chunk:
+
+```text
+// Strategy 2: search_chunks -- both terms in SAME chunk (AND)
+for mat in materialTerms:
+  for add in additiveSearchTerms:
+    query chunks WHERE chunk_text ILIKE %mat% AND chunk_text ILIKE %add%
+    if found: return true
+```
+
+This is valid co-occurrence evidence (both terms in the same paragraph/section).
+
+## Files Changed
 
 1. `supabase/functions/rag-answer/index.ts`:
-   - Add co-occurrence check inside `quickEvidenceCheck`
-   - Pass `evidenceCheckPassed` variable to 3-step (and all other) `buildDiagnostics` calls
+   - `extractConstraints`: Change `hasStrongConstraints` to require 2+ constraint types
+   - `quickEvidenceCheck`: Rewrite to use AND-only logic when `hasStrongConstraints=true`
+   - `checkCoOccurrence`: Re-add chunk-level strategy with AND matching
+   - Remove individual `existsInProject` calls for strong-constraint path
 
-## Technical detail: co-occurrence query
+## Expected Behavior After Fix
 
-```text
-async function checkCoOccurrence(supabase, projectIds, materialTerms, additiveSearchTerms):
-  // Strategy 1: experiments table
-  for (mat of materialTerms):
-    const { data } = await supabase.from('experiments')
-      .select('id, title')
-      .in('project_id', projectIds)
-      .is('deleted_at', null)
-      .ilike('title', `%${mat}%`)
-      .limit(50);
-    
-    if (data?.length > 0):
-      // Check conditions of these experiments for additive terms
-      for (exp of data):
-        const { data: conds } = await supabase.from('experiment_conditions')
-          .select('value')
-          .eq('experiment_id', exp.id);
-        
-        const allText = [exp.title, ...conds.map(c => c.value)].join(' ').toLowerCase();
-        if (additiveSearchTerms.some(t => allText.includes(t))):
-          return true;  // co-occurrence found
+**Query: "prata na Vitality"** (material=vitality, additive=silver_nanoparticles):
+- `hasStrongConstraints=true` (material + additive)
+- Co-occurrence check: no experiment has both vitality AND silver/prata together
+- Chunk co-occurrence: no chunk contains both terms
+- `feasible=false`, `missing=["co-ocorrencia material+aditivo"]`
+- Gate blocks: `pipeline_selected="fail-closed-no-evidence"`
 
-  // Strategy 2: search_chunks — both terms in same chunk
-  for (mat of materialTerms):
-    for (add of additiveSearchTerms):
-      const { data } = await supabase.from('search_chunks')
-        .select('id')
-        .in('project_id', projectIds)
-        .ilike('chunk_text', `%${mat}%`)
-        .ilike('chunk_text', `%${add}%`)
-        .limit(1);
-      if (data?.length > 0): return true;
+**Query: "silver nanoparticles"** (additive only, no material):
+- `hasStrongConstraints=false` (only 1 constraint type)
+- Falls through to normal routing (no gate block)
+- But with only chunks and no experiments, the 3-step pipeline's numerical verification will catch fabricated numbers
 
-  return false;  // no co-occurrence
-```
+**Query: "resistencia flexural da Vitality com prata"** (material + additive + property):
+- `hasStrongConstraints=true`
+- Co-occurrence check runs for material+additive
+- If no match found, `feasible=false` and gate blocks
 
-This approach limits additional queries and short-circuits on first match found.
