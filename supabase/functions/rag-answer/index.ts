@@ -1512,7 +1512,8 @@ async function buildEvidenceGraph(
 
   diagnostics.push(`Built evidence graph: ${expResults.length} experiments, ${expResults.reduce((s, e) => s + e.variants.length, 0)} variants, ${expResults.reduce((s, e) => s + e.variants.reduce((vs, v) => vs + Object.keys(v.metrics).length, 0), 0)} measurements`);
 
-  // CONSTRAINT FILTER: keep only experiments matching material/additive constraints
+  // CONSTRAINT FILTER: attempt to narrow experiments by material/additive terms
+  // If no matches found, keep ALL experiments (let IDER + insights contextualize)
   let finalExpResults = expResults;
   if (constraints?.hasStrongConstraints) {
     const addTermMap: Record<string, string[]> = {
@@ -1527,17 +1528,23 @@ async function buildEvidenceGraph(
       ...constraints.additives.flatMap(a => addTermMap[a] || [a]),
     ];
     if (constraintTerms.length > 0) {
-      finalExpResults = expResults.filter(exp => {
-        const titleLower = exp.title.toLowerCase();
-        const titleMatch = constraintTerms.some(t => titleLower.includes(t));
-        const condMatch = exp.variants.some(v =>
-          Object.values(v.conditions).some(cv =>
-            constraintTerms.some(t => cv.toLowerCase().includes(t))
-          )
-        );
-        return titleMatch || condMatch;
+      const filtered = expResults.filter(exp => {
+        const searchable = [
+          exp.title,
+          exp.objective || '',
+          exp.hypothesis || '',
+          ...exp.variants.flatMap(v => Object.values(v.conditions)),
+          ...exp.variants.flatMap(v => Object.values(v.metrics).map(m => m.excerpt || '')),
+        ].join(' ').toLowerCase();
+        return constraintTerms.some(t => searchable.includes(t));
       });
-      diagnostics.push(`Constraint filter: ${expResults.length} -> ${finalExpResults.length} experiments`);
+      if (filtered.length > 0) {
+        finalExpResults = filtered;
+        diagnostics.push(`Constraint filter: ${expResults.length} -> ${finalExpResults.length} experiments (matched)`);
+      } else {
+        // No structured match — keep all experiments, let IDER use insight seeds for context
+        diagnostics.push(`Constraint filter: ${expResults.length} -> 0 matched, keeping all ${expResults.length} (soft pass)`);
+      }
     }
   }
 
