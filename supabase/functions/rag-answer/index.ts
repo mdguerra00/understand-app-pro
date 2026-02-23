@@ -1902,8 +1902,10 @@ function extractConstraints(query: string): QueryConstraints {
   }
 
   // Strong constraints require at least 2 different non-empty constraint types
+  // OR: silver_nanoparticles alone is promoted to strong (prevents unguarded 3-step fallback)
   const nonEmptyCount = (materials.length > 0 ? 1 : 0) + (additives.length > 0 ? 1 : 0) + (properties.length > 0 ? 1 : 0);
-  const hasStrongConstraints = nonEmptyCount >= 2;
+  const hasSilverAlone = additives.includes('silver_nanoparticles');
+  const hasStrongConstraints = nonEmptyCount >= 2 || hasSilverAlone;
 
   return { materials, additives, properties, hasStrongConstraints };
 }
@@ -1923,6 +1925,8 @@ interface DiagnosticsInput {
   materialFilterApplied: boolean;
   additiveFilterApplied: boolean;
   evidenceCheckPassed: boolean | null;
+  gateRan: boolean;
+  gateMissingTerms: string[];
   insightSeedsCount: number;
   experimentsCount: number;
   variantsCount: number;
@@ -1951,6 +1955,8 @@ function buildDiagnostics(input: DiagnosticsInput): Record<string, any> {
     material_filter_applied: input.materialFilterApplied,
     additive_filter_applied: input.additiveFilterApplied,
     evidence_check_passed: input.evidenceCheckPassed,
+    gate_ran: input.gateRan,
+    gate_missing_terms: input.gateMissingTerms,
     insight_seeds_count: input.insightSeedsCount,
     experiments_count: input.experimentsCount,
     variants_count: input.variantsCount,
@@ -1976,6 +1982,7 @@ function makeDiagnosticsDefaults(requestId: string, latencyMs: number): Diagnost
     requestId, pipeline: '', tabularIntent: false, iderIntent: false, comparativeIntent: false,
     constraints: null, constraintsKeywordsHit: [], constraintsScope: 'project',
     materialFilterApplied: false, additiveFilterApplied: false, evidenceCheckPassed: null,
+    gateRan: false, gateMissingTerms: [],
     insightSeedsCount: 0, experimentsCount: 0, variantsCount: 0, measurementsCount: 0,
     criticalDocs: [], chunksUsed: 0, auditIssues: [], verification: null,
     failClosedTriggered: false, failClosedReason: null, failClosedStage: null, latencyMs,
@@ -2554,12 +2561,17 @@ serve(async (req) => {
     // ==========================================
     let evidenceCheckPassed: boolean | null = null;
     let evidenceMatched: GateMatch[] = [];
-    if (preConstraints.hasStrongConstraints) {
+    let gateRan = false;
+    let gateMissingTerms: string[] = [];
+    const hasAnyConstraints = preConstraints.materials.length > 0 || preConstraints.additives.length > 0 || preConstraints.properties.length > 0;
+    if (hasAnyConstraints) {
+      gateRan = true;
       const gateProjectIds = validPrimary.length > 0 ? validPrimary : allowedProjectIds;
       const gateResult = await quickEvidenceCheck(supabase, gateProjectIds, preConstraints);
       evidenceCheckPassed = gateResult.feasible;
       evidenceMatched = gateResult.matched;
-      console.log(`Global constraint gate: feasible=${gateResult.feasible}, matched=${gateResult.matched.length}, missing=${gateResult.missing.join(', ')}`);
+      gateMissingTerms = gateResult.missing;
+      console.log(`Global constraint gate: feasible=${gateResult.feasible}, matched=${gateResult.matched.length}, missing=${gateResult.missing.join(', ')}, strong=${preConstraints.hasStrongConstraints}`);
 
       if (!gateResult.feasible) {
         const latencyMs = Date.now() - startTime;
@@ -2569,6 +2581,7 @@ serve(async (req) => {
           tabularIntent: tabularIntent.isExcelTableQuery, iderIntent: iderIntent.isIDERQuery, comparativeIntent: isComparative,
           constraints: preConstraints, constraintsKeywordsHit, constraintsScope,
           evidenceCheckPassed: false,
+          gateRan: true, gateMissingTerms: gateResult.missing,
           failClosedTriggered: true, failClosedReason: 'constraint_evidence_missing', failClosedStage: 'routing',
         });
           const constraintDesc = [
@@ -3033,6 +3046,43 @@ serve(async (req) => {
     }
 
     // ==========================================
+    // BLOCK 3-STEP FALLBACK for strong constraints
+    // ==========================================
+    if (preConstraints.hasStrongConstraints) {
+      const latencyMs = Date.now() - startTime;
+      const blockDiag = buildDiagnostics({
+        ...makeDiagnosticsDefaults(requestId, latencyMs),
+        pipeline: 'fail-closed-no-evidence',
+        tabularIntent: tabularIntent.isExcelTableQuery, iderIntent: iderIntent.isIDERQuery, comparativeIntent: isComparative,
+        constraints: preConstraints, constraintsKeywordsHit, constraintsScope,
+        evidenceCheckPassed: evidenceCheckPassed,
+        gateRan, gateMissingTerms,
+        failClosedTriggered: true, failClosedReason: 'strong_constraint_no_structured_pipeline', failClosedStage: 'routing',
+      });
+      const constraintDesc = [
+        ...preConstraints.materials.map(m => `material="${m}"`),
+        ...preConstraints.additives.map(a => `aditivo="${a}"`),
+        ...preConstraints.properties.map(p => `propriedade="${p}"`),
+      ].join(', ');
+      const suggestions = generateFailClosedSuggestions(query, preConstraints);
+      const failMsg = `**EVIDÊNCIA ESTRUTURADA INSUFICIENTE** para: ${constraintDesc}.\n\nO gate de evidência encontrou menções parciais, mas nenhum pipeline estruturado (tabular, IDER, comparativo) conseguiu montar dados verificáveis. O sistema não permite fallback para busca genérica com restrições fortes.\n\n**Constraints detectadas**: ${constraintsKeywordsHit.join(', ')}\n\n**Sugestões de investigação**:\n${suggestions}`;
+
+      await supabase.from("rag_logs").insert({
+        user_id: user.id, query, chunks_used: [], chunks_count: 0,
+        response_summary: failMsg.substring(0, 500),
+        model_used: `fail-closed-strong-constraint/${contextMode}`, latency_ms: latencyMs,
+        request_id: requestId, diagnostics: blockDiag,
+      });
+
+      return new Response(JSON.stringify({
+        response: failMsg, sources: [],
+        chunks_used: 0, context_mode: contextMode, project_name: projectName,
+        pipeline: 'fail-closed-no-evidence', latency_ms: latencyMs,
+        _diagnostics: blockDiag,
+      }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    }
+
+    // ==========================================
     // 4️⃣ STANDARD 3-STEP PIPELINE
     // ==========================================
     // For project mode: structured data comes ONLY from the project
@@ -3180,6 +3230,7 @@ serve(async (req) => {
       tabularIntent: tabularIntent.isExcelTableQuery, iderIntent: iderIntent.isIDERQuery, comparativeIntent: isComparative,
       constraints: preConstraints, constraintsKeywordsHit, constraintsScope,
       evidenceCheckPassed,
+      gateRan, gateMissingTerms,
       chunksUsed: finalChunks.length,
       verification,
       failClosedTriggered: stdFailClosed, failClosedReason: stdFailReason, failClosedStage: stdFailStage,
