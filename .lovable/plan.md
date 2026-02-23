@@ -1,147 +1,175 @@
 
+# Auto-Alias + Provisional Auto-Pass: Implementacao Completa
 
-# Fix: quickEvidenceCheck False Negatives
+## Visao Geral
 
-## Problem
-The gate blocks valid queries (e.g., "silica 0.4nm na Vitality, RF vs modulo") because:
-- Property aliases are incomplete -- DB stores `resistncia_flexural`, `mdulo_flexural_mf` but the gate only searches `flexural_strength`
-- "silica 0.4nm" is not in the additive dictionary
-- Measurement queries search ALL experiments globally, not scoped to the current project
-- No diagnostic breakdown of where matches were found
+Criar sistema de aliases dinamico com 3 tabelas novas (`entity_aliases`, `alias_cache`, `migration_logs`), integracao no `quickEvidenceCheck`, cache KV com cleanup via pg_cron, e Admin UI com tab "Aliases" incluindo filtros de status e soft-delete.
 
-## Verified DB State
+---
 
-Actual metric names in the project:
-```
-resistncia_flexural, resistncia_flexural_rf, resistncia_flexural_com_carga
-mdulo_flexural, mdulo_flexural_mf, mdulo_de_flexo
-flexural_strength, flexural_strength_and, flexural_strength_control, flexural_strength_ct_0, flexural_strength_tp_45
-flexural_modulus
-e_reference_test_1__test_a, e_05_uv_absorber_test_4__test_a, e_15_hals_test_2__test_a (color/delta-E)
-erro_relativo_estimado_nos_valores_de_cor
-```
+## 1. Migration SQL
 
-Silica experiment: "Vitality 09/06/25 + Base Webber + Silica 0.4nm (D+1)" with metrics `resistncia_flexural`, `mdulo_flexural`, `alongamento`.
+### Tabelas
 
-## Changes (all in `supabase/functions/rag-answer/index.ts`)
+**entity_aliases**
+- Campos: id, entity_type, canonical_name, alias, alias_norm, confidence, approved, source, needs_review, rejection_reason (text null), created_at, approved_by, approved_at, deleted_at, embedding vector(1536)
+- Habilitar extensao `pg_trgm`
+- Indices: (entity_type, approved) WHERE deleted_at IS NULL; GIN trigram em alias_norm; HNSW em embedding; UNIQUE (entity_type, alias_norm) WHERE deleted_at IS NULL
+- RLS:
+  - SELECT para authenticated
+  - INSERT/UPDATE/DELETE para admin via has_role
+  - Policy explicita para service_role: FOR ALL USING (true) WITH CHECK (true) TO service_role
 
-### 1. Expand propTermMap with real DB aliases
+**alias_cache**
+- Campos: term_norm text, entity_type text, result jsonb, cached_at timestamptz default now(), hit_count int default 1
+- PK composta (term_norm, entity_type)
+- RLS: policy FOR ALL TO service_role only
+- pg_cron job: DELETE WHERE cached_at < now() - interval '30 minutes' (a cada 10 minutos)
 
-Both strong-constraint (line ~2194) and weak-constraint (line ~2311) propTermMap:
+**migration_logs**
+- Campos: id uuid PK, message text, created_at timestamptz default now()
+- Sem RLS (service_role only)
 
-```
-flexural_strength: [
-  'flexural_strength', 'flexural strength', 'resistencia flexural',
-  'resistncia_flexural', 'resistncia_flexural_rf',
-  'resistncia_flexural_com_carga', 'resistncia_flexural_resina_base',
-  'flexural_strength_control', 'flexural_strength_ct_0',
-  'flexural_strength_tp_45', 'flexural_strength_and', 'rf'
-]
-flexural_modulus: [
-  'flexural_modulus', 'flexural modulus', 'modulo flexural',
-  'mdulo_flexural', 'mdulo_flexural_mf', 'mdulo_de_flexo',
-  'elastic_modulus', 'mf'
-]
-color: [
-  'color', 'yellowing', 'delta_e', 'cor', 'amarel',
-  'e_reference', 'e_05_uv', 'e_15_hals', 'e_30_hals',
-  'erro_relativo_estimado_nos_valores_de_cor'
-]
-```
+### Seed
 
-### 2. Add silica 0.4nm to additiveDict and additiveTermMap
+Popular entity_aliases com ~100+ aliases extraidos de:
+- metrics_catalog (20 entradas com arrays de aliases)
+- propTermMap hardcoded (flexural_strength, flexural_modulus, color, etc.)
+- additiveTermMap hardcoded (silver_nanoparticles, silica_nanoparticle, bomar, etc.)
+- materialDict hardcoded (vitality, filtek, charisma, etc.)
 
-In `additiveDict` (line ~1913):
-```
-silica_nanoparticle: /s[ií]lica\s*0[\.,]?4\s*n?m|sio2\s*0[\.,]?4|nano\s*s[ií]lica/
+Todos com `approved=true, source='legacy_hardcoded', confidence=1.0`.
+
+Usar `ON CONFLICT (entity_type, alias_norm) WHERE deleted_at IS NULL DO NOTHING` e registrar colisoes em migration_logs via bloco DO.
+
+### pg_cron Job
+
+```text
+SELECT cron.schedule(
+  'cleanup-alias-cache',
+  '*/10 * * * *',
+  $$DELETE FROM public.alias_cache WHERE cached_at < now() - interval '30 minutes'$$
+);
 ```
 
-In both `additiveTermMap` locations (strong ~2187, weak ~2292):
-```
-silica_nanoparticle: ['silica 0.4', 'silica 0,4', 'sílica 0.4', 'sio2 0.4', 'nano silica', 'nano sílica', 'silica 0.4nm']
-```
+---
 
-### 3. Scope measurement queries to project experiment IDs
+## 2. Edge Function: normalizeTermWithUnits
 
-Pre-fetch `expIds` once at the top of `quickEvidenceCheck` (before strong/weak branches), then pass them into every `.from('measurements')` call:
+No `rag-answer/index.ts`, helper:
 
-```typescript
-// At top of quickEvidenceCheck, after line 2089
-const { data: projExps } = await supabase
-  .from('experiments').select('id')
-  .in('project_id', projectIds).is('deleted_at', null);
-const expIds = (projExps || []).map((e: any) => e.id);
+```text
+normalizeTermWithUnits(term) -> { original, normalized, ruleApplied }
 ```
 
-Then add `.in('experiment_id', expIds)` to all measurement queries at lines ~2243 and ~2325. This also removes the duplicate `projExps` fetch inside `existsInProject`.
+Conversoes limitadas:
+- Tamanho: X microns/um/micrometros -> X*1000 nm
+- Viscosidade: X Pa.s -> X*1000 mPa.s
+- Lowercase + unaccent base
 
-### 4. Extend GateMatch with source field and build constraint_hits
+NAO infere nano/micro como categoria.
 
-Update `GateMatch` type (line 2082):
-```typescript
-type GateMatch = { type: "experiment" | "chunk"; id: string; source?: string };
+---
+
+## 3. Edge Function: suggestAlias
+
+Funcao async no `rag-answer/index.ts`:
+
+1. Normaliza termo
+2. Checa alias_cache (TTL 30min) -- se hit, incrementa hit_count e retorna
+3. Busca exata em entity_aliases (alias_norm = term_norm AND approved AND NOT deleted)
+4. Se nao encontrar, gera embedding via text-embedding-3-small (LOVABLE_API_KEY)
+5. Vector search top-3 em entity_aliases
+6. Deteccao de conflito: delta top1-top2 < 0.05 -> ambiguous=true
+7. Salva resultado no alias_cache (upsert)
+8. Limite: max 5 termos desconhecidos por query
+
+---
+
+## 4. Gating Atualizado no quickEvidenceCheck
+
+Para cada constraint nao encontrado pelo hardcoded existente:
+
+1. Busca alias aprovado exato em entity_aliases
+2. Se match aprovado -> match forte
+3. Se nao -> suggestAlias:
+   - Provisional auto-pass: score >= 0.80 AND !ambiguous AND textualEvidence=true
+   - textualEvidence com peso explicito:
+     - STRUCTURAL_WEIGHT = 1.0 (title, conditions, metrics)
+     - CHUNK_WEIGHT = 0.5 (chunks, so se score > CHUNK_EVIDENCE_THRESHOLD = 0.75)
+   - Constantes configuraveis no topo do arquivo
+   - Conflito -> fail-closed reason='ambiguous_alias'
+   - Score < 0.80 ou sem evidencia -> fail-closed reason='suggested_alias_pending'
+
+4. Persistencia: score >= 0.70 e alias inexistente -> upsert entity_aliases com approved=false, source='user_query_suggest'
+
+---
+
+## 5. Diagnostics Expandido
+
+Adicionar ao DiagnosticsInput e buildDiagnostics:
+
+```text
+suggested_aliases: [{
+  term, term_norm, ruleApplied, entity_type,
+  top_candidates: [{ canonical_name, score, approved }],
+  ambiguous, provisional_pass,
+  textual_evidence_sources: string[],
+  textual_evidence_weight_calculated: number
+}]
+alias_lookup_latency_ms: number
 ```
 
-Tag each match in `existsInProject` with its source:
-- Title matches: `source: 'title'`
-- Condition matches: `source: 'conditions'`
-- Chunk matches: `source: 'chunks'`
-- Excerpt matches: `source: 'excerpt'`
+Se alias_lookup_latency_ms > 500, adicionar 'alias_lookup_slow' ao verification.issue_types.
 
-Tag measurement matches with `source: 'metrics'`.
+---
 
-Build `constraint_hits` before returning from `quickEvidenceCheck`:
-```typescript
-const constraintHits = {
-  hits_in_title: matched.filter(m => m.source === 'title').length,
-  hits_in_conditions: matched.filter(m => m.source === 'conditions').length,
-  hits_in_excerpt: matched.filter(m => m.source === 'excerpt').length,
-  hits_in_metrics: matched.filter(m => m.source === 'metrics').length,
-  hits_in_chunks: matched.filter(m => m.source === 'chunks').length,
-};
-```
+## 6. Admin UI: AliasApprovalTab
 
-### 5. Add constraint_hits to DiagnosticsInput and buildDiagnostics
+Novo componente `src/components/admin/AliasApprovalTab.tsx`:
 
-Add to `DiagnosticsInput` (line ~1958):
-```typescript
-constraintHits: Record<string, number> | null;
-quickMaterialFound: boolean | null;
-quickPropertyFound: boolean | null;
-quickAdditiveFound: boolean | null;
-```
+- Tabela listando entity_aliases
+- Input de busca por alias_norm ou canonical_name (ILIKE)
+- Filtro de status: Todos / Pendentes / Aprovados / Rejeitados
+- Coluna "Status" com badges:
+  - Verde: Aprovado (approved=true, deleted_at IS NULL)
+  - Amarelo: Pendente (approved=false, deleted_at IS NULL)
+  - Vermelho: Rejeitado (deleted_at IS NOT NULL)
+- Acoes:
+  - Aprovar: SET approved=true, approved_by, approved_at
+  - Rejeitar (soft-delete): SET deleted_at=now(), rejection_reason (input obrigatorio)
+  - Restaurar (rejeitados): SET deleted_at=null, rejection_reason=null
+  - Editar canonical_name inline
+- Coluna "Motivo de Rejeicao" (exibe rejection_reason)
 
-Add to `buildDiagnostics` output (line ~1986):
-```typescript
-constraint_hits: input.constraintHits,
-quick_material_found: input.quickMaterialFound,
-quick_property_found: input.quickPropertyFound,
-quick_additive_found: input.quickAdditiveFound,
-```
+Integrar em `Admin.tsx` como tab "Aliases" com icone BookText.
 
-Update `makeDiagnosticsDefaults` and all gate callers to pass these new fields.
+---
 
-## Normalization
+## Arquivos Modificados
 
-Add a simple `unaccent` helper used before all alias comparisons:
-```typescript
-function normalizeText(s: string): string {
-  return s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-}
-```
+| Arquivo | Mudanca |
+|---------|---------|
+| Migration SQL (nova) | 3 tabelas + indices + RLS + pg_cron + seed |
+| `supabase/functions/rag-answer/index.ts` | normalizeTermWithUnits, suggestAlias, cache KV, gating com entity_aliases, constantes configuraveis, diagnostics expandido |
+| `src/pages/Admin.tsx` | Nova tab "Aliases" |
+| `src/components/admin/AliasApprovalTab.tsx` | Novo componente |
 
-Apply it to both the query terms and the DB values when matching.
+## Travas de Seguranca
 
-## File Changed
-- `supabase/functions/rag-answer/index.ts`
+1. Auto-pass provisorio so com evidencia estrutural (peso 1.0 para title/conditions/metrics; 0.5 para chunks com threshold 0.75)
+2. Unit normalization lossless (ruleApplied registrado; nao reclassifica nano/micro)
+3. Conflito de canonicos bloqueia (delta < 0.05 -> ambiguous_alias)
+4. Max 5 termos desconhecidos por query
+5. Tudo de suggest entra como approved=false
+6. Cache KV TTL 30min com pg_cron cleanup + hit_count incrementado
+7. Service role bypass explicito em RLS
 
-## Expected Test Result
-Query: "No projeto, o que aprendemos com a adicao de 5% de silica 0.4nm na Vitality? trade-offs (RF vs modulo)?"
-- `evidence_check_passed: true`
-- `quick_material_found: true` (vitality in title)
-- `quick_additive_found: true` (silica 0.4nm in title)
-- `quick_property_found: true` (resistncia_flexural + mdulo_flexural in metrics)
-- `constraint_hits.hits_in_title > 0`
-- `constraint_hits.hits_in_metrics > 0`
-- Pipeline: `ider` (not fail-closed)
+## Testes Planejados
 
+1. Alias aprovado (ex: "rf" -> flexural_strength) -> gate passa
+2. Novo termo sem evidencia textual -> fail-closed + suggested_aliases
+3. Provisional auto-pass: score >= 0.80 + evidencia estrutural -> gate passa, provisional_pass=true
+4. Conflito delta < 0.05 -> fail-closed ambiguous_alias + diagnostics.conflict=true
+5. Query com 5 termos novos -> latencia total logada; warning se > 500ms
+6. Query "silica 0.4nm na Vitality RF vs modulo" -> evidence_check_passed=true
