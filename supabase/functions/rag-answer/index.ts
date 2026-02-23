@@ -6,6 +6,38 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
+// ==========================================
+// In-memory existsInProject cache (TTL 5min)
+// Persists across warm invocations of the same edge function instance
+// ==========================================
+const EXISTS_CACHE_TTL_MS = 5 * 60 * 1000;
+const existsInProjectCache = new Map<string, { matches: any[]; cachedAt: number }>();
+
+function getExistsCacheKey(projectIds: string[], searchTerms: string[]): string {
+  return `${projectIds.sort().join(',')}::${searchTerms.map(t => t.toLowerCase()).sort().join(',')}`;
+}
+
+function getFromExistsCache(key: string): any[] | null {
+  const entry = existsInProjectCache.get(key);
+  if (!entry) return null;
+  if (Date.now() - entry.cachedAt > EXISTS_CACHE_TTL_MS) {
+    existsInProjectCache.delete(key);
+    return null;
+  }
+  return entry.matches;
+}
+
+function setExistsCache(key: string, matches: any[]): void {
+  existsInProjectCache.set(key, { matches, cachedAt: Date.now() });
+  // Evict old entries if cache grows too large (>500 entries)
+  if (existsInProjectCache.size > 500) {
+    const now = Date.now();
+    for (const [k, v] of existsInProjectCache) {
+      if (now - v.cachedAt > EXISTS_CACHE_TTL_MS) existsInProjectCache.delete(k);
+    }
+  }
+}
+
 type ContextMode = "project" | "global";
 
 // ==========================================
@@ -2158,6 +2190,8 @@ function extractConstraints(query: string): QueryConstraints {
   const additiveDict: Record<string, RegExp> = {
     silver_nanoparticles: /prata|silver|\bag\b|nanopart[ií]culas?/,
     silica_nanoparticle: /s[ií]lica\s*0[\.,]?4\s*n?m|sio2\s*0[\.,]?4|nano\s*s[ií]lica|nano\s*silica/,
+    carbon_nanotubes: /nanotubo|nanotube|cnt\b|mwcnt|swcnt/,
+    hydroxyapatite: /hidroxiapatita|hydroxyapatite|\bhap?\b/,
     bomar: /bomar/,
     tegdma: /tegdma/,
     udma: /\budma\b/,
@@ -2374,6 +2408,11 @@ async function quickEvidenceCheck(
   // Helper: check if ANY of the search terms appear in any of the target tables
   // Returns matched experiment IDs (up to 3) or empty array
   async function existsInProject(searchTerms: string[]): Promise<GateMatch[]> {
+    // Check in-memory cache first (TTL 5min)
+    const cacheKey = getExistsCacheKey(projectIds, searchTerms);
+    const cached = getFromExistsCache(cacheKey);
+    if (cached !== null) return cached;
+
     // Generate both original and unaccented variants for ILIKE
     const allTerms = new Set<string>();
     for (const t of searchTerms) {
@@ -2401,7 +2440,7 @@ async function quickEvidenceCheck(
         }
       }
     }
-    if (foundMatches.length > 0) return foundMatches;
+    if (foundMatches.length > 0) { setExistsCache(cacheKey, foundMatches); return foundMatches; }
 
     // 2) experiment_conditions value
     if (expIds.length > 0) {
@@ -2422,7 +2461,7 @@ async function quickEvidenceCheck(
         }
       }
     }
-    if (foundMatches.length > 0) return foundMatches;
+    if (foundMatches.length > 0) { setExistsCache(cacheKey, foundMatches); return foundMatches; }
 
     // 3) search_chunks
     for (const pat of ilikePatterns) {
@@ -2441,7 +2480,7 @@ async function quickEvidenceCheck(
         }
       }
     }
-    if (foundMatches.length > 0) return foundMatches;
+    if (foundMatches.length > 0) { setExistsCache(cacheKey, foundMatches); return foundMatches; }
 
     // 4) measurements source_excerpt
     if (expIds.length > 0) {
@@ -2459,6 +2498,7 @@ async function quickEvidenceCheck(
       }
     }
 
+    setExistsCache(cacheKey, foundMatches);
     return foundMatches;
   }
 
@@ -3006,6 +3046,9 @@ serve(async (req) => {
     let evidenceMatched: GateMatch[] = [];
     let gateRan = false;
     let gateMissingTerms: string[] = [];
+    let gateSuggestedAliases: AliasSuggestion[] = [];
+    let gateAliasLookupLatencyMs = 0;
+    let gateProvisionalPasses: string[] = [];
     const hasAnyConstraints = preConstraints.materials.length > 0 || preConstraints.additives.length > 0 || preConstraints.properties.length > 0;
     if (hasAnyConstraints) {
       gateRan = true;
@@ -3014,7 +3057,10 @@ serve(async (req) => {
       evidenceCheckPassed = gateResult.feasible;
       evidenceMatched = gateResult.matched;
       gateMissingTerms = gateResult.missing;
-      console.log(`Global constraint gate: feasible=${gateResult.feasible}, matched=${gateResult.matched.length}, missing=${gateResult.missing.join(', ')}, strong=${preConstraints.hasStrongConstraints}`);
+      gateSuggestedAliases = gateResult.suggestedAliases || [];
+      gateAliasLookupLatencyMs = gateResult.aliasLookupLatencyMs || 0;
+      gateProvisionalPasses = gateResult.provisionalPasses || [];
+      console.log(`Global constraint gate: feasible=${gateResult.feasible}, matched=${gateResult.matched.length}, missing=${gateResult.missing.join(', ')}, strong=${preConstraints.hasStrongConstraints}, aliases=${gateSuggestedAliases.length}, provisional=${gateProvisionalPasses.join(',')}, aliasLatency=${gateAliasLookupLatencyMs}ms`);
 
       if (!gateResult.feasible) {
         const latencyMs = Date.now() - startTime;
@@ -3302,6 +3348,15 @@ serve(async (req) => {
         constraints: preConstraints,
         constraintsKeywordsHit,
         constraintsScope,
+        gateRan,
+        gateMissingTerms,
+        evidenceCheckPassed,
+        quickMaterialFound: null,
+        quickPropertyFound: null,
+        quickAdditiveFound: null,
+        suggestedAliases: gateSuggestedAliases,
+        aliasLookupLatencyMs: gateAliasLookupLatencyMs,
+        provisionalPasses: gateProvisionalPasses,
         insightSeedsCount: insightSeeds.length,
         experimentsCount: evidenceGraph.experiments.length,
         variantsCount: totalVariants,
