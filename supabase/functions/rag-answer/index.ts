@@ -2037,17 +2037,25 @@ async function quickEvidenceCheck(
   async function existsInProject(searchTerms: string[]): Promise<boolean> {
     const ilikePatterns = searchTerms.map(t => `%${t}%`);
 
+    // Pre-fetch experiment IDs for the project (needed for conditions + measurements checks)
+    const { data: projExps } = await supabase
+      .from('experiments')
+      .select('id')
+      .in('project_id', projectIds)
+      .is('deleted_at', null)
+      .limit(500);
+    const expIds = (projExps || []).map((e: any) => e.id);
+
     // Run 4 queries in parallel, each with LIMIT 1
     const checks = await Promise.all([
       // 1) experiment_conditions
       (async () => {
+        if (expIds.length === 0) return false;
         for (const pat of ilikePatterns) {
           const { data } = await supabase
             .from('experiment_conditions')
             .select('id')
-            .in('experiment_id',
-              supabase.from('experiments').select('id').in('project_id', projectIds).is('deleted_at', null)
-            )
+            .in('experiment_id', expIds)
             .ilike('value', pat)
             .limit(1);
           if (data && data.length > 0) return true;
@@ -2083,11 +2091,12 @@ async function quickEvidenceCheck(
       })(),
       // 4) measurements source_excerpt
       (async () => {
+        if (expIds.length === 0) return false;
         for (const pat of ilikePatterns) {
           const { data } = await supabase
             .from('measurements')
-            .select('id, experiments!inner(project_id)')
-            .in('experiments.project_id', projectIds)
+            .select('id')
+            .in('experiment_id', expIds)
             .ilike('source_excerpt', pat)
             .limit(1);
           if (data && data.length > 0) return true;
