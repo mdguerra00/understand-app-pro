@@ -1,100 +1,60 @@
 
 
-# Fix: quickEvidenceCheck False Positives + hasStrongConstraints Definition
+# Fix: quickEvidenceCheck Must Return Matched Evidence
 
-## Problem Summary
+## Problem
 
-Two bugs cause the constraint gate to let through queries it should block:
+`quickEvidenceCheck` returns `{ feasible: boolean, missing: string[] }` but never tracks **what** matched. When the strong-constraint co-occurrence check passes (e.g., `checkCoOccurrence` returns `true`), the gate sets `feasible=true` with no proof. This makes debugging impossible and allows edge cases where `feasible=true` with zero actual evidence IDs.
 
-1. **`hasStrongConstraints` triggers on a single constraint** (e.g., just `silver_nanoparticles` alone makes it `true` because the threshold is `>= 1`). With only an additive and no material, the co-occurrence check is skipped entirely (it requires both), so individual OR checks pass and `feasible=true`.
+## Current State (Verified)
 
-2. **Individual checks use OR logic**: `existsInProject` checks each material and each additive independently. "Vitality" found somewhere? Pass. "Silver" found somewhere else? Pass. Both pass individually, `missing=[]`, even though they never appear together.
+- `hasStrongConstraints` definition (line 1905-1908): **Already correct** -- requires 2+ constraint types (material+additive, material+property, or additive+property). No fix needed.
+- `quickEvidenceCheck` (line 2035): Returns `{ feasible, missing }` only -- **no matched evidence**.
+- `checkCoOccurrence` (line 2268): Returns bare `boolean` -- **no IDs**.
+- Gate callers (lines 2504, 2848): Use `feasible` but have no way to verify what matched.
 
-## Fixes
+## Changes
 
-### Fix 1: Correct `hasStrongConstraints` definition
+### 1. New return types
 
-Change from `>= 1` (any single constraint) to requiring at least material+additive together:
+Add a `GateResult` type and update `checkCoOccurrence` to return matched IDs:
 
 ```typescript
-const hasStrongConstraints =
-  (materials.length > 0 && additives.length > 0) ||
-  (materials.length > 0 && properties.length > 0) ||
-  (additives.length > 0 && properties.length > 0);
+type GateMatch = { type: "experiment" | "chunk"; id: string };
+type GateResult = { feasible: boolean; missing: string[]; matched: GateMatch[] };
 ```
 
-This means a single isolated additive (like `silver_nanoparticles` alone) will NOT trigger `hasStrongConstraints`. The gate only activates when there are at least 2 different constraint types present.
+### 2. Update `checkCoOccurrence` to return experiment IDs
 
-### Fix 2: Replace `quickEvidenceCheck` with AND-based co-occurrence logic
+Change signature from `Promise<boolean>` to `Promise<GateMatch[]>`. Instead of returning `true` on first match, collect matched experiment IDs (up to 5) and return them. Return empty array if none found.
 
-The current function has two stages that conflict:
-- Stage 1 (lines 2112-2168): Individual OR checks per constraint type -- these always pass if the term exists anywhere
-- Stage 2 (lines 2174-2201): Co-occurrence AND check -- only runs when both materials AND additives are present
+### 3. Rewrite `quickEvidenceCheck` strong-constraint path
 
-**The fix**: Replace the entire function body with a unified AND-based approach:
+- Collect `matched` array from co-occurrence calls
+- Final gate: `feasible = missing.length === 0 && matched.length > 0`
+- This ensures no `feasible=true` without at least one concrete evidence ID
 
-1. When `hasStrongConstraints=true`, skip individual checks entirely
-2. Go straight to co-occurrence: material+additive must appear together in the SAME experiment (title/conditions) or the SAME chunk
-3. If co-occurrence fails, `feasible=false` immediately
-4. For single-type constraints (shouldn't trigger strong gate after Fix 1), keep the existing `existsInProject` checks as fallback
+### 4. Update weak-constraint path
 
-**New `quickEvidenceCheck` logic:**
+For individual `existsInProject` checks, also collect matched IDs where possible (experiment IDs from title matches). Apply same rule: `feasible = missing.length === 0 && matched.length > 0`.
 
-```text
-if hasStrongConstraints:
-  // ONLY co-occurrence matters -- skip individual checks
-  if materials.length > 0 AND additives.length > 0:
-    coOccurs = checkCoOccurrence(...)
-    if !coOccurs: return { feasible: false, missing: ["co-ocorrencia material+aditivo"] }
-  
-  if materials.length > 0 AND properties.length > 0:
-    // check material+property co-occur in same experiment/measurement
-    ...similar logic...
-  
-  return { feasible: true, missing: [] }
-else:
-  // Weak constraints -- individual checks (existing logic)
-  ...
-```
+### 5. Update gate callers to log `matched`
 
-### Fix 3: Ensure `checkCoOccurrence` also checks chunk-level (re-add Strategy 2 with stricter matching)
+At lines 2504 and 2848, destructure `matched` from the result and include it in diagnostics for full audit trail.
 
-The previous fix removed chunk-level co-occurrence entirely. We should re-add it but with stricter matching -- both terms must appear in the same chunk:
+## File Changed
 
-```text
-// Strategy 2: search_chunks -- both terms in SAME chunk (AND)
-for mat in materialTerms:
-  for add in additiveSearchTerms:
-    query chunks WHERE chunk_text ILIKE %mat% AND chunk_text ILIKE %add%
-    if found: return true
-```
+`supabase/functions/rag-answer/index.ts`:
+- Lines 2035-2037: New return type
+- Lines 2115-2204: Strong-constraint path collects matched IDs
+- Lines 2207-2263: Weak-constraint path collects matched IDs  
+- Lines 2268-2305: `checkCoOccurrence` returns `GateMatch[]` instead of `boolean`
+- Lines 2500-2530: Gate caller logs matched evidence
+- Lines 2846-2880: Comparative gate caller logs matched evidence
 
-This is valid co-occurrence evidence (both terms in the same paragraph/section).
+## Expected Outcome
 
-## Files Changed
-
-1. `supabase/functions/rag-answer/index.ts`:
-   - `extractConstraints`: Change `hasStrongConstraints` to require 2+ constraint types
-   - `quickEvidenceCheck`: Rewrite to use AND-only logic when `hasStrongConstraints=true`
-   - `checkCoOccurrence`: Re-add chunk-level strategy with AND matching
-   - Remove individual `existsInProject` calls for strong-constraint path
-
-## Expected Behavior After Fix
-
-**Query: "prata na Vitality"** (material=vitality, additive=silver_nanoparticles):
-- `hasStrongConstraints=true` (material + additive)
-- Co-occurrence check: no experiment has both vitality AND silver/prata together
-- Chunk co-occurrence: no chunk contains both terms
-- `feasible=false`, `missing=["co-ocorrencia material+aditivo"]`
-- Gate blocks: `pipeline_selected="fail-closed-no-evidence"`
-
-**Query: "silver nanoparticles"** (additive only, no material):
-- `hasStrongConstraints=false` (only 1 constraint type)
-- Falls through to normal routing (no gate block)
-- But with only chunks and no experiments, the 3-step pipeline's numerical verification will catch fabricated numbers
-
-**Query: "resistencia flexural da Vitality com prata"** (material + additive + property):
-- `hasStrongConstraints=true`
-- Co-occurrence check runs for material+additive
-- If no match found, `feasible=false` and gate blocks
+- `feasible=true` is impossible without at least one concrete evidence ID in `matched[]`
+- Diagnostics now include `evidence_matched: [{type: "experiment", id: "abc123"}]` for full auditability
+- "prata na Vitality" with no co-occurring experiment: `feasible=false, matched=[], missing=["co-ocorrencia material+aditivo"]`
 
