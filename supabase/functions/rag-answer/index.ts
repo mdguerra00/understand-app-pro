@@ -1901,7 +1901,8 @@ function extractConstraints(query: string): QueryConstraints {
     if (re.test(s)) properties.push(name);
   }
 
-  const hasStrongConstraints = (materials.length + additives.length + properties.length) >= 2;
+  // Any detected constraint triggers the gate (was >= 2, now >= 1)
+  const hasStrongConstraints = (materials.length + additives.length + properties.length) >= 1;
 
   return { materials, additives, properties, hasStrongConstraints };
 }
@@ -2237,21 +2238,11 @@ async function checkCoOccurrence(
     }
   }
 
-  // Strategy 2: search_chunks — both terms in same chunk
-  for (const mat of materialTerms) {
-    for (const add of additiveSearchTerms) {
-      const { data } = await supabase
-        .from('search_chunks')
-        .select('id')
-        .in('project_id', projectIds)
-        .ilike('chunk_text', `%${mat}%`)
-        .ilike('chunk_text', `%${add}%`)
-        .limit(1);
-      if (data && data.length > 0) return true;
-    }
-  }
+  // Strategy 2 REMOVED: chunk-level co-occurrence was causing false positives
+  // (chunks can mention both terms in a general context without being an actual experiment).
+  // Only experiment-level co-occurrence counts.
 
-  return false; // no co-occurrence found
+  return false; // no co-occurrence found in experiments
 }
 
 // ==========================================
