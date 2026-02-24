@@ -2373,6 +2373,10 @@ function extractConstraints(query: string): QueryConstraints {
   // Alias system fields
   suggestedAliases?: AliasSuggestion[];
   aliasLookupLatencyMs?: number;
+  // Knowledge Facts fields
+  manualKnowledgeHits?: number;
+  manualKnowledgeAppliedAsSourceOfTruth?: number;
+  manualKnowledgeOverrideConflicts?: string[];
 }
 
 function buildDiagnostics(input: DiagnosticsInput): Record<string, any> {
@@ -2419,6 +2423,10 @@ function buildDiagnostics(input: DiagnosticsInput): Record<string, any> {
     // Alias system diagnostics
     suggested_aliases: input.suggestedAliases || [],
     alias_lookup_latency_ms: input.aliasLookupLatencyMs || 0,
+    // Knowledge Facts diagnostics
+    manual_knowledge_hits: input.manualKnowledgeHits || 0,
+    manual_knowledge_applied_as_source_of_truth: input.manualKnowledgeAppliedAsSourceOfTruth || 0,
+    manual_knowledge_override_conflicts: input.manualKnowledgeOverrideConflicts || [],
   };
 }
 
@@ -3388,13 +3396,25 @@ serve(async (req) => {
         }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
       }
 
-      // Step 3: Select critical docs
-      const criticalDocs = selectCriticalDocs(evidenceGraph, insightSeeds);
-      console.log(`IDER: ${criticalDocs.length} critical docs: ${criticalDocs.map(d => `${d.doc_id}(${d.reason})`).join(', ')}`);
+      // Step 3: Select critical docs + fetch knowledge facts in parallel
+      const [criticalDocs, iderKnowledgeFacts] = await Promise.all([
+        Promise.resolve(selectCriticalDocs(evidenceGraph, insightSeeds)),
+        fetchKnowledgeFacts(supabase, iderProjectIds, query),
+      ]);
+      console.log(`IDER: ${criticalDocs.length} critical docs, ${iderKnowledgeFacts.diagnostics.manual_knowledge_hits} knowledge facts`);
 
       // Step 4: Deep read critical docs
       const deepReadPack = await deepReadCriticalDocs(supabase, criticalDocs, query);
       console.log(`IDER: deep read ${deepReadPack.length} docs, ${deepReadPack.reduce((s, d) => s + d.text.length, 0)} chars`);
+
+      // Inject knowledge facts into deep read pack as a virtual document
+      if (iderKnowledgeFacts.contextText) {
+        deepReadPack.push({
+          doc_id: 'manual_knowledge',
+          text: iderKnowledgeFacts.contextText,
+          sections_included: ['manual_knowledge'],
+        });
+      }
 
       // Step 5: Synthesize
       const { response: iderResponse } = await synthesizeIDER(query, evidenceGraph, deepReadPack, insightSeeds, lovableApiKey);
@@ -3472,6 +3492,9 @@ serve(async (req) => {
         failClosedTriggered: iderFailClosed,
         failClosedReason: iderFailReason,
         failClosedStage: iderFailStage,
+        manualKnowledgeHits: iderKnowledgeFacts.diagnostics.manual_knowledge_hits,
+        manualKnowledgeAppliedAsSourceOfTruth: iderKnowledgeFacts.diagnostics.applied_as_source_of_truth,
+        manualKnowledgeOverrideConflicts: iderKnowledgeFacts.diagnostics.override_conflicts,
       });
 
       await supabase.from("rag_logs").insert({
@@ -3807,12 +3830,14 @@ serve(async (req) => {
       // Phase 1: Search ONLY the project (primary source)
       // Phase 2: Search globally for supplementary context
       // ==========================================
-      const [projectChunks, globalChunks, expResult, metricSummaries, knowledgePivots] = await Promise.all([
+      const queryEmbedding = await generateQueryEmbedding(query, lovableApiKey);
+      const [projectChunks, globalChunks, expResult, metricSummaries, knowledgePivots, knowledgeFactsResult] = await Promise.all([
         searchChunks(supabase, query, validPrimary, allowedProjectIds, lovableApiKey, chunk_ids),
         searchChunks(supabase, query, allowedProjectIds, allowedProjectIds, lovableApiKey),
         fetchExperimentContext(supabase, structuredDataProjectIds, query),
         fetchMetricSummaries(supabase, structuredDataProjectIds, query),
         fetchKnowledgePivots(supabase, structuredDataProjectIds, query),
+        fetchKnowledgeFacts(supabase, structuredDataProjectIds, query, queryEmbedding),
       ]);
 
       console.log(`Project mode: ${projectChunks.length} project chunks, ${globalChunks.length} global chunks`);
@@ -3846,22 +3871,26 @@ serve(async (req) => {
       var { contextText: experimentContextText, evidenceTable: preBuiltEvidenceTable, experimentSources, criticalFileIds } = expResult;
       var _metricSummaries = metricSummaries;
       var _knowledgePivots = knowledgePivots;
+      var _knowledgeFactsResult = knowledgeFactsResult;
 
     } else {
       // ==========================================
       // GLOBAL MODE: Equal weight to all projects
       // ==========================================
-      const [chunks, expResult, metricSummaries, knowledgePivots] = await Promise.all([
+      const queryEmbeddingGlobal = await generateQueryEmbedding(query, lovableApiKey);
+      const [chunks, expResult, metricSummaries, knowledgePivots, knowledgeFactsResultGlobal] = await Promise.all([
         searchChunks(supabase, query, allowedProjectIds, allowedProjectIds, lovableApiKey, chunk_ids),
         fetchExperimentContext(supabase, structuredDataProjectIds, query),
         fetchMetricSummaries(supabase, structuredDataProjectIds, query),
         fetchKnowledgePivots(supabase, structuredDataProjectIds, query),
+        fetchKnowledgeFacts(supabase, structuredDataProjectIds, query, queryEmbeddingGlobal),
       ]);
 
       var finalChunks = chunks.slice(0, 15);
       var { contextText: experimentContextText, evidenceTable: preBuiltEvidenceTable, experimentSources, criticalFileIds } = expResult;
       var _metricSummaries = metricSummaries;
       var _knowledgePivots = knowledgePivots;
+      var _knowledgeFactsResult = knowledgeFactsResultGlobal;
     }
 
     if (finalChunks.length === 0 && !experimentContextText && !_metricSummaries && !_knowledgePivots) {
@@ -3895,10 +3924,13 @@ serve(async (req) => {
     }
 
     // ==========================================
-    // STEP B: SYNTHESIS
+    // STEP B: SYNTHESIS (with Knowledge Facts injected)
     // ==========================================
+    // Prepend knowledge facts context (highest priority) before experiment context
+    const enrichedExperimentContext = (_knowledgeFactsResult.contextText || '') + experimentContextText;
+    
     const { response } = await generateSynthesis(
-      query, finalChunks, experimentContextText, _metricSummaries, _knowledgePivots,
+      query, finalChunks, enrichedExperimentContext, _metricSummaries, _knowledgePivots,
       preBuiltEvidenceTable, evidencePlanResult.plan, deepReadContent, docStructure,
       lovableApiKey, contextMode, projectName, conversation_history
     );
@@ -3945,6 +3977,9 @@ serve(async (req) => {
       chunksUsed: finalChunks.length,
       verification,
       failClosedTriggered: stdFailClosed, failClosedReason: stdFailReason, failClosedStage: stdFailStage,
+      manualKnowledgeHits: _knowledgeFactsResult.diagnostics.manual_knowledge_hits,
+      manualKnowledgeAppliedAsSourceOfTruth: _knowledgeFactsResult.diagnostics.applied_as_source_of_truth,
+      manualKnowledgeOverrideConflicts: _knowledgeFactsResult.diagnostics.override_conflicts,
     });
 
     await supabase.from("rag_logs").insert({
