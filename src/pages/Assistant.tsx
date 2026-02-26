@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { Separator } from '@/components/ui/separator';
 import {
   Send,
   Loader2,
@@ -15,6 +16,7 @@ import {
   PanelLeftOpen,
   PanelLeftClose,
   FileSearch,
+  Plus,
 } from 'lucide-react';
 import { useAssistantChat } from '@/hooks/useAssistantChat';
 import { ChatMessage } from '@/components/assistant/ChatMessage';
@@ -22,6 +24,7 @@ import { SourcesPanel } from '@/components/assistant/SourcesPanel';
 import { ConversationList } from '@/components/assistant/ConversationList';
 import { AnalyzeFilePicker } from '@/components/assistant/AnalyzeFilePicker';
 import { cn } from '@/lib/utils';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 
 const suggestedQuestions = [
   'Qual a resistência média dos materiais testados?',
@@ -46,7 +49,7 @@ export default function Assistant() {
   } = useAssistantChat();
 
   const [input, setInput] = useState('');
-  const [showSources, setShowSources] = useState(true);
+  const [showSources, setShowSources] = useState(false);
   const [showConversations, setShowConversations] = useState(true);
   const [showFilePicker, setShowFilePicker] = useState(false);
   const [highlightedCitation, setHighlightedCitation] = useState<string>();
@@ -66,6 +69,13 @@ export default function Assistant() {
     }
   }, [messages]);
 
+  // Auto-show sources when they appear
+  useEffect(() => {
+    if (allSources.length > 0 && !showSources) {
+      setShowSources(true);
+    }
+  }, [allSources.length]);
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (input.trim() && !isLoading) {
@@ -84,7 +94,6 @@ export default function Assistant() {
     setTimeout(() => setHighlightedCitation(undefined), 2000);
   };
 
-  // Find preceding user question for each assistant message
   const getUserQuestionBefore = (index: number): string | undefined => {
     for (let i = index - 1; i >= 0; i--) {
       if (messages[i].role === 'user') return messages[i].content;
@@ -99,7 +108,7 @@ export default function Assistant() {
     <div className="flex h-[calc(100vh-4rem)] overflow-hidden">
       {/* Conversation Sidebar */}
       {showConversations && (
-        <div className="w-64 border-r hidden md:block">
+        <div className="w-60 border-r hidden md:flex flex-col shrink-0">
           <ConversationList
             conversations={conversations}
             activeConversationId={conversationId}
@@ -114,95 +123,128 @@ export default function Assistant() {
 
       {/* Main Chat Area */}
       <div className="flex-1 flex flex-col min-w-0">
-        {/* Header */}
-        <div className="flex items-center justify-between p-4 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
-          <div className="flex items-center gap-3">
-            <Button
-              variant="ghost"
-              size="icon"
-              className="hidden md:inline-flex h-8 w-8"
-              onClick={() => setShowConversations(!showConversations)}
-            >
-              {showConversations ? (
-                <PanelLeftClose className="h-4 w-4" />
-              ) : (
-                <PanelLeftOpen className="h-4 w-4" />
-              )}
-            </Button>
-            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary">
-              <Bot className="h-5 w-5 text-primary-foreground" />
+        {/* Compact Header */}
+        <div className="flex items-center h-12 px-3 border-b bg-background shrink-0">
+          {/* Left: toggle + title */}
+          <div className="flex items-center gap-2 min-w-0 flex-1">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="hidden md:inline-flex h-7 w-7 shrink-0"
+                  onClick={() => setShowConversations(!showConversations)}
+                >
+                  {showConversations ? (
+                    <PanelLeftClose className="h-3.5 w-3.5" />
+                  ) : (
+                    <PanelLeftOpen className="h-3.5 w-3.5" />
+                  )}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">
+                {showConversations ? 'Ocultar conversas' : 'Mostrar conversas'}
+              </TooltipContent>
+            </Tooltip>
+
+            <div className="flex h-7 w-7 items-center justify-center rounded-md bg-primary shrink-0">
+              <Bot className="h-3.5 w-3.5 text-primary-foreground" />
             </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h1 className="text-lg font-semibold">
-                  {currentConversation?.title || 'Assistente IA'}
-                </h1>
-                <Badge variant="outline" className="bg-blue-500/10 text-blue-600 border-blue-500/30 text-xs gap-1">
-                  <span className="h-1.5 w-1.5 rounded-full bg-blue-500 animate-pulse" />
-                  Global
-                </Badge>
-              </div>
-              <p className="text-xs text-muted-foreground">
-                Inteligência corporativa — correlaciona todos os projetos
-              </p>
-            </div>
+
+            <span className="text-sm font-medium truncate">
+              {currentConversation?.title || 'Nova Conversa'}
+            </span>
+
+            <Badge variant="outline" className="bg-blue-500/10 text-blue-600 border-blue-500/30 text-[10px] gap-1 shrink-0 hidden sm:flex">
+              <span className="h-1 w-1 rounded-full bg-blue-500 animate-pulse" />
+              Global
+            </Badge>
           </div>
-          <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setShowFilePicker(true)}
-              className="gap-2"
-              disabled={isLoading}
-            >
-              <FileSearch className="h-4 w-4" />
-              Analisar Documento
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setShowSources(!showSources)}
-              className="gap-2"
-            >
-              {showSources ? (
-                <PanelRightClose className="h-4 w-4" />
-              ) : (
-                <PanelRightOpen className="h-4 w-4" />
-              )}
-              Fontes
-            </Button>
+
+          {/* Right: action buttons */}
+          <div className="flex items-center gap-1 shrink-0">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7"
+                  onClick={startNewConversation}
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">Nova conversa</TooltipContent>
+            </Tooltip>
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7"
+                  onClick={() => setShowFilePicker(true)}
+                  disabled={isLoading}
+                >
+                  <FileSearch className="h-3.5 w-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">Analisar documento</TooltipContent>
+            </Tooltip>
+
+            <Separator orientation="vertical" className="h-4 mx-1" />
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant={showSources ? 'secondary' : 'ghost'}
+                  size="icon"
+                  className="h-7 w-7"
+                  onClick={() => setShowSources(!showSources)}
+                >
+                  {showSources ? (
+                    <PanelRightClose className="h-3.5 w-3.5" />
+                  ) : (
+                    <PanelRightOpen className="h-3.5 w-3.5" />
+                  )}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">
+                {showSources ? 'Ocultar fontes' : 'Mostrar fontes'}
+                {allSources.length > 0 && ` (${allSources.length})`}
+              </TooltipContent>
+            </Tooltip>
           </div>
         </div>
 
         {/* Messages Area */}
         <ScrollArea className="flex-1" ref={scrollRef}>
-          <div className="max-w-3xl mx-auto p-4 space-y-4">
+          <div className="max-w-3xl mx-auto px-4 py-4 space-y-3">
             {!hasMessages ? (
               <div className="flex flex-col items-center justify-center py-16 px-4">
-                <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-primary/10 mb-6">
-                  <Sparkles className="h-8 w-8 text-primary" />
+                <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10 mb-5">
+                  <Sparkles className="h-7 w-7 text-primary" />
                 </div>
-                <h2 className="text-xl font-semibold text-center mb-2">
+                <h2 className="text-lg font-semibold text-center mb-1">
                   Olá! Como posso ajudar?
                 </h2>
-                <p className="text-muted-foreground text-center max-w-md mb-8">
-                  Faça perguntas em linguagem natural sobre todos os seus documentos,
-                  insights e projetos. Eu buscarei as informações relevantes para responder.
+                <p className="text-muted-foreground text-center text-sm max-w-md mb-8">
+                  Pergunte sobre seus documentos, insights e projetos em linguagem natural.
                 </p>
 
                 <div className="w-full max-w-lg space-y-3">
-                  <p className="text-sm font-medium text-muted-foreground flex items-center gap-2">
-                    <MessageSquare className="h-4 w-4" />
-                    Sugestões de perguntas:
+                  <p className="text-xs font-medium text-muted-foreground flex items-center gap-2">
+                    <MessageSquare className="h-3.5 w-3.5" />
+                    Sugestões:
                   </p>
-                  <div className="grid gap-2">
+                  <div className="grid gap-2 sm:grid-cols-2">
                     {suggestedQuestions.map((question, i) => (
                       <Card
                         key={i}
-                        className="p-3 cursor-pointer hover:bg-accent transition-colors"
+                        className="p-3 cursor-pointer hover:bg-accent transition-colors text-sm"
                         onClick={() => handleSuggestionClick(question)}
                       >
-                        <p className="text-sm">{question}</p>
+                        {question}
                       </Card>
                     ))}
                   </div>
@@ -223,21 +265,16 @@ export default function Assistant() {
                   />
                 ))}
                 {isLoading && (
-                  <div className="flex gap-3 p-4 rounded-lg bg-background">
-                    <div className="h-8 w-8 rounded-full bg-secondary flex items-center justify-center shrink-0">
-                      <Loader2 className="h-4 w-4 animate-spin" />
+                  <div className="flex gap-3 p-3 rounded-lg bg-muted/30">
+                    <div className="h-7 w-7 rounded-full bg-secondary flex items-center justify-center shrink-0">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
                     </div>
                     <div className="flex-1">
-                      <div className="flex items-center gap-2 mb-2">
-                        <span className="text-sm font-medium">Assistente IA</span>
-                        <Badge variant="secondary" className="text-xs">
-                          Analisando...
-                        </Badge>
-                      </div>
-                      <div className="flex gap-1">
-                        <div className="h-2 w-2 rounded-full bg-muted-foreground/40 animate-bounce [animation-delay:-0.3s]" />
-                        <div className="h-2 w-2 rounded-full bg-muted-foreground/40 animate-bounce [animation-delay:-0.15s]" />
-                        <div className="h-2 w-2 rounded-full bg-muted-foreground/40 animate-bounce" />
+                      <span className="text-xs font-medium text-muted-foreground">Analisando...</span>
+                      <div className="flex gap-1 mt-1">
+                        <div className="h-1.5 w-1.5 rounded-full bg-muted-foreground/40 animate-bounce [animation-delay:-0.3s]" />
+                        <div className="h-1.5 w-1.5 rounded-full bg-muted-foreground/40 animate-bounce [animation-delay:-0.15s]" />
+                        <div className="h-1.5 w-1.5 rounded-full bg-muted-foreground/40 animate-bounce" />
                       </div>
                     </div>
                   </div>
@@ -248,7 +285,7 @@ export default function Assistant() {
         </ScrollArea>
 
         {/* Input Area */}
-        <div className="border-t bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 p-4">
+        <div className="border-t bg-background p-3">
           <form onSubmit={handleSubmit} className="max-w-3xl mx-auto">
             <div className="flex gap-2">
               <Input
@@ -257,9 +294,9 @@ export default function Assistant() {
                 onChange={(e) => setInput(e.target.value)}
                 placeholder="Digite sua pergunta..."
                 disabled={isLoading}
-                className="flex-1"
+                className="flex-1 h-9 text-sm"
               />
-              <Button type="submit" disabled={isLoading || !input.trim()}>
+              <Button type="submit" disabled={isLoading || !input.trim()} size="sm" className="h-9 px-3">
                 {isLoading ? (
                   <Loader2 className="h-4 w-4 animate-spin" />
                 ) : (
@@ -267,16 +304,13 @@ export default function Assistant() {
                 )}
               </Button>
             </div>
-            <p className="text-xs text-muted-foreground mt-2 text-center">
-              As respostas são baseadas nos documentos e insights dos seus projetos.
-            </p>
           </form>
         </div>
       </div>
 
       {/* Sources Panel */}
       {showSources && (
-        <div className="w-80 border-l hidden lg:block">
+        <div className="w-72 border-l hidden lg:flex flex-col shrink-0">
           <SourcesPanel
             sources={allSources}
             highlightedCitation={highlightedCitation}
