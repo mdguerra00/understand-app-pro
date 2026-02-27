@@ -8,16 +8,21 @@
   - **Chat Completions** para extração, síntese, resposta RAG e geração de relatórios.
   - **Embeddings** para indexação e recuperação vetorial.
 
-### 1.2 Modelos em produção hoje
+### 1.2 Modelos em produção hoje (ATUALIZADO com multi-model routing)
 
-| Etapa | Função | Modelo atual |
+| Etapa | Função | Modelo (tier) |
 |---|---|---|
-| Resposta RAG (principal) | `rag-answer` | `google/gemini-3-flash-preview` |
-| Planejamento leve no pipeline | `rag-answer` | `google/gemini-2.5-flash-lite` |
+| Resposta RAG (simples) | `rag-answer` | `google/gemini-2.5-flash-lite` (fast) |
+| Resposta RAG (padrão) | `rag-answer` | `google/gemini-3-flash-preview` (standard) |
+| Resposta RAG (complexo) | `rag-answer` | `google/gemini-2.5-pro` (advanced) |
+| Planejamento leve no pipeline | `rag-answer` | `google/gemini-2.5-flash-lite` (fast) |
+| IDER (raciocínio profundo) | `rag-answer` | `google/gemini-2.5-pro` (advanced) |
 | Extração estruturada de planilhas/cabeçalhos | `extract-knowledge` | `google/gemini-2.5-flash` |
 | Extração rica com tool-calling | `extract-knowledge` | `google/gemini-3-flash-preview` |
-| Análise de documento | `analyze-document` | `google/gemini-3-flash-preview` |
-| Geração de relatório | `generate-report` | `google/gemini-3-flash-preview` |
+| Análise de documento (pequeno) | `analyze-document` | `google/gemini-3-flash-preview` (standard) |
+| Análise de documento (grande) | `analyze-document` | `google/gemini-2.5-pro` (advanced) |
+| Geração de relatório (progress/final) | `generate-report` | `google/gemini-2.5-pro` (advanced) |
+| Geração de relatório (executivo) | `generate-report` | `google/gemini-3-flash-preview` (standard) |
 | Correlação de métricas | `correlate-metrics` | `google/gemini-2.5-flash` |
 | Persistência de insights da análise | `save-analysis-insights` | `google/gemini-2.5-flash` |
 | Embeddings (RAG/indexação) | `rag-answer`, `index-content` | `text-embedding-3-small` |

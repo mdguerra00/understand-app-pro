@@ -1648,10 +1648,15 @@ export type Database = {
         Row: {
           chunks_count: number | null
           chunks_used: string[] | null
+          citation_coverage: number | null
+          complexity_tier: string | null
+          contradiction_flag: boolean | null
           created_at: string | null
           diagnostics: Json | null
+          groundedness_score: number | null
           id: string
           latency_ms: number | null
+          model_escalated: boolean | null
           model_used: string | null
           query: string
           query_embedding: string | null
@@ -1664,10 +1669,15 @@ export type Database = {
         Insert: {
           chunks_count?: number | null
           chunks_used?: string[] | null
+          citation_coverage?: number | null
+          complexity_tier?: string | null
+          contradiction_flag?: boolean | null
           created_at?: string | null
           diagnostics?: Json | null
+          groundedness_score?: number | null
           id?: string
           latency_ms?: number | null
+          model_escalated?: boolean | null
           model_used?: string | null
           query: string
           query_embedding?: string | null
@@ -1680,10 +1690,15 @@ export type Database = {
         Update: {
           chunks_count?: number | null
           chunks_used?: string[] | null
+          citation_coverage?: number | null
+          complexity_tier?: string | null
+          contradiction_flag?: boolean | null
           created_at?: string | null
           diagnostics?: Json | null
+          groundedness_score?: number | null
           id?: string
           latency_ms?: number | null
+          model_escalated?: boolean | null
           model_used?: string | null
           query?: string
           query_embedding?: string | null
