@@ -237,7 +237,13 @@ serve(async (req) => {
         .single();
 
       if (error || !fact) throw new Error(`Knowledge fact not found: ${source_id}`);
-      if (fact.status === 'archived') {
+      // Check if fact is archived by looking at status field (may not be in select)
+      const { data: factStatus } = await supabase
+        .from("knowledge_facts")
+        .select("status")
+        .eq("id", source_id)
+        .single();
+      if (factStatus?.status === 'archived') {
         // Delete existing chunks for archived facts
         await supabase.from("search_chunks").delete()
           .eq("source_type", "manual_knowledge").eq("source_id", source_id);

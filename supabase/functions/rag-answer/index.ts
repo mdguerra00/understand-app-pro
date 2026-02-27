@@ -3481,7 +3481,7 @@ serve(async (req) => {
         quickAdditiveFound: null,
         suggestedAliases: gateSuggestedAliases,
         aliasLookupLatencyMs: gateAliasLookupLatencyMs,
-        provisionalPasses: gateProvisionalPasses,
+        
         insightSeedsCount: insightSeeds.length,
         experimentsCount: evidenceGraph.experiments.length,
         variantsCount: totalVariants,
