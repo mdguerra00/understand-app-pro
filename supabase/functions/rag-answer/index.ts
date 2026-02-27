@@ -41,6 +41,77 @@ function setExistsCache(key: string, matches: any[]): void {
 type ContextMode = "project" | "global";
 
 // ==========================================
+// MULTI-MODEL ROUTING: Tier-based model selection
+// ==========================================
+type ModelTier = 'fast' | 'standard' | 'advanced';
+
+const MODEL_TIERS: Record<ModelTier, string> = {
+  fast: 'google/gemini-2.5-flash-lite',
+  standard: 'google/gemini-3-flash-preview',
+  advanced: 'google/gemini-2.5-pro',
+};
+
+interface ComplexityAssessment {
+  tier: ModelTier;
+  escalated: boolean;
+  reasons: string[];
+  score: number; // 0-100
+}
+
+function assessQueryComplexity(
+  query: string,
+  chunksCount: number,
+  isComparative: boolean,
+  isIDER: boolean,
+  hasStrongConstraints: boolean,
+  contradictionDetected: boolean,
+  evidenceGaps: number,
+): ComplexityAssessment {
+  let score = 30; // baseline: standard
+  const reasons: string[] = [];
+
+  // Intent-based escalation
+  if (isComparative) { score += 15; reasons.push('comparative_intent'); }
+  if (isIDER) { score += 20; reasons.push('ider_deep_reasoning'); }
+  if (hasStrongConstraints) { score += 10; reasons.push('strong_constraints'); }
+
+  // Evidence-based escalation
+  if (contradictionDetected) { score += 20; reasons.push('contradiction_detected'); }
+  if (chunksCount < 3 && chunksCount > 0) { score += 10; reasons.push('low_evidence_count'); }
+  if (evidenceGaps > 2) { score += 10; reasons.push('evidence_gaps'); }
+
+  // Query complexity heuristics
+  const wordCount = query.split(/\s+/).length;
+  if (wordCount > 30) { score += 5; reasons.push('long_query'); }
+  
+  // Multi-entity queries
+  const entityPatterns = /\b(compar|versus|vs\.?|diferença|melhor|pior|trade.?off|conflito|contradição|evolução|tendência|correlação)\b/i;
+  if (entityPatterns.test(query)) { score += 10; reasons.push('analytical_keywords'); }
+
+  // Determine tier
+  let tier: ModelTier;
+  if (score >= 60) {
+    tier = 'advanced';
+  } else if (score >= 25) {
+    tier = 'standard';
+  } else {
+    tier = 'fast';
+  }
+
+  return {
+    tier,
+    escalated: tier === 'advanced',
+    reasons,
+    score,
+  };
+}
+
+function getModelForTier(tier: ModelTier): string {
+  return MODEL_TIERS[tier];
+}
+
+
+// ==========================================
 // ALIAS SYSTEM: Configurable Constants
 // ==========================================
 const STRUCTURAL_WEIGHT = 1.0;
@@ -1482,6 +1553,7 @@ async function generateSynthesis(
   evidencePlan: string, deepReadContent: string, docStructure: string,
   apiKey: string, contextMode: ContextMode, projectName?: string,
   conversationHistory?: { role: string; content: string }[],
+  modelOverride?: string,
 ): Promise<{ response: string }> {
   const formattedChunks = chunks
     .map((chunk, index) => `[${index + 1}] Fonte: ${chunk.source_type} - "${chunk.source_title}" | Projeto: ${chunk.project_name}\n${chunk.chunk_text}`)
@@ -1549,10 +1621,13 @@ ${evidenceSection}
   }
   messages.push({ role: "user", content: userPrompt });
 
+  const synthesisModel = modelOverride || MODEL_TIERS.standard;
+  console.log(`Synthesis model: ${synthesisModel}`);
+
   const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
     method: "POST",
     headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ model: "google/gemini-3-flash-preview", messages, temperature: 0.3, max_tokens: 5000 }),
+    body: JSON.stringify({ model: synthesisModel, messages, temperature: 0.3, max_tokens: 5000 }),
   });
 
   if (!response.ok) {
@@ -2048,7 +2123,7 @@ FORMATO:
 6) Fontes (lista de citations/excerpts usados)`;
 
 async function synthesizeIDER(
-  query: string, evidenceGraph: EvidenceGraph, deepReadPack: { doc_id: string; text: string }[], insightSeeds: InsightSeed[], apiKey: string
+  query: string, evidenceGraph: EvidenceGraph, deepReadPack: { doc_id: string; text: string }[], insightSeeds: InsightSeed[], apiKey: string, modelOverride?: string
 ): Promise<{ response: string }> {
   const insightSeedsForPrompt = insightSeeds.slice(0, 10).map(s => ({
     title: s.title, content: s.content.substring(0, 200), verified: s.verified, category: s.category,
@@ -2064,11 +2139,14 @@ EVIDENCE_GRAPH_JSON: ${JSON.stringify(evidenceGraph, null, 2)}
 DEEP_READ_PACK: ${JSON.stringify(deepReadForPrompt, null, 2)}
 INSIGHT_SEEDS: ${JSON.stringify(insightSeedsForPrompt, null, 2)}`;
 
+  const iderModel = modelOverride || MODEL_TIERS.advanced; // IDER always defaults to advanced
+  console.log(`IDER synthesis model: ${iderModel}`);
+
   const resp = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
     method: "POST",
     headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: "google/gemini-3-flash-preview",
+      model: iderModel,
       messages: [
         { role: "system", content: IDER_MODE_PROMPT },
         { role: "user", content: userContent },
@@ -3417,7 +3495,7 @@ serve(async (req) => {
       }
 
       // Step 5: Synthesize
-      const { response: iderResponse } = await synthesizeIDER(query, evidenceGraph, deepReadPack, insightSeeds, lovableApiKey);
+      const { response: iderResponse } = await synthesizeIDER(query, evidenceGraph, deepReadPack, insightSeeds, lovableApiKey, MODEL_TIERS.advanced);
 
       // Step 6: Audit (lightweight)
       const auditIssues = await auditIDER(iderResponse, evidenceGraph, lovableApiKey);
@@ -3501,10 +3579,12 @@ serve(async (req) => {
         user_id: user.id, query,
         chunks_used: [], chunks_count: 0,
         response_summary: finalIDERResponse.substring(0, 500),
-        model_used: `ider-mode/${contextMode}/gemini-3-flash`,
+        model_used: `ider-mode/${contextMode}/advanced/${MODEL_TIERS.advanced.split('/').pop()}`,
         latency_ms: latencyMs,
         request_id: requestId,
         diagnostics: iderDiag,
+        complexity_tier: 'advanced',
+        model_escalated: true,
       });
 
       // Build sources from evidence graph
@@ -3704,7 +3784,7 @@ serve(async (req) => {
           if (externalDocs.length === 0) {
             const criticalDocs = selectCriticalDocs(evidenceGraph, insightSeeds);
             const deepReadPack = await deepReadCriticalDocs(supabase, criticalDocs, query);
-            const { response: iderResponse } = await synthesizeIDER(query, evidenceGraph, deepReadPack, insightSeeds, lovableApiKey);
+            const { response: iderResponse } = await synthesizeIDER(query, evidenceGraph, deepReadPack, insightSeeds, lovableApiKey, MODEL_TIERS.advanced);
             const auditIssues = await auditIDER(iderResponse, evidenceGraph, lovableApiKey);
             const iderVerification = verifyIDERNumbers(iderResponse, evidenceGraph);
 
@@ -3924,6 +4004,17 @@ serve(async (req) => {
     }
 
     // ==========================================
+    // COMPLEXITY ASSESSMENT & MODEL ROUTING
+    // ==========================================
+    const evidenceGapCount = evidencePlanResult.plan.match(/Lacunas:.*?;/g)?.length || 0;
+    const complexity = assessQueryComplexity(
+      query, finalChunks.length, isComparative, iderIntent.isIDERQuery,
+      preConstraints.hasStrongConstraints, false, evidenceGapCount,
+    );
+    const selectedModel = getModelForTier(complexity.tier);
+    console.log(`Model routing: tier=${complexity.tier}, score=${complexity.score}, model=${selectedModel}, reasons=${complexity.reasons.join(',')}`);
+
+    // ==========================================
     // STEP B: SYNTHESIS (with Knowledge Facts injected)
     // ==========================================
     // Prepend knowledge facts context (highest priority) before experiment context
@@ -3932,7 +4023,7 @@ serve(async (req) => {
     const { response } = await generateSynthesis(
       query, finalChunks, enrichedExperimentContext, _metricSummaries, _knowledgePivots,
       preBuiltEvidenceTable, evidencePlanResult.plan, deepReadContent, docStructure,
-      lovableApiKey, contextMode, projectName, conversation_history
+      lovableApiKey, contextMode, projectName, conversation_history, selectedModel
     );
 
     // ==========================================
@@ -3987,9 +4078,14 @@ serve(async (req) => {
       chunks_used: finalChunks.map((c) => c.id),
       chunks_count: finalChunks.length,
       response_summary: finalResponse.substring(0, 500),
-      model_used: `3-step-pipeline/${contextMode}/gemini-3-flash`,
+      model_used: `3-step-pipeline/${contextMode}/${complexity.tier}/${selectedModel.split('/').pop()}`,
       latency_ms: latencyMs,
-      request_id: requestId, diagnostics: stdDiag,
+      request_id: requestId, diagnostics: { ...stdDiag, complexity_assessment: complexity },
+      complexity_tier: complexity.tier,
+      model_escalated: complexity.escalated,
+      contradiction_flag: false,
+      citation_coverage: null as any,
+      groundedness_score: verification.unmatched === 0 ? 1.0 : Math.max(0, 1 - (verification.unmatched / Math.max(verification.total, 1))),
     });
 
     const chunkSources = finalChunks.map((chunk, index) => ({

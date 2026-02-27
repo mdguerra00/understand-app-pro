@@ -327,7 +327,12 @@ Gere o relatório completo em português brasileiro, citando as fontes específi
       throw new Error("LOVABLE_API_KEY não configurada");
     }
 
-    console.log(`Generating ${report_type} report for project ${project_id} with ${insights?.length || 0} insights and ${Object.keys(chunksByFile).length} documents`);
+    // Multi-model routing: reports always use advanced tier for quality
+    const reportModel = report_type === 'executive' 
+      ? 'google/gemini-3-flash-preview' // executive summaries are short, standard is fine
+      : 'google/gemini-2.5-pro'; // full/progress reports use advanced model
+
+    console.log(`Generating ${report_type} report for project ${project_id} with ${insights?.length || 0} insights and ${Object.keys(chunksByFile).length} documents, model=${reportModel}`);
 
     const aiResponse = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
       method: "POST",
@@ -336,7 +341,7 @@ Gere o relatório completo em português brasileiro, citando as fontes específi
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "google/gemini-3-flash-preview",
+        model: reportModel,
         messages: [
           { role: "system", content: systemPrompt },
           { role: "user", content: userPrompt }
@@ -430,7 +435,7 @@ Gere o relatório completo em português brasileiro, citando as fontes específi
         status: 'draft',
         created_by: user.id,
         generated_by_ai: true,
-        ai_model_used: 'google/gemini-3-flash-preview',
+        ai_model_used: reportModel,
         source_insights_count: insights?.length || 0
       })
       .select('id')

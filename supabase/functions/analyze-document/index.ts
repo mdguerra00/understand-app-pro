@@ -214,6 +214,13 @@ Faça uma análise profunda e completa deste documento seguindo EXATAMENTE este 
 ## 📌 Informações Adicionais Relevantes
 [Qualquer outra informação útil: referências bibliográficas citadas, padrões seguidos, normas técnicas, etc.]`;
 
+    // Multi-model routing: use advanced model for document analysis (high-value task)
+    const analysisModel = (chunks && chunks.length > 20) 
+      ? 'google/gemini-2.5-pro'  // Large documents get advanced model
+      : 'google/gemini-3-flash-preview'; // Smaller documents use standard
+
+    console.log(`Analyzing document "${file.name}" with ${chunks?.length || 0} chunks, model=${analysisModel}`);
+
     const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -221,7 +228,7 @@ Faça uma análise profunda e completa deste documento seguindo EXATAMENTE este 
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "google/gemini-3-flash-preview",
+        model: analysisModel,
         messages: [
           { role: "system", content: systemPrompt },
           { role: "user", content: userPrompt },
