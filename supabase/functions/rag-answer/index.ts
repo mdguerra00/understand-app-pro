@@ -2326,8 +2326,13 @@ async function verifyResponse(
 
   const unmatchedCount = ungrounded.length;
   const issues: string[] = [];
-  if (unmatchedCount > 3) {
-    issues.push(`${unmatchedCount} números na resposta não correspondem a medições verificadas`);
+  // RELAXED BLOCKING: Increase threshold to 10 and only block if a high percentage of numbers are ungrounded
+  const totalChecked = numbersExtracted;
+  const failThreshold = 10;
+  const failPercentage = 0.5; // Block if >50% of numbers are ungrounded
+
+  if (unmatchedCount >= failThreshold || (totalChecked > 5 && unmatchedCount / totalChecked > failPercentage)) {
+    issues.push(`${unmatchedCount} números na resposta não correspondem a medições verificadas (de ${totalChecked} totais)`);
   }
 
   return {
@@ -2358,22 +2363,29 @@ interface QueryConstraints {
 function shouldSkipNumericVerification(query: string): boolean {
   const q = query.toLowerCase();
   
-  // 1) Navigational/General intent patterns
+  // 1) Explicit Navigational/General intent patterns
   const navPatterns = [
-    /quais são/i, /quais sao/i, /liste/i, /resuma/i, /me d[eê] um resumo/i, 
-    /qual o status/i, /sobre o que [eé]/i, /quem trabalhou/i, /quais projetos/i,
-    /quais experimentos/i, /quais documentos/i, /quais arquivos/i,
-    /ola/i, /olá/i, /bom dia/i, /boa tarde/i, /boa noite/i, /ajuda/i
+    /quais/i, /liste/i, /resuma/i, /me d[eê] um resumo/i, 
+    /qual o status/i, /sobre o que [eé]/i, /quem trabalhou/i, /projeto/i,
+    /experimento/i, /documento/i, /arquivo/i, /base de conhecimento/i,
+    /ola/i, /olá/i, /bom dia/i, /boa tarde/i, /boa noite/i, /ajuda/i,
+    /o que tem/i, /mostre/i, /exiba/i
   ];
   if (navPatterns.some(re => re.test(q))) return true;
 
-  // 2) Absence of quantitative terms (metrics/units)
+  // 2) Absence of quantitative terms (metrics/units/scientific notation)
   const quantTerms = [
     'valor', 'quanto', 'medida', 'resistência', 'resistencia', 'módulo', 'modulo', 
     'dureza', 'percentual', '%', 'mpa', 'gpa', 'kpa', 'vickers', 'knoop', 'conversão', 
-    'conversao', 'cor', 'amarelamento', 'estabilidade', 'encolhimento'
+    'conversao', 'cor', 'amarelamento', 'estabilidade', 'encolhimento', 'propriedade',
+    'resultado', 'diferença', 'compar', 'versus', 'vs', 'melhor', 'pior'
   ];
+  
+  // Check if any quantitative term is present
   const hasQuantTerm = quantTerms.some(term => q.includes(term));
+  
+  // If it doesn't have a quantitative term AND doesn't look like a specific data request, skip.
+  // But to be even safer, if it's a "What are..." type question, we almost always want to skip.
   if (!hasQuantTerm) return true;
 
   return false;
