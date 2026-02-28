@@ -1176,7 +1176,7 @@ interface KnowledgeFactHit {
 async function fetchKnowledgeFacts(
   supabase: any, projectIds: string[], query: string, queryEmbedding?: string | null
 ): Promise<{ facts: KnowledgeFactHit[]; contextText: string; diagnostics: { manual_knowledge_hits: number; applied_as_source_of_truth: number; override_conflicts: string[] } }> {
-  const searchTerms = query.toLowerCase().split(/\s+/).filter((w: string) => w.length > 2).slice(0, 8);
+  const searchTerms = query.toLowerCase().replace(/[?!.,;:()[\]{}""''"/\\]/g, '').split(/\s+/).filter((w: string) => w.length > 2).slice(0, 8);
   const diagnostics = { manual_knowledge_hits: 0, applied_as_source_of_truth: 0, override_conflicts: [] as string[] };
 
   // Fetch project-scoped facts first, then global (project overrides global by category/key)
@@ -1263,7 +1263,7 @@ async function fetchKnowledgeFacts(
 // FETCH KNOWLEDGE PIVOTS
 // ==========================================
 async function fetchKnowledgePivots(supabase: any, projectIds: string[], query: string): Promise<string> {
-  const searchTerms = query.toLowerCase().split(/\s+/).filter((w: string) => w.length > 2).slice(0, 5);
+  const searchTerms = query.toLowerCase().replace(/[?!.,;:()[\]{}""''"/\\]/g, '').split(/\s+/).filter((w: string) => w.length > 2).slice(0, 5);
   
   const { data: pivotInsights } = await supabase
     .from('knowledge_items')
