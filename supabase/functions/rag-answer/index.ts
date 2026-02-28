@@ -4029,11 +4029,47 @@ serve(async (req) => {
     // ==========================================
     // STEP C: CHAIN-OF-VERIFICATION
     // ==========================================
+    // Build comprehensive list of valid numbers from ALL evidence sources
     const allMeasurements: any[] = [];
+    
+    // 1) From structured experiment context
     if (experimentContextText) {
       const measMatches = experimentContextText.matchAll(/- (\w+): ([\d.,]+) (\w+)/g);
       for (const m of measMatches) {
         allMeasurements.push({ metric: m[1], value: parseFloat(m[2].replace(',', '.')), unit: m[3] });
+      }
+    }
+    
+    // 2) Extract ALL numbers from chunk content (these are document-sourced, valid to cite)
+    const chunkText = finalChunks.map(c => c.content || '').join(' ');
+    const chunkNumberPattern = /(\d+[.,]\d+)/g;
+    const chunkNumbers = [...chunkText.matchAll(chunkNumberPattern)].map(m => m[1]);
+    for (const n of chunkNumbers) {
+      const val = parseFloat(n.replace(',', '.'));
+      if (!isNaN(val)) {
+        allMeasurements.push({ metric: '_chunk_source', value: val, unit: '' });
+      }
+    }
+    
+    // 3) Extract numbers from knowledge facts context
+    if (_knowledgeFactsResult.contextText) {
+      const factNumbers = [..._knowledgeFactsResult.contextText.matchAll(chunkNumberPattern)].map(m => m[1]);
+      for (const n of factNumbers) {
+        const val = parseFloat(n.replace(',', '.'));
+        if (!isNaN(val)) {
+          allMeasurements.push({ metric: '_fact_source', value: val, unit: '' });
+        }
+      }
+    }
+    
+    // 4) Extract numbers from deep read content
+    if (deepReadContent) {
+      const deepNumbers = [...deepReadContent.matchAll(chunkNumberPattern)].map(m => m[1]);
+      for (const n of deepNumbers) {
+        const val = parseFloat(n.replace(',', '.'));
+        if (!isNaN(val)) {
+          allMeasurements.push({ metric: '_deep_read_source', value: val, unit: '' });
+        }
       }
     }
 
@@ -4045,9 +4081,10 @@ serve(async (req) => {
     let stdFailReason: string | null = null;
     let stdFailStage: string | null = null;
 
-    // HARD FAIL: if verification finds ANY unmatched numbers, block the response
-    if (verification.unmatched > 0) {
-      console.warn(`3-STEP HARD FAIL-CLOSED: ${verification.unmatched} ungrounded numbers`);
+    // Only block if verification explicitly failed (>3 unmatched numbers)
+    // This respects the threshold in verifyResponse and avoids blocking conceptual answers
+    if (!verification.verified) {
+      console.warn(`3-STEP FAIL-CLOSED: ${verification.unmatched} ungrounded numbers (threshold: >3)`);
       const examples = verification.unmatched_examples.slice(0, 5).map(e => `"${e.number}" (…${e.context}…)`).join('\n- ');
       const constraintInfo = constraintsKeywordsHit.length > 0 ? `\n**Constraints detectadas**: ${constraintsKeywordsHit.join(', ')}` : '';
       const suggestions = generateFailClosedSuggestions(query, preConstraints);
