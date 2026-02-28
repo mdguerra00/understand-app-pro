@@ -2351,6 +2351,34 @@ interface QueryConstraints {
   hasStrongConstraints: boolean;
 }
 
+/**
+ * Detects if the numeric verification should be skipped based on query intent.
+ * This prevents false-positives for navigational or meta-questions.
+ */
+function shouldSkipNumericVerification(query: string): boolean {
+  const q = query.toLowerCase();
+  
+  // 1) Navigational/General intent patterns
+  const navPatterns = [
+    /quais são/i, /quais sao/i, /liste/i, /resuma/i, /me d[eê] um resumo/i, 
+    /qual o status/i, /sobre o que [eé]/i, /quem trabalhou/i, /quais projetos/i,
+    /quais experimentos/i, /quais documentos/i, /quais arquivos/i,
+    /ola/i, /olá/i, /bom dia/i, /boa tarde/i, /boa noite/i, /ajuda/i
+  ];
+  if (navPatterns.some(re => re.test(q))) return true;
+
+  // 2) Absence of quantitative terms (metrics/units)
+  const quantTerms = [
+    'valor', 'quanto', 'medida', 'resistência', 'resistencia', 'módulo', 'modulo', 
+    'dureza', 'percentual', '%', 'mpa', 'gpa', 'kpa', 'vickers', 'knoop', 'conversão', 
+    'conversao', 'cor', 'amarelamento', 'estabilidade', 'encolhimento'
+  ];
+  const hasQuantTerm = quantTerms.some(term => q.includes(term));
+  if (!hasQuantTerm) return true;
+
+  return false;
+}
+
 function extractConstraints(query: string): QueryConstraints {
   const s = query.toLowerCase();
 
@@ -4073,7 +4101,18 @@ serve(async (req) => {
       }
     }
 
-    const verification = await verifyResponse(response, allMeasurements, lovableApiKey);
+    // PORTÃO DE VERIFICAÇÃO NUMÉRICA: Pular se a pergunta for navegacional ou não-quantitativa
+    const skipVerification = shouldSkipNumericVerification(query);
+    let verification: DetailedVerification = { 
+      verified: true, issues: [], numbers_extracted: 0, matched: 0, unmatched: 0, 
+      issue_types: [], unmatched_examples: [] 
+    };
+
+    if (!skipVerification) {
+      verification = await verifyResponse(response, allMeasurements, lovableApiKey);
+    } else {
+      console.log(`[RAG] Numeric verification skipped for query: "${query}"`);
+    }
     
     let finalResponse = response;
     let stdPipeline = '3-step';
