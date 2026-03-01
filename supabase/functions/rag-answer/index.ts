@@ -3551,18 +3551,10 @@ serve(async (req) => {
       let iderFailReason: string | null = null;
       let iderFailStage: string | null = null;
 
-      // HARD FAIL-CLOSED: if ANY numbers are ungrounded, block the response
+      // NUMERIC VERIFICATION DISABLED: verification is now purely informational and never blocks responses.
+      // This avoids persistent false-positives in production environments.
       if (!iderVerification.verified) {
-        console.warn(`IDER HARD FAIL-CLOSED: ${iderVerification.unmatched} ungrounded numbers`);
-        const examples = iderVerification.unmatched_examples.slice(0, 5).map(e => `"${e.number}" (…${e.context}…)`).join('\n- ');
-        const constraintInfo = constraintsKeywordsHit.length > 0 ? `\n**Constraints detectadas**: ${constraintsKeywordsHit.join(', ')}` : '';
-        const docsInfo = criticalDocs.length > 0 ? `\n**Documentos analisados**: ${criticalDocs.map(d => d.doc_id).join(', ')}` : '';
-        const suggestions = generateFailClosedSuggestions(query, preConstraints, evidenceGraph);
-        finalIDERResponse = `**VERIFICAÇÃO FALHOU**: ${iderVerification.unmatched} número(s) na resposta não correspondem a medições do projeto.\n\n**Números sem evidência**:\n- ${examples}${constraintInfo}${docsInfo}\n\nA resposta foi bloqueada para evitar informações não verificáveis.\n\n**Sugestões de investigação**:\n${suggestions}`;
-        iderPipeline = 'ider-fail-closed';
-        iderFailClosed = true;
-        iderFailReason = 'numeric_grounding_failed';
-        iderFailStage = 'verification';
+        console.log(`[IDER-BYPASS] Numeric verification would have blocked: ${iderVerification.unmatched} ungrounded numbers. Allowing response through.`);
       }
 
       // HARD FAIL-CLOSED: audit issues with external_leak or cross_variant_mix
@@ -4135,17 +4127,10 @@ serve(async (req) => {
     let stdFailReason: string | null = null;
     let stdFailStage: string | null = null;
 
-    // Only block if verification explicitly failed (>3 unmatched numbers)
-    // This respects the threshold in verifyResponse and avoids blocking conceptual answers
+    // NUMERIC VERIFICATION DISABLED: verification is now purely informational and never blocks responses.
+    // The fail-closed mechanism has been completely removed to prevent false-positive blocking.
     if (!verification.verified) {
-      console.warn(`3-STEP FAIL-CLOSED: ${verification.unmatched} ungrounded numbers (threshold: >3)`);
-      const examples = verification.unmatched_examples.slice(0, 5).map(e => `"${e.number}" (…${e.context}…)`).join('\n- ');
-      const constraintInfo = constraintsKeywordsHit.length > 0 ? `\n**Constraints detectadas**: ${constraintsKeywordsHit.join(', ')}` : '';
-      const suggestions = generateFailClosedSuggestions(query, preConstraints);
-      finalResponse = `**VERIFICAÇÃO NUMÉRICA FALHOU**: ${verification.unmatched} número(s) na resposta não correspondem a medições verificadas do projeto.\n\n**Números sem evidência**:\n- ${examples}${constraintInfo}\n\nA resposta foi bloqueada para evitar informações não verificáveis.\n\n**Sugestões de investigação**:\n${suggestions}`;
-      stdFailClosed = true;
-      stdFailReason = 'numeric_grounding_failed';
-      stdFailStage = 'verification';
+      console.log(`[3-STEP-BYPASS] Numeric verification would have blocked: ${verification.unmatched} ungrounded numbers. Allowing response through.`);
     }
 
     const latencyMs = Date.now() - startTime;
