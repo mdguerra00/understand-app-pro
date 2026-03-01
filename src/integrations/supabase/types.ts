@@ -789,7 +789,7 @@ export type Database = {
           id: string
           items_extracted: number | null
           parsing_quality: string | null
-          project_id: string
+          project_id: string | null
           sheets_found: number | null
           started_at: string | null
           status: Database["public"]["Enums"]["extraction_status"]
@@ -807,7 +807,7 @@ export type Database = {
           id?: string
           items_extracted?: number | null
           parsing_quality?: string | null
-          project_id: string
+          project_id?: string | null
           sheets_found?: number | null
           started_at?: string | null
           status?: Database["public"]["Enums"]["extraction_status"]
@@ -825,7 +825,7 @@ export type Database = {
           id?: string
           items_extracted?: number | null
           parsing_quality?: string | null
-          project_id?: string
+          project_id?: string | null
           sheets_found?: number | null
           started_at?: string | null
           status?: Database["public"]["Enums"]["extraction_status"]
@@ -1069,7 +1069,7 @@ export type Database = {
           human_verified: boolean | null
           id: string
           neighbor_chunk_ids: string[] | null
-          project_id: string
+          project_id: string | null
           ref_condition_key: string | null
           ref_experiment_id: string | null
           ref_metric_key: string | null
@@ -1098,7 +1098,7 @@ export type Database = {
           human_verified?: boolean | null
           id?: string
           neighbor_chunk_ids?: string[] | null
-          project_id: string
+          project_id?: string | null
           ref_condition_key?: string | null
           ref_experiment_id?: string | null
           ref_metric_key?: string | null
@@ -1127,7 +1127,7 @@ export type Database = {
           human_verified?: boolean | null
           id?: string
           neighbor_chunk_ids?: string[] | null
-          project_id?: string
+          project_id?: string | null
           ref_condition_key?: string | null
           ref_experiment_id?: string | null
           ref_metric_key?: string | null
@@ -1469,7 +1469,7 @@ export type Database = {
           id: string
           mime_type: string | null
           name: string
-          project_id: string
+          project_id: string | null
           size_bytes: number | null
           storage_path: string
           updated_at: string
@@ -1485,7 +1485,7 @@ export type Database = {
           id?: string
           mime_type?: string | null
           name: string
-          project_id: string
+          project_id?: string | null
           size_bytes?: number | null
           storage_path: string
           updated_at?: string
@@ -1501,7 +1501,7 @@ export type Database = {
           id?: string
           mime_type?: string | null
           name?: string
-          project_id?: string
+          project_id?: string | null
           size_bytes?: number | null
           storage_path?: string
           updated_at?: string
@@ -1888,7 +1888,7 @@ export type Database = {
           embedding: string | null
           id: string
           metadata: Json
-          project_id: string
+          project_id: string | null
           source_id: string
           source_type: string
           tsv: unknown
@@ -1901,7 +1901,7 @@ export type Database = {
           embedding?: string | null
           id?: string
           metadata?: Json
-          project_id: string
+          project_id?: string | null
           source_id: string
           source_type: string
           tsv?: unknown
@@ -1914,7 +1914,7 @@ export type Database = {
           embedding?: string | null
           id?: string
           metadata?: Json
-          project_id?: string
+          project_id?: string | null
           source_id?: string
           source_type?: string
           tsv?: unknown

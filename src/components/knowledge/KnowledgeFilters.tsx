@@ -27,6 +27,7 @@ import {
   CheckCircle2,
   Clock,
   CircleDashed,
+  Globe,
 } from 'lucide-react';
 import { KnowledgeCategory } from './KnowledgeCard';
 
@@ -169,6 +170,9 @@ export function KnowledgeFilters({
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="all">Todos os projetos</SelectItem>
+            <SelectItem value="__global__">
+              <span className="flex items-center gap-1"><Globe className="h-3 w-3" /> Global (sem projeto)</span>
+            </SelectItem>
             {projects.map((project) => (
               <SelectItem key={project.id} value={project.id}>
                 {project.name}

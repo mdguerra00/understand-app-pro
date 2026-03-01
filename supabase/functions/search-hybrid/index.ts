@@ -68,13 +68,10 @@ serve(async (req) => {
     const allowedProjectIds = userProjects?.map((p) => p.project_id) || [];
     
     if (allowedProjectIds.length === 0) {
-      return new Response(
-        JSON.stringify({ results: [], total: 0 }),
-        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+      // Still search global chunks even if user has no projects
     }
 
-    // Filter by specific projects if requested
+    // Filter by specific projects if requested, always include global
     const targetProjectIds = project_ids?.length > 0
       ? project_ids.filter((id: string) => allowedProjectIds.includes(id))
       : allowedProjectIds;
@@ -84,37 +81,54 @@ serve(async (req) => {
     
     let results: SearchResult[] = [];
 
-    // Try Full-Text Search first
+    // Try Full-Text Search first - project-scoped chunks
     try {
-      const { data: ftsData, error: ftsError } = await supabase
+      if (targetProjectIds.length > 0) {
+        const { data: ftsData, error: ftsError } = await supabase
+          .from("search_chunks")
+          .select(`id, project_id, source_type, source_id, chunk_text, chunk_index, metadata, projects!inner(name)`)
+          .in("project_id", targetProjectIds)
+          .textSearch("tsv", query, { type: "websearch", config: "portuguese" })
+          .limit(limit);
+
+        if (!ftsError && ftsData && ftsData.length > 0) {
+          results = ftsData.map((row: any, index: number) => ({
+            chunk_id: row.id,
+            project_id: row.project_id,
+            project_name: row.projects?.name || "Unknown",
+            source_type: row.source_type,
+            source_id: row.source_id,
+            source_title: row.metadata?.title || "Untitled",
+            chunk_text: row.chunk_text,
+            chunk_index: row.chunk_index,
+            score_final: 1 - index * 0.05,
+            metadata: row.metadata,
+          }));
+        }
+      }
+
+      // Also search global chunks (project_id IS NULL)
+      const { data: globalFts } = await supabase
         .from("search_chunks")
-        .select(`
-          id,
-          project_id,
-          source_type,
-          source_id,
-          chunk_text,
-          chunk_index,
-          metadata,
-          projects!inner(name)
-        `)
-        .in("project_id", targetProjectIds)
+        .select(`id, project_id, source_type, source_id, chunk_text, chunk_index, metadata`)
+        .is("project_id", null)
         .textSearch("tsv", query, { type: "websearch", config: "portuguese" })
         .limit(limit);
 
-      if (!ftsError && ftsData && ftsData.length > 0) {
-        results = ftsData.map((row: any, index: number) => ({
+      if (globalFts && globalFts.length > 0) {
+        const globalResults = globalFts.map((row: any, index: number) => ({
           chunk_id: row.id,
-          project_id: row.project_id,
-          project_name: row.projects?.name || "Unknown",
+          project_id: null,
+          project_name: "Global",
           source_type: row.source_type,
           source_id: row.source_id,
           source_title: row.metadata?.title || "Untitled",
           chunk_text: row.chunk_text,
           chunk_index: row.chunk_index,
-          score_final: 1 - index * 0.05,
+          score_final: 0.95 - index * 0.05,
           metadata: row.metadata,
         }));
+        results = [...results, ...globalResults];
       }
     } catch (ftsError) {
       console.warn("FTS search failed, falling back to ILIKE:", ftsError);
@@ -124,35 +138,53 @@ serve(async (req) => {
     if (results.length === 0 && searchTerms.length > 0) {
       const orConditions = searchTerms.map((term: string) => `chunk_text.ilike.%${term}%`).join(',');
       
-      const { data: ilikeData, error: ilikeError } = await supabase
+      // Search project chunks
+      if (targetProjectIds.length > 0) {
+        const { data: ilikeData } = await supabase
+          .from("search_chunks")
+          .select(`id, project_id, source_type, source_id, chunk_text, chunk_index, metadata, projects!inner(name)`)
+          .in("project_id", targetProjectIds)
+          .or(orConditions)
+          .limit(limit);
+
+        if (ilikeData) {
+          results = ilikeData.map((row: any, index: number) => ({
+            chunk_id: row.id,
+            project_id: row.project_id,
+            project_name: row.projects?.name || "Unknown",
+            source_type: row.source_type,
+            source_id: row.source_id,
+            source_title: row.metadata?.title || "Untitled",
+            chunk_text: row.chunk_text,
+            chunk_index: row.chunk_index,
+            score_final: 1 - index * 0.05,
+            metadata: row.metadata,
+          }));
+        }
+      }
+
+      // Search global chunks
+      const { data: globalIlike } = await supabase
         .from("search_chunks")
-        .select(`
-          id,
-          project_id,
-          source_type,
-          source_id,
-          chunk_text,
-          chunk_index,
-          metadata,
-          projects!inner(name)
-        `)
-        .in("project_id", targetProjectIds)
+        .select(`id, project_id, source_type, source_id, chunk_text, chunk_index, metadata`)
+        .is("project_id", null)
         .or(orConditions)
         .limit(limit);
 
-      if (!ilikeError && ilikeData) {
-        results = ilikeData.map((row: any, index: number) => ({
+      if (globalIlike) {
+        const globalResults = globalIlike.map((row: any, index: number) => ({
           chunk_id: row.id,
-          project_id: row.project_id,
-          project_name: row.projects?.name || "Unknown",
+          project_id: null,
+          project_name: "Global",
           source_type: row.source_type,
           source_id: row.source_id,
           source_title: row.metadata?.title || "Untitled",
           chunk_text: row.chunk_text,
           chunk_index: row.chunk_index,
-          score_final: 1 - index * 0.05,
+          score_final: 0.95 - index * 0.05,
           metadata: row.metadata,
         }));
+        results = [...results, ...globalResults];
       }
     }
 

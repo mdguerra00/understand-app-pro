@@ -873,18 +873,20 @@ serve(async (req) => {
 
     if (fileError || !fileData) throw new Error(`File not found: ${fileError?.message}`);
 
-    // Verify user has access
-    const { data: memberData } = await supabaseAdmin
-      .from("project_members")
-      .select("role_in_project")
-      .eq("project_id", fileData.project_id)
-      .eq("user_id", user.id)
-      .single();
+    // Verify user has access (skip for global files)
+    if (fileData.project_id) {
+      const { data: memberData } = await supabaseAdmin
+        .from("project_members")
+        .select("role_in_project")
+        .eq("project_id", fileData.project_id)
+        .eq("user_id", user.id)
+        .single();
 
-    if (!memberData) {
-      return new Response(JSON.stringify({ error: "Access denied" }), {
-        status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+      if (!memberData) {
+        return new Response(JSON.stringify({ error: "Access denied" }), {
+          status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
     }
 
     // Update job status to processing
