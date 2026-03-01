@@ -10,6 +10,7 @@ import {
   Brain,
   Calendar,
   FolderOpen,
+  Globe,
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
@@ -19,7 +20,7 @@ export interface DocumentItem {
   name: string;
   mime_type: string | null;
   size_bytes: number | null;
-  project_id: string;
+  project_id: string | null;
   created_at: string;
   storage_path: string;
   projects?: { name: string } | null;
@@ -60,7 +61,8 @@ function formatFileSize(bytes: number | null): string {
 export function DocumentCard({ item, onClick, onViewProject }: DocumentCardProps) {
   const config = getFileConfig(item.mime_type);
   const Icon = config.icon;
-  const projectName = item.projects?.name || 'Projeto';
+  const isGlobal = !item.project_id;
+  const projectName = isGlobal ? 'Global' : (item.projects?.name || 'Projeto');
 
   return (
     <Card
@@ -78,7 +80,7 @@ export function DocumentCard({ item, onClick, onViewProject }: DocumentCardProps
                 {item.name}
               </CardTitle>
               <div className="flex items-center gap-1 text-xs text-muted-foreground">
-                <FolderOpen className="h-3 w-3" />
+                {isGlobal ? <Globe className="h-3 w-3" /> : <FolderOpen className="h-3 w-3" />}
                 <span className="truncate">{projectName}</span>
               </div>
             </div>

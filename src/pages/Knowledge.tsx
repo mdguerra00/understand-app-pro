@@ -5,7 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Brain, Search, Sparkles, Filter, LayoutGrid, List, FileText, FlaskConical, Zap, Loader2 } from 'lucide-react';
+import { Brain, Search, Sparkles, Filter, LayoutGrid, List, FileText, FlaskConical, Zap, Loader2, Globe, Upload } from 'lucide-react';
 import { toast } from 'sonner';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/hooks/useAuth';
@@ -18,6 +18,7 @@ import { DocumentDetailModal } from '@/components/knowledge/DocumentDetailModal'
 import { ExperimentDetailModal } from '@/components/knowledge/ExperimentDetailModal';
 import { FactsList } from '@/components/knowledge/FactsList';
 import { ExtractionStatus } from '@/components/knowledge/ExtractionStatus';
+import { GlobalFileUploadModal } from '@/components/knowledge/GlobalFileUploadModal';
 import {
   Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger,
 } from '@/components/ui/sheet';
@@ -45,6 +46,7 @@ export default function Knowledge() {
   const [validationFilter, setValidationFilter] = useState<ValidationFilter>('all');
   const [runningCorrelation, setRunningCorrelation] = useState(false);
   const [runningTrends, setRunningTrends] = useState(false);
+  const [globalUploadOpen, setGlobalUploadOpen] = useState(false);
 
   const handleRunCorrelation = async () => {
     if (!selectedProject && (!projects || projects.length === 0)) {
@@ -153,7 +155,7 @@ export default function Knowledge() {
     enabled: !!user,
   });
 
-  const { data: documents, isLoading: loadingDocuments } = useQuery({
+  const { data: documents, isLoading: loadingDocuments, refetch: refetchDocuments } = useQuery({
     queryKey: ['all-documents', user?.id],
     queryFn: async () => {
       const { data, error } = await supabase
@@ -222,7 +224,8 @@ export default function Knowledge() {
           const q = searchQuery.toLowerCase();
           if (!doc.name.toLowerCase().includes(q) && !doc.projects?.name?.toLowerCase().includes(q)) return;
         }
-        if (selectedProject && doc.project_id !== selectedProject) return;
+        if (selectedProject === '__global__' && doc.project_id !== null) return;
+        if (selectedProject && selectedProject !== '__global__' && doc.project_id !== selectedProject) return;
         entries.push({ entry_type: 'document', data: doc });
       });
     }
@@ -233,7 +236,8 @@ export default function Knowledge() {
           const q = searchQuery.toLowerCase();
           if (!item.title.toLowerCase().includes(q) && !item.content.toLowerCase().includes(q) && !item.evidence?.toLowerCase().includes(q)) return;
         }
-        if (selectedProject && item.project_id !== selectedProject) return;
+        if (selectedProject === '__global__' && item.project_id !== null) return;
+        if (selectedProject && selectedProject !== '__global__' && item.project_id !== selectedProject) return;
         if (selectedCategories.length > 0 && !selectedCategories.includes(item.category)) return;
         if (item.confidence < minConfidence) return;
         if (validationFilter === 'pending' && item.validated_by) return;
@@ -248,7 +252,8 @@ export default function Knowledge() {
           const q = searchQuery.toLowerCase();
           if (!exp.title.toLowerCase().includes(q) && !exp.objective?.toLowerCase().includes(q) && !exp.summary?.toLowerCase().includes(q)) return;
         }
-        if (selectedProject && exp.project_id !== selectedProject) return;
+        if (selectedProject === '__global__') return;
+        if (selectedProject && selectedProject !== '__global__' && exp.project_id !== selectedProject) return;
         entries.push({ entry_type: 'experiment', data: exp });
       });
     }
@@ -279,7 +284,7 @@ export default function Knowledge() {
   const handleViewFile = (item: KnowledgeItem) => {
     if (item.source_file_id && item.project_id) navigate(`/projects/${item.project_id}?tab=files&file=${item.source_file_id}`);
   };
-  const handleViewProject = (doc: DocumentItem) => { navigate(`/projects/${doc.project_id}?tab=files&file=${doc.id}`); };
+  const handleViewProject = (doc: DocumentItem) => { if (doc.project_id) navigate(`/projects/${doc.project_id}?tab=files&file=${doc.id}`); };
   const handleViewExperimentFile = (exp: ExperimentItem) => {
     if (exp.source_file_id && exp.project_id) navigate(`/projects/${exp.project_id}?tab=files&file=${exp.source_file_id}`);
   };
@@ -322,6 +327,14 @@ export default function Knowledge() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <Button
+            variant="default"
+            size="sm"
+            onClick={() => setGlobalUploadOpen(true)}
+          >
+            <Upload className="h-4 w-4 mr-2" />
+            Arquivo Global
+          </Button>
           <Button
             variant="outline"
             size="sm"
@@ -418,7 +431,8 @@ export default function Knowledge() {
             <div className={viewMode === 'grid' ? 'grid gap-4 md:grid-cols-2 xl:grid-cols-3' : 'space-y-4'}>
               {filteredEntries.map((entry) => {
                 if (entry.entry_type === 'document') {
-                  return <DocumentCard key={`doc-${entry.data.id}`} item={entry.data} onClick={() => handleDocumentClick(entry.data)} onViewProject={() => handleViewProject(entry.data)} />;
+                  const isGlobal = !entry.data.project_id;
+                  return <DocumentCard key={`doc-${entry.data.id}`} item={entry.data} onClick={() => handleDocumentClick(entry.data)} onViewProject={isGlobal ? undefined : () => handleViewProject(entry.data)} />;
                 } else if (entry.entry_type === 'experiment') {
                   return <ExperimentCard key={`exp-${entry.data.id}`} item={entry.data} onClick={() => handleExperimentClick(entry.data)} onViewFile={() => handleViewExperimentFile(entry.data)} />;
                 } else {
@@ -433,6 +447,7 @@ export default function Knowledge() {
       <KnowledgeDetailModal item={selectedInsight} open={insightDetailOpen} onOpenChange={setInsightDetailOpen} onUpdate={refetchInsights} />
       <DocumentDetailModal item={selectedDocument} open={documentDetailOpen} onOpenChange={setDocumentDetailOpen} />
       <ExperimentDetailModal item={selectedExperiment} open={experimentDetailOpen} onOpenChange={setExperimentDetailOpen} />
+      <GlobalFileUploadModal open={globalUploadOpen} onOpenChange={setGlobalUploadOpen} onSuccess={() => refetchDocuments()} />
       </>
       )}
     </div>
