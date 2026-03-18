@@ -5,7 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Brain, Search, Sparkles, Filter, LayoutGrid, List, FileText, FlaskConical, Zap, Loader2, Globe, Upload } from 'lucide-react';
+import { Brain, Search, Sparkles, Filter, LayoutGrid, List, FileText, FlaskConical, Zap, Loader2, Globe, Upload, BookOpen } from 'lucide-react';
 import { toast } from 'sonner';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/hooks/useAuth';
@@ -19,6 +19,8 @@ import { ExperimentDetailModal } from '@/components/knowledge/ExperimentDetailMo
 import { FactsList } from '@/components/knowledge/FactsList';
 import { ExtractionStatus } from '@/components/knowledge/ExtractionStatus';
 import { GlobalFileUploadModal } from '@/components/knowledge/GlobalFileUploadModal';
+import { AcademicSearchPanel } from '@/components/knowledge/AcademicSearchPanel';
+import { useAcademicSearch } from '@/hooks/useAcademicSearch';
 import {
   Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger,
 } from '@/components/ui/sheet';
@@ -227,6 +229,8 @@ export default function Knowledge() {
     enabled: !!user,
   });
 
+  const { allSavedPapersCount } = useAcademicSearch();
+
   const isLoading = loadingInsights || loadingDocuments || loadingExperiments;
 
   const filteredEntries = useMemo(() => {
@@ -309,8 +313,9 @@ export default function Knowledge() {
     const totalExperiments = experiments?.length || 0;
     const validated = knowledgeItems?.filter(i => i.validated_by).length || 0;
     const totalMeasurements = experiments?.reduce((sum, e) => sum + (e.measurements_count || 0), 0) || 0;
-    return { totalDocuments, totalInsights, totalExperiments, validated, totalMeasurements };
-  }, [documents, knowledgeItems, experiments]);
+    const totalPapers = allSavedPapersCount;
+    return { totalDocuments, totalInsights, totalExperiments, validated, totalMeasurements, totalPapers };
+  }, [documents, knowledgeItems, experiments, allSavedPapersCount]);
 
   const hasActiveFilters = selectedProject || selectedCategories.length > 0 || minConfidence > 0 || entryType !== 'all' || validationFilter !== 'all';
 
@@ -336,8 +341,8 @@ export default function Knowledge() {
           <h1 className="text-2xl font-bold tracking-tight">Base de Conhecimento</h1>
           <p className="text-muted-foreground">
             {stats.totalDocuments + stats.totalInsights + stats.totalExperiments > 0
-              ? `${stats.totalDocuments} docs • ${stats.totalInsights} insights • ${stats.totalExperiments} experimentos • ${stats.totalMeasurements} medições`
-              : 'Documentos, insights e experimentos extraídos via IA'}
+              ? `${stats.totalDocuments} docs • ${stats.totalInsights} insights • ${stats.totalExperiments} experimentos • ${stats.totalMeasurements} medições • ${stats.totalPapers} artigos`
+              : 'Documentos, insights, experimentos e artigos acadêmicos'}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -381,7 +386,12 @@ export default function Knowledge() {
         <FactsList projects={projects || []} />
       )}
 
-      {entryType !== 'facts' && (
+      {/* Academic Search Section */}
+      {entryType === 'academic' && (
+        <AcademicSearchPanel projects={projects || []} />
+      )}
+
+      {entryType !== 'facts' && entryType !== 'academic' && (
       <>
       <ExtractionStatus />
 

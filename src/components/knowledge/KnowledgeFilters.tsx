@@ -31,7 +31,7 @@ import {
 } from 'lucide-react';
 import { KnowledgeCategory } from './KnowledgeCard';
 
-export type EntryTypeFilter = 'all' | 'documents' | 'insights' | 'experiments' | 'facts';
+export type EntryTypeFilter = 'all' | 'documents' | 'insights' | 'experiments' | 'facts' | 'academic';
 export type ValidationFilter = 'all' | 'pending' | 'validated';
 
 interface Project {
@@ -152,6 +152,15 @@ export function KnowledgeFilters({
           >
             <BookOpen className="h-3 w-3 mr-1" />
             Fatos
+          </Button>
+          <Button
+            variant={entryType === 'academic' ? 'default' : 'outline'}
+            size="sm"
+            className="text-xs"
+            onClick={() => onEntryTypeChange('academic')}
+          >
+            <BookOpen className="h-3 w-3 mr-1" />
+            Artigos Acadêmicos
           </Button>
         </div>
       </div>
