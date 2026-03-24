@@ -290,6 +290,18 @@ export default function ProductDetail() {
           </div>
         </TabsContent>
       </Tabs>
+
+      <ProductEditModal
+        product={product}
+        open={isEditOpen}
+        onOpenChange={setIsEditOpen}
+        onUpdated={() => {
+          // Refetch product
+          supabase.from('products').select('*').eq('id', id!).single().then(({ data }) => {
+            if (data) setProduct(data);
+          });
+        }}
+      />
     </div>
   );
 }
