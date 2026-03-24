@@ -50,10 +50,13 @@ const statusLabels: Record<string, string> = {
 };
 
 export default function Projects() {
+  const { user } = useAuth();
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [editProject, setEditProject] = useState<Project | null>(null);
+  const [isEditOpen, setIsEditOpen] = useState(false);
 
   useEffect(() => {
     async function fetchProjects() {
