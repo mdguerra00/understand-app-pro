@@ -58,24 +58,24 @@ export default function Projects() {
   const [editProject, setEditProject] = useState<Project | null>(null);
   const [isEditOpen, setIsEditOpen] = useState(false);
 
-  useEffect(() => {
-    async function fetchProjects() {
-      try {
-        const { data, error } = await supabase
-          .from('projects')
-          .select('*')
-          .is('deleted_at', null)
-          .order('created_at', { ascending: false });
+  const fetchProjects = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('projects')
+        .select('*')
+        .is('deleted_at', null)
+        .order('created_at', { ascending: false });
 
-        if (error) throw error;
-        setProjects(data || []);
-      } catch (error) {
-        console.error('Error fetching projects:', error);
-      } finally {
-        setLoading(false);
-      }
+      if (error) throw error;
+      setProjects(data || []);
+    } catch (error) {
+      console.error('Error fetching projects:', error);
+    } finally {
+      setLoading(false);
     }
+  };
 
+  useEffect(() => {
     fetchProjects();
   }, []);
 
