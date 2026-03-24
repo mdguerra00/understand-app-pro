@@ -52,6 +52,7 @@ export default function ProductsCatalog() {
   const [showCreate, setShowCreate] = useState(false);
   const [creating, setCreating] = useState(false);
   const [form, setForm] = useState({ name: '', family: '', intended_use: '' });
+  const [editProduct, setEditProduct] = useState<Product | null>(null);
 
   const fetchProducts = async () => {
     try {
