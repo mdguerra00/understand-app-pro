@@ -177,21 +177,8 @@ export default function Projects() {
                 <TooltipTrigger asChild>
                   <Link to={`/projects/${project.id}`}>
                     <Card className="h-full hover:border-primary/50 transition-colors cursor-pointer relative group">
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="absolute top-2 right-2 h-7 w-7 opacity-0 group-hover:opacity-100 transition-opacity z-10"
-                        onClick={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          setEditProject(project);
-                          setIsEditOpen(true);
-                        }}
-                      >
-                        <Pencil className="h-3.5 w-3.5" />
-                      </Button>
                       <CardHeader className="pb-3">
-                        <div className="flex items-start justify-between gap-2 pr-8">
+                        <div className="flex items-start justify-between gap-2">
                           <CardTitle className="text-base font-semibold line-clamp-2 leading-snug">
                             {project.name}
                           </CardTitle>
@@ -211,13 +198,28 @@ export default function Projects() {
                             {project.description}
                           </p>
                         )}
-                        <div className="flex items-center gap-4 text-xs text-muted-foreground">
-                          {project.start_date && (
-                            <div className="flex items-center gap-1">
-                              <Calendar className="h-3 w-3" />
-                              {new Date(project.start_date).toLocaleDateString('pt-BR')}
-                            </div>
-                          )}
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-4 text-xs text-muted-foreground">
+                            {project.start_date && (
+                              <div className="flex items-center gap-1">
+                                <Calendar className="h-3 w-3" />
+                                {new Date(project.start_date).toLocaleDateString('pt-BR')}
+                              </div>
+                            )}
+                          </div>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7 opacity-0 group-hover:opacity-100 transition-opacity"
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              setEditProject(project);
+                              setIsEditOpen(true);
+                            }}
+                          >
+                            <Pencil className="h-3.5 w-3.5" />
+                          </Button>
                         </div>
                       </CardContent>
                     </Card>
