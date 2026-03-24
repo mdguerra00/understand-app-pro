@@ -7,7 +7,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ArrowLeft, Package, FlaskConical, Wrench, GitBranch, Clock, Edit2 } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
-
+import { ProductEditModal } from '@/components/products/ProductEditModal';
 const lifecycleLabels: Record<string, string> = {
   development: 'Em Desenvolvimento',
   active: 'Ativo',
@@ -61,6 +61,7 @@ export default function ProductDetail() {
   const [timeline, setTimeline] = useState<any[]>([]);
   const [researches, setResearches] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [isEditOpen, setIsEditOpen] = useState(false);
 
   useEffect(() => {
     if (!id) return;
@@ -123,6 +124,10 @@ export default function ProductDetail() {
           </div>
           {product.family && <p className="text-muted-foreground">{product.family}</p>}
         </div>
+        <Button variant="outline" size="sm" onClick={() => setIsEditOpen(true)}>
+          <Edit2 className="h-3.5 w-3.5 mr-1.5" />
+          Editar
+        </Button>
       </div>
 
       <Tabs defaultValue="overview" className="space-y-4">
@@ -285,6 +290,18 @@ export default function ProductDetail() {
           </div>
         </TabsContent>
       </Tabs>
+
+      <ProductEditModal
+        product={product}
+        open={isEditOpen}
+        onOpenChange={setIsEditOpen}
+        onUpdated={() => {
+          // Refetch product
+          supabase.from('products').select('*').eq('id', id!).single().then(({ data }) => {
+            if (data) setProduct(data);
+          });
+        }}
+      />
     </div>
   );
 }

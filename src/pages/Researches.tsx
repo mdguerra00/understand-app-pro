@@ -9,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
-import { Plus, Search, FlaskConical, ArrowUpRight } from 'lucide-react';
+import { Plus, Search, FlaskConical, ArrowUpRight, Pencil } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/hooks/useAuth';
 import { toast } from 'sonner';
@@ -175,11 +175,22 @@ export default function Researches() {
           {filtered.map((research) => (
             <Card
               key={research.id}
-              className="h-full hover:border-primary/50 transition-colors cursor-pointer"
+              className="h-full hover:border-primary/50 transition-colors cursor-pointer relative group"
               onClick={() => navigate(`/researches/${research.id}`)}
             >
+              <Button
+                variant="ghost"
+                size="icon"
+                className="absolute top-2 right-2 h-7 w-7 opacity-0 group-hover:opacity-100 transition-opacity z-10"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  navigate(`/researches/${research.id}`);
+                }}
+              >
+                <Pencil className="h-3.5 w-3.5" />
+              </Button>
               <CardHeader className="pb-3">
-                <div className="flex items-start justify-between gap-2">
+                <div className="flex items-start justify-between gap-2 pr-8">
                   <CardTitle className="text-base font-semibold line-clamp-2 leading-snug">
                     {research.title}
                   </CardTitle>

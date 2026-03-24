@@ -24,9 +24,12 @@ import {
   FolderKanban,
   Calendar,
   Users,
+  Pencil,
 } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { Tables } from '@/integrations/supabase/types';
+import { ProjectSettingsModal } from '@/components/projects/ProjectSettingsModal';
+import { useAuth } from '@/hooks/useAuth';
 
 type Project = Tables<'projects'>;
 
@@ -47,29 +50,32 @@ const statusLabels: Record<string, string> = {
 };
 
 export default function Projects() {
+  const { user } = useAuth();
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [editProject, setEditProject] = useState<Project | null>(null);
+  const [isEditOpen, setIsEditOpen] = useState(false);
+
+  const fetchProjects = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('projects')
+        .select('*')
+        .is('deleted_at', null)
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+      setProjects(data || []);
+    } catch (error) {
+      console.error('Error fetching projects:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    async function fetchProjects() {
-      try {
-        const { data, error } = await supabase
-          .from('projects')
-          .select('*')
-          .is('deleted_at', null)
-          .order('created_at', { ascending: false });
-
-        if (error) throw error;
-        setProjects(data || []);
-      } catch (error) {
-        console.error('Error fetching projects:', error);
-      } finally {
-        setLoading(false);
-      }
-    }
-
     fetchProjects();
   }, []);
 
@@ -170,9 +176,22 @@ export default function Projects() {
               <Tooltip key={project.id}>
                 <TooltipTrigger asChild>
                   <Link to={`/projects/${project.id}`}>
-                    <Card className="h-full hover:border-primary/50 transition-colors cursor-pointer">
+                    <Card className="h-full hover:border-primary/50 transition-colors cursor-pointer relative group">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="absolute top-2 right-2 h-7 w-7 opacity-0 group-hover:opacity-100 transition-opacity z-10"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setEditProject(project);
+                          setIsEditOpen(true);
+                        }}
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                      </Button>
                       <CardHeader className="pb-3">
-                        <div className="flex items-start justify-between gap-2">
+                        <div className="flex items-start justify-between gap-2 pr-8">
                           <CardTitle className="text-base font-semibold line-clamp-2 leading-snug">
                             {project.name}
                           </CardTitle>
@@ -211,6 +230,22 @@ export default function Projects() {
             ))}
           </div>
         </TooltipProvider>
+      )}
+
+      {editProject && (
+        <ProjectSettingsModal
+          projectId={editProject.id}
+          projectName={editProject.name}
+          project={editProject}
+          isOwner={true}
+          open={isEditOpen}
+          onOpenChange={setIsEditOpen}
+          onDeleted={() => {
+            setIsEditOpen(false);
+            fetchProjects();
+          }}
+          onUpdated={() => fetchProjects()}
+        />
       )}
     </div>
   );
