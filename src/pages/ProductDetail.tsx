@@ -7,7 +7,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ArrowLeft, Package, FlaskConical, Wrench, GitBranch, Clock, Edit2 } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
-
+import { ProductEditModal } from '@/components/products/ProductEditModal';
 const lifecycleLabels: Record<string, string> = {
   development: 'Em Desenvolvimento',
   active: 'Ativo',
