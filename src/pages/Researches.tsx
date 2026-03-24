@@ -178,19 +178,8 @@ export default function Researches() {
               className="h-full hover:border-primary/50 transition-colors cursor-pointer relative group"
               onClick={() => navigate(`/researches/${research.id}`)}
             >
-              <Button
-                variant="ghost"
-                size="icon"
-                className="absolute top-2 right-2 h-7 w-7 opacity-0 group-hover:opacity-100 transition-opacity z-10"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  navigate(`/researches/${research.id}`);
-                }}
-              >
-                <Pencil className="h-3.5 w-3.5" />
-              </Button>
               <CardHeader className="pb-3">
-                <div className="flex items-start justify-between gap-2 pr-8">
+                <div className="flex items-start justify-between gap-2">
                   <CardTitle className="text-base font-semibold line-clamp-2 leading-snug">
                     {research.title}
                   </CardTitle>
@@ -209,16 +198,29 @@ export default function Researches() {
                 {research.objective && (
                   <p className="text-sm text-muted-foreground line-clamp-2">{research.objective}</p>
                 )}
-                {research.keywords?.length > 0 && (
-                  <div className="flex flex-wrap gap-1">
-                    {research.keywords.slice(0, 3).map((kw, i) => (
-                      <Badge key={i} variant="secondary" className="text-xs">{kw}</Badge>
-                    ))}
-                    {research.keywords.length > 3 && (
-                      <Badge variant="secondary" className="text-xs">+{research.keywords.length - 3}</Badge>
-                    )}
-                  </div>
-                )}
+                <div className="flex items-center justify-between">
+                  {research.keywords?.length > 0 ? (
+                    <div className="flex flex-wrap gap-1">
+                      {research.keywords.slice(0, 3).map((kw, i) => (
+                        <Badge key={i} variant="secondary" className="text-xs">{kw}</Badge>
+                      ))}
+                      {research.keywords.length > 3 && (
+                        <Badge variant="secondary" className="text-xs">+{research.keywords.length - 3}</Badge>
+                      )}
+                    </div>
+                  ) : <span />}
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      navigate(`/researches/${research.id}`);
+                    }}
+                  >
+                    <Pencil className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
               </CardContent>
             </Card>
           ))}
