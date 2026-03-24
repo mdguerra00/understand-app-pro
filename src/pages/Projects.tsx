@@ -198,13 +198,28 @@ export default function Projects() {
                             {project.description}
                           </p>
                         )}
-                        <div className="flex items-center gap-4 text-xs text-muted-foreground">
-                          {project.start_date && (
-                            <div className="flex items-center gap-1">
-                              <Calendar className="h-3 w-3" />
-                              {new Date(project.start_date).toLocaleDateString('pt-BR')}
-                            </div>
-                          )}
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-4 text-xs text-muted-foreground">
+                            {project.start_date && (
+                              <div className="flex items-center gap-1">
+                                <Calendar className="h-3 w-3" />
+                                {new Date(project.start_date).toLocaleDateString('pt-BR')}
+                              </div>
+                            )}
+                          </div>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7 opacity-0 group-hover:opacity-100 transition-opacity"
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              setEditProject(project);
+                              setIsEditOpen(true);
+                            }}
+                          >
+                            <Pencil className="h-3.5 w-3.5" />
+                          </Button>
                         </div>
                       </CardContent>
                     </Card>
