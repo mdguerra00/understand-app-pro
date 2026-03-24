@@ -124,6 +124,10 @@ export default function ProductDetail() {
           </div>
           {product.family && <p className="text-muted-foreground">{product.family}</p>}
         </div>
+        <Button variant="outline" size="sm" onClick={() => setIsEditOpen(true)}>
+          <Edit2 className="h-3.5 w-3.5 mr-1.5" />
+          Editar
+        </Button>
       </div>
 
       <Tabs defaultValue="overview" className="space-y-4">
