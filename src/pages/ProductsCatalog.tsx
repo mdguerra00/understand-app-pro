@@ -246,6 +246,13 @@ export default function ProductsCatalog() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <ProductEditModal
+        product={editProduct}
+        open={!!editProduct}
+        onOpenChange={(open) => { if (!open) setEditProduct(null); }}
+        onUpdated={fetchProducts}
+      />
     </div>
   );
 }
