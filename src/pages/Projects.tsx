@@ -24,9 +24,12 @@ import {
   FolderKanban,
   Calendar,
   Users,
+  Pencil,
 } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { Tables } from '@/integrations/supabase/types';
+import { ProjectSettingsModal } from '@/components/projects/ProjectSettingsModal';
+import { useAuth } from '@/hooks/useAuth';
 
 type Project = Tables<'projects'>;
 
