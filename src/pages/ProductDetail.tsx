@@ -61,6 +61,7 @@ export default function ProductDetail() {
   const [timeline, setTimeline] = useState<any[]>([]);
   const [researches, setResearches] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [isEditOpen, setIsEditOpen] = useState(false);
 
   useEffect(() => {
     if (!id) return;
