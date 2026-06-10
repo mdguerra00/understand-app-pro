@@ -376,12 +376,10 @@ export default function ProjectDetail() {
   }
 
   // Full task data for drawer
-  const getFullTaskData = (task: KanbanTask) => {
-    return {
-      ...task,
-      project_id: task.project_id || id!,
-    };
-  };
+  const drawerTask = useMemo(
+    () => (selectedTask ? { ...selectedTask, project_id: selectedTask.project_id || id! } : null),
+    [selectedTask, id]
+  );
 
   return (
     <div className="space-y-6">
