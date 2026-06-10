@@ -184,17 +184,9 @@ export function TaskDetailDrawer({
         .eq('id', task.id);
       if (error) throw error;
 
-      // Send notification when assigning a task to someone else
-      if (field === 'assigned_to' && value && value !== user.id) {
-        await supabase.from('notifications').insert({
-          user_id: value,
-          project_id: task.project_id,
-          type: 'task_assigned',
-          title: 'Nova tarefa atribuída',
-          message: `Você foi designado para: "${task.title}"`,
-          link: `/projects/${task.project_id}?tab=tasks`,
-        });
-      }
+      // Assignment notifications are created server-side by the
+      // notify_task_assigned trigger to keep notifications RLS strict.
+
 
       onUpdate();
     } catch (err: any) {
