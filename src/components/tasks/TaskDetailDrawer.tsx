@@ -163,7 +163,7 @@ export function TaskDetailDrawer({
       setDecision(task.decision || '');
       setExternalLinks(task.external_links || []);
     }
-  }, [task, open]);
+  }, [task?.id, task?.updated_at, open]);
 
   if (!task) return null;
 
