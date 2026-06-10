@@ -302,11 +302,27 @@ export function ReportEditorModal({
   };
 
   const handleExportPDF = () => {
-    // Simple PDF export using print
+    // Escape any user-controlled text before injecting into the print window
+    // to prevent stored XSS via report title/summary/content.
+    const escapeHtml = (s: string) =>
+      s
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+
+    const safeTitle = escapeHtml(title || '');
+    const safeSummary = escapeHtml(summary || '');
+    const safeContent = escapeHtml(content || '');
+    const safeDate = escapeHtml(
+      format(new Date(), "dd 'de' MMMM 'de' yyyy 'às' HH:mm", { locale: ptBR })
+    );
+
     const printContent = `
       <html>
         <head>
-          <title>${title}</title>
+          <title>${safeTitle}</title>
           <style>
             body { font-family: Arial, sans-serif; padding: 40px; max-width: 800px; margin: 0 auto; }
             h1 { color: #333; border-bottom: 2px solid #0f766e; padding-bottom: 10px; }
@@ -316,15 +332,16 @@ export function ReportEditorModal({
           </style>
         </head>
         <body>
-          <h1>${title}</h1>
-          ${summary ? `<div class="summary"><strong>Resumo:</strong> ${summary}</div>` : ''}
-          <div class="content">${content}</div>
+          <h1>${safeTitle}</h1>
+          ${safeSummary ? `<div class="summary"><strong>Resumo:</strong> ${safeSummary}</div>` : ''}
+          <div class="content">${safeContent}</div>
           <div class="meta">
-            Gerado em ${format(new Date(), "dd 'de' MMMM 'de' yyyy 'às' HH:mm", { locale: ptBR })}
+            Gerado em ${safeDate}
           </div>
         </body>
       </html>
     `;
+
 
     const printWindow = window.open('', '_blank');
     if (printWindow) {
