@@ -620,7 +620,7 @@ export default function ProjectDetail() {
       />
 
       <TaskDetailDrawer
-        task={selectedTask ? getFullTaskData(selectedTask) : null}
+        task={drawerTask}
         projectId={id!}
         open={isTaskDetailOpen}
         onOpenChange={setIsTaskDetailOpen}
