@@ -349,6 +349,12 @@ export default function ProjectDetail() {
     return email?.charAt(0).toUpperCase() ?? '?';
   };
 
+  // Full task data for drawer (must stay above early returns — hooks order)
+  const drawerTask = useMemo(
+    () => (selectedTask ? { ...selectedTask, project_id: selectedTask.project_id || id! } : null),
+    [selectedTask, id]
+  );
+
   if (loading) {
     return (
       <div className="space-y-6">
@@ -375,11 +381,6 @@ export default function ProjectDetail() {
     );
   }
 
-  // Full task data for drawer
-  const drawerTask = useMemo(
-    () => (selectedTask ? { ...selectedTask, project_id: selectedTask.project_id || id! } : null),
-    [selectedTask, id]
-  );
 
   return (
     <div className="space-y-6">
