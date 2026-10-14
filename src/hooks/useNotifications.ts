@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useEffect, useId } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/hooks/useAuth';
@@ -37,28 +37,30 @@ export function useNotifications() {
 
   const unreadCount = notifications.filter(n => !n.read).length;
 
-  // Realtime subscription
+  // Realtime subscription (unique channel per hook instance)
+  const instanceId = useId();
+  const userId = user?.id;
   useEffect(() => {
-    if (!user) return;
+    if (!userId) return;
 
     const channel = supabase
-      .channel('notifications-realtime')
+      .channel(`notifications-realtime-${userId}-${instanceId}`)
       .on(
         'postgres_changes',
         {
           event: 'INSERT',
           schema: 'public',
           table: 'notifications',
-          filter: `user_id=eq.${user.id}`,
+          filter: `user_id=eq.${userId}`,
         },
         () => {
-          queryClient.invalidateQueries({ queryKey: ['notifications', user.id] });
+          queryClient.invalidateQueries({ queryKey: ['notifications', userId] });
         }
       )
       .subscribe();
 
     return () => { supabase.removeChannel(channel); };
-  }, [user, queryClient]);
+  }, [userId, instanceId, queryClient]);
 
   const markAsRead = async (id: string) => {
     await supabase.from('notifications').update({ read: true }).eq('id', id);

@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { AuthProvider } from "@/hooks/useAuth";
 import { AppLayout } from "@/components/layout/AppLayout";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 
 // Pages
 import Auth from "./pages/Auth";
@@ -36,6 +37,7 @@ const App = () => (
         <Toaster />
         <Sonner />
         <BrowserRouter>
+          <ErrorBoundary>
           <Routes>
             {/* Public routes */}
             <Route path="/auth" element={<Auth />} />
@@ -166,6 +168,7 @@ const App = () => (
             {/* 404 */}
             <Route path="*" element={<NotFound />} />
           </Routes>
+          </ErrorBoundary>
         </BrowserRouter>
       </TooltipProvider>
     </AuthProvider>
